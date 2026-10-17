@@ -23,7 +23,8 @@ enum ExecMethod { EXEC_SETTER = 0, EXEC_BYTE = 1 };
 
 struct Config {
     int enabled;                 // 0 = nothing installed (the loader still forwards dbghelp)
-    int pacing;                  // 1 = 60 Hz (divider 1 + exec alternation), 0 = stock pacing
+    int pacing;                  // 1 = mod pacing (divider 1 + exec alternation), 0 = stock pacing
+    int fps;                     // 60 / 120 / 240: drawn frames per second ([fps60] fps), see rate.cpp
     int alt_backlog;             // skip-render backlog invocations: logic = exec 1, parity unchanged
     int exec_method;
     int rollback;                // master switch for the rollback engine
@@ -89,6 +90,22 @@ extern volatile LONG g_disabled;                 // any fault -> 1, hooks become
 extern bool g_divider_hooked;
 bool patch_call_rel32(uint8_t* site, void* old_target, void* new_target);
 
+// ---------------------------------------------------------------- rate.cpp
+// Timebase multiplier. Game logic stays at 29.97 Hz; the mod draws N passes per logic tick,
+// N = fps / 30, for any multiple of 30 from 60 to 240. N = 2 is the original 60 fps behaviour.
+int      rate_fps();                             // configured frame rate (60 / 120 / 240)
+int      rate_mult_cfg();                        // configured N
+int      rate_mult();                            // N in force: 2 until RATE-001 holds the limiter at N * 29.97
+bool     rate_set_fps(int fps);                  // the player asked for this rate (CFG-MENU); false = refused
+bool     rate_step_fps(int fps);                 // PERF-002 stepped the rate; what the player asked for stands
+int      rate_user_fps();                        // the rate the player asked for, whatever PERF-002 stepped to
+bool     rate_fps_ok(int fps);                   // a supported rate: a multiple of 30 from 60 to 240
+uint32_t rate_gen();                             // bumped whenever rate_mult() changes (rows re-seed clocks)
+void     rate_limiter_engaged(bool on);          // RATE-001: the host limiter now runs at the mod's rate
+void     rate_init();                            // after config_load: clamp [fps60] fps, log the timebase
+void     rate001_limiter(bool want);             // rows/RATE-001.cpp: hold the host limiter at the mod's rate
+bool     rate001_limiter_set(int mult);          // rows/RATE-001.cpp: the configured N changed
+
 // ---------------------------------------------------------------- pacing.cpp
 // Per Sg_MainLoop invocation, in this order: pacing_pre, rollback_pre, rows_pre,
 // Sg_MainLoop, rows_post, rollback_post, pacing_post (capture points interleaved, see below).
@@ -100,7 +117,9 @@ bool pacing_active();                            // 60 Hz pacing currently appli
 int  pacing_kind();                              // InvKind of the current invocation
 void pacing_hold_stock(const char* who, bool hold); // a row asks for stock pacing (e.g. FMV)
 void pacing_set(bool on);                         // runtime 60 Hz on/off ([fps60] pacing; CFG-MENU)
-void pacing_force_logic(bool on);                // every invocation a logic tick, kind INV_BACKLOG (booster)
+void pacing_force_div(int every);                // logic tick every `every` invocations, kind INV_BACKLOG; 0 = off
+int  pacing_pass();                              // 0..N-1 inside the current logic period (0 = the logic tick)
+float pacing_t();                                // (pass + 1) / N: where in the tick this pass draws (1 = tick k)
 bool sr008_battle_reset_pending();               // rows/SR-003.cpp: SR-008 soft reset in battle under way
 
 // ---------------------------------------------------------------- rollback.cpp
@@ -149,6 +168,7 @@ extern Row row_MAG025;                           // rows/MAG-025.cpp (DLL-called
 extern Row row_MAG026;                          // rows/MAG-026.cpp (family-X record draws held on render-only)
 extern Row row_MAG027;                           // rows/MAG-027.cpp (event timeline walker, 22 DLLs: starts on logic only)
 extern Row row_DIAGFRAMETIME;                    // rows/DIAG-FRAMETIME.cpp (frame time histogram, VRR check)
+extern Row row_RATE001;                          // rows/RATE-001.cpp (host frame limiter retargeted to N * 29.97 Hz)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 draw-only walk -> MAG-026
 extern Row row_UI001;                            // rows/UI-001.cpp
 extern Row row_UI017;                           // rows/UI-017.cpp (pad latch per logic tick, K4)

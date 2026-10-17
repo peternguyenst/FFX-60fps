@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// SMOOTH-001: at 60 Hz the camera is still built once per logic tick, so it moves at 30 Hz. This row
-// draws logic frames with the view half-way between the last two ticks (needs master SMOOTH=1).
+// SMOOTH-001: under the mod's pacing the camera is still built once per logic tick, so it moves at 30 Hz.
+// This row draws every pass of a logic period with the view a fraction of the way between the last two ticks:
+// pass j of N draws (j + 1) / N (pacing_t), and the last pass of the period draws tick k untouched. At 60 fps
+// (N = 2) that is the old pair - the logic frame at 0.5, the render-only frame at tick k. The logic pass
+// interpolates from the tick before this one (h.prev) to the view the game just built; later passes
+// interpolate the pair the period was entered with (h.last -> h.prev). Needs master SMOOTH=1.
 // Details: docs/fps60/rows/SMOOTH-001.md
 #include "smooth.h"
 #include <string.h>
@@ -27,6 +31,13 @@ static int        g_jump = 1;                // SMOOTH-001-JUMPCUT: a step far a
 static const float k_jump_ratio = 4.0f, k_jump_dist = 20.0f, k_jump_deg = 10.0f;
 static LONG       g_jump_cut = 0;
 static int        g_camlog = 0;              // SMOOTH-001-CAMLOG: log the view per finalize during LAB-001's cast window
+// SMOOTH-001-TRACE=<lines> (Release too): F6 in the game window arms a burst of that many finalize lines. Each
+// line says which pass of the logic period it is and what t it draws at, the view the game's own finalize just
+// built, and the view left for the draw - so a camera that does not move smoothly can be read off the log
+// instead of guessed at. Every commit during the burst is logged too, with its caller.
+static int        g_trace = 0;
+static volatile LONG g_trace_left = 0;
+static bool       g_tr_ours = false, g_tr_wrote = false;
 bool lab001_mot_window();
 static commit_t   g_commit_tramp = nullptr;   // CAMLOG: commit hook (every committed view, any caller)
 static const float* g_fxcam = nullptr;        // CAMLOG: effect-walker camera block 0x0113FCD0 (OPU scratch +0x280 source)
@@ -51,6 +62,13 @@ static void log_block_diff() {
 }
 
 static void __cdecl h_commit(float* v) {
+    if (g_trace_left > 0) {
+        __try {
+            log_line("SMOOTH-001-TRACE commit: %c pass %d from gva 0x%08X view %s | t(%.3f %.3f %.3f) r2(%.4f %.4f %.4f)",
+                     "LBKS"[pacing_kind() & 3], pacing_pass(), rt_to_gva_exe(_ReturnAddress()),
+                     v == g_view ? "main" : "other", v[12], v[13], v[14], v[8], v[9], v[10]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     if (lab001_mot_window()) {
         __try {
             log_line("SMOOTH-001 commit: %c from gva 0x%08X view %s | t %.2f %.2f %.2f | r2 %.4f %.4f %.4f",
@@ -65,13 +83,17 @@ static void __cdecl h_commit(float* v) {
 struct CamHist {
     float prevfov[3];    // FOV fields (camera block +0x10/+0x14/+0x1C) of the previous logic tick
     float pendfov[3];
+    float lastfov[3];    // the tick before prev (render-only passes interpolate last -> prev)
     float prev[16];      // canonical matrix of the previous logic tick
     bool  valid;
     int   tag;           // source of prev (1..3)
     float pend[16];      // sample of the current logic invocation
     int   pend_tag;
     bool  has_pend;
+    float last[16];      // canonical matrix of the tick before prev
+    bool  last_valid;
     bool  pend_cut;      // this tick was drawn as a cut (its step is not a motion reference)
+    bool  prev_cut;      // the tick now in prev was a cut: the render-only passes hold it too
     float step_d, step_a; // eye distance / turn (degrees) from the tick before prev to prev
     bool  step_valid;
 };
@@ -94,10 +116,58 @@ static void write_view(const float* out, int tag) {
     if (tag == 3 || tag == 1) { g_commit(g_view); g_committed = true; }
 }
 
+// Draw the view t of the way from `a` to `b`, with the camera block's FOV fields taken from fa -> fb on the
+// same frames (the view alone would lead the zoom: Mental Break shift/zoom). A big FOV jump is a camera cut.
+// Returns false when the pair could not be swept: the caller then leaves the frame on tick k.
+static bool draw_between(int vp, int tag, const float* a, const float* b, const float* fa, const float* fb, float t) {
+    float* blk = g_fovblk ? (float*)((uint8_t*)g_fovblk + vp * 0x1C0) : nullptr;
+    bool fov_mid = false;
+    float mid[3], cur[3];
+    if (g_fov && blk && tag == 1 && fa && fb) {
+        for (int i = 0; i < 3; i++) {
+            cur[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
+            float x = fa[i], y = fb[i], m = fabsf(x) > fabsf(y) ? fabsf(x) : fabsf(y);
+            if (m > 0 && fabsf(x - y) > 0.25f * m) { InterlockedIncrement(&g_fov_cut); return false; }
+            mid[i] = x + t * (y - x);
+            if (x != y) fov_mid = true;
+        }
+    }
+    float out[16];
+    if (!smooth_interp_view(a, b, t, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); return false; }
+    if (fov_mid) {
+        for (int i = 0; i < 3; i++) *(float*)((uint8_t*)blk + k_fovoff[i]) = mid[i];
+        g_fovcommit(vp);                                      // commits the game view; write_view commits ours after
+        for (int i = 0; i < 3; i++) *(float*)((uint8_t*)blk + k_fovoff[i]) = cur[i];
+        InterlockedIncrement(&g_fov_interp);
+    }
+    if (memcmp(out, g_view, 64) == 0) return true;            // swept, but it is the frame already there
+    write_view(out, tag);
+    g_tr_wrote = true;
+    InterlockedIncrement(&g_st.interp);
+    return true;
+}
+
 static void on_call(int vp) {
-    if (g_kind != INV_LOGIC && g_kind != INV_BACKLOG) return;    // render-only frames draw tick k
     CamHist& h = g_h[vp];
     int tag = src_tag();
+    float t = pacing_t();
+    g_tr_ours = g_written && memcmp(g_view, g_out, 64) == 0;
+    g_tr_wrote = false;
+
+    if (g_kind == INV_BUILD) {                                // a render-only pass inside the logic period
+        if (!smooth_live(1) || t >= 1.0f) return;             // the last pass of the period draws tick k
+        // Still the matrix we wrote for an earlier viewport this pass: writing again would save it as g_orig,
+        // and pre()'s restore would hand it back as if the game had built it (same guard as the logic path).
+        if (g_written && memcmp(g_view, g_out, 64) == 0) return;
+        if (tag == 1 && vp == 1) return;                      // special commit paths (MsCommitCameraFovAspect)
+        // prev_cut: the logic pass found this tick was a cut and left the frame on tick k, so the passes
+        // after it hold tick k as well rather than sweeping across the cut.
+        if (!h.valid || !h.last_valid || h.prev_cut || h.tag != tag) { g_skip_hist++; return; }
+        draw_between(vp, tag, h.last, h.prev, h.lastfov, h.prevfov, t);
+        return;
+    }
+    if (g_kind != INV_LOGIC && g_kind != INV_BACKLOG) return;
+
     bool ours = g_written && memcmp(g_view, g_out, 64) == 0;  // already ours (s3: nothing rebuilt it)
     // History always holds the canonical (game) matrix, never our interpolated one.
     memcpy(h.pend, ours ? g_orig : g_view, 64);
@@ -107,22 +177,9 @@ static void on_call(int vp) {
     if (blk) for (int i = 0; i < 3; i++) h.pendfov[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
     if (!smooth_live(1) || ours) return;
     g_logic_calls++;
-    if (tag == 1 && vp == 1) return;                          // special commit paths (MsCommitCameraFovAspect)
+    if (tag == 1 && vp == 1) return;
     if (!h.valid || h.tag != tag) { g_skip_hist++; return; }
     h.pend_cut = true;                                        // cleared below once the frame is interpolated
-    // FOV: a big jump is a camera cut (no in-between frame); otherwise draw the FOV half-way too, so zoom and
-    // movement change on the same frames (the view alone leads the zoom by half a tick: Mental Break shift/zoom).
-    bool fov_mid = false;
-    float mid[3], cur[3];
-    if (g_fov && blk && tag == 1) {
-        for (int i = 0; i < 3; i++) {
-            cur[i] = h.pendfov[i];
-            float a = h.prevfov[i], b = cur[i], m = fabsf(a) > fabsf(b) ? fabsf(a) : fabsf(b);
-            if (m > 0 && fabsf(a - b) > 0.25f * m) { InterlockedIncrement(&g_fov_cut); return; }
-            mid[i] = 0.5f * (a + b);
-            if (a != b) fov_mid = true;
-        }
-    }
     // Jump: the camera moved or turned far more than in the previous tick (a cut below the 500-unit / 60-degree
     // limits, U 17/10: field cutscene cut drew one in-between frame of two shots).
     float sd, sa;
@@ -134,25 +191,29 @@ static void on_call(int vp) {
                      vp, tag, sd, sa, h.step_d, h.step_a);
         return;
     }
-    float out[16];
-    if (!smooth_interp_view(h.prev, g_view, 0.5f, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); return; }
-    if (fov_mid) {
-        for (int i = 0; i < 3; i++) *(float*)((uint8_t*)blk + k_fovoff[i]) = mid[i];
-        g_fovcommit(vp);                                      // commits the game view; write_view commits ours after
-        for (int i = 0; i < 3; i++) *(float*)((uint8_t*)blk + k_fovoff[i]) = cur[i];
-        InterlockedIncrement(&g_fov_interp);
-    }
-    h.pend_cut = false;
-    if (memcmp(out, g_view, 64) == 0) return;
-    write_view(out, tag);
-    InterlockedIncrement(&g_st.interp);
+    if (t >= 1.0f) { h.pend_cut = false; return; }            // a one-pass period (booster): draw tick k
+    if (draw_between(vp, tag, h.prev, g_view, h.prevfov, h.pendfov, t)) h.pend_cut = false;
 }
 
 static int __cdecl h_finalize(int vp) {
     int r = g_finalize(vp);
     if (r != 0 || vp < 0 || vp > 2 || g_disabled || !row_SMOOTH001.on) return r;
+    bool tracing = g_trace_left > 0;
+    float built[16];
+    if (tracing) __try { memcpy(built, g_view, 64); } __except (EXCEPTION_EXECUTE_HANDLER) { tracing = false; }
+    g_tr_ours = g_tr_wrote = false;
     __try { on_call(vp); }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 finalize stub", GetExceptionCode()); }
+    if (tracing && InterlockedDecrement(&g_trace_left) >= 0) {
+        __try {
+            const float* d = g_view;
+            log_line("SMOOTH-001-TRACE: %c pass %d t=%.3f vp=%d src=%d valid=%d/%d ours=%d wrote=%d | built t(%.3f %.3f %.3f)"
+                     " r2(%.4f %.4f %.4f) | drawn t(%.3f %.3f %.3f) r2(%.4f %.4f %.4f)",
+                     "LBKS"[g_kind & 3], pacing_pass(), pacing_t(), vp, src_tag(), g_h[vp].valid, g_h[vp].last_valid,
+                     g_tr_ours, g_tr_wrote, built[12], built[13], built[14], built[8], built[9], built[10],
+                     d[12], d[13], d[14], d[8], d[9], d[10]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     if (g_camlog && lab001_mot_window()) {
         if (g_blk_first && g_blocks) { g_blk_first = false; log_block_diff(); }
         const float* m = g_view;
@@ -168,6 +229,22 @@ static int __cdecl h_finalize(int vp) {
     return r;
 }
 
+// F6 (game window focused, not Ctrl+F6 which is DIAG-HANGDUMP's): arm a trace burst.
+static void trace_poll() {
+    if (!g_trace) return;
+    static bool prev = false;
+    bool down = (GetAsyncKeyState(VK_F6) & 0x8000) != 0 && !(GetAsyncKeyState(VK_CONTROL) & 0x8000);
+    bool edge = down && !prev;
+    prev = down;
+    if (!edge) return;
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    if (pid != GetCurrentProcessId()) return;
+    InterlockedExchange(&g_trace_left, g_trace);
+    log_line("SMOOTH-001-TRACE: armed, next %d finalize calls (F6)", g_trace);
+}
+
 static void restore() {
     if (!g_written) return;
     if (memcmp(g_view, g_out, 64) == 0) {
@@ -180,6 +257,7 @@ static void restore() {
 
 static void pre() {
     smooth_poll_hotkey();
+    trace_poll();
     __try { restore(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 restore", GetExceptionCode()); }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
@@ -187,7 +265,7 @@ static void pre() {
     for (int i = 0; i < 3; i++) {
         g_h[i].has_pend = false;
         g_h[i].pend_cut = false;
-        if (g_kind == INV_STOCK) g_h[i].valid = false;
+        if (g_kind == INV_STOCK) g_h[i].valid = g_h[i].last_valid = false;
     }
 }
 
@@ -195,8 +273,16 @@ static void post() {
     if (g_kind == INV_LOGIC || g_kind == INV_BACKLOG) {
         for (int i = 0; i < 3; i++) {
             CamHist& h = g_h[i];
-            if (!h.has_pend) { h.valid = false; h.step_valid = false; continue; }   // viewport not drawn this tick: history broken
+            if (!h.has_pend) {                            // viewport not drawn this tick: history broken
+                h.valid = h.last_valid = h.step_valid = false;
+                continue;
+            }
+            // Both of these read h.prev while it is still the previous tick, so they come before it rotates.
             h.step_valid = h.valid && h.tag == h.pend_tag && !h.pend_cut && smooth_view_step(h.prev, h.pend, &h.step_d, &h.step_a);
+            memcpy(h.last, h.prev, 64);                       // the pair the render-only passes interpolate
+            memcpy(h.lastfov, h.prevfov, sizeof(h.lastfov));
+            h.last_valid = h.valid;
+            h.prev_cut = h.pend_cut;
             memcpy(h.prev, h.pend, 64);
             memcpy(h.prevfov, h.pendfov, sizeof(h.prevfov));
             h.tag = h.pend_tag;
@@ -258,6 +344,9 @@ static bool install() {
     g_src3 = (volatile uint32_t*)(uintptr_t)src3;
     g_diag = config_row("SMOOTH-001-DIAG", 0);
     g_camlog = config_row("SMOOTH-001-CAMLOG", 0);
+    g_trace = config_row("SMOOTH-001-TRACE", 0);
+    if (g_trace < 0) g_trace = 0;
+    if (g_trace > 20000) g_trace = 20000;
     g_fov = config_row("SMOOTH-001-FOV", 1);
     g_jump = config_row("SMOOTH-001-JUMPCUT", 1);
     if (g_fov) {
@@ -279,6 +368,11 @@ static bool install() {
             log_line("  SMOOTH-001: patch %d failed - refused", i);
             return false;
         }
+    }
+    if (g_trace && !g_camlog) {
+        if (!hook_entry("SMOOTH-001 commit", commit, (void*)&h_commit, (void**)&g_commit_tramp))
+            log_line("  SMOOTH-001: TRACE commit hook failed - finalize lines only");
+        log_line("  SMOOTH-001-TRACE: %d finalize lines per F6 press (commits logged with them)", g_trace);
     }
     if (g_camlog) {
         // OpuMain_UnitBytecodeWalk copies 0x0113FCD0.. into its scratch +0x280 (MOV EAX,[0x0113FCD0] at 0x80CC00+...)
@@ -309,6 +403,6 @@ static bool install() {
 
 Row row_SMOOTH001 = {
     "SMOOTH-001",
-    "60 Hz camera: logic frames draw the view half-way between the last two ticks (interpolation; needs master SMOOTH=1)",
+    "smooth camera: each pass draws the view a fraction of the way between the last two ticks (needs master SMOOTH=1)",
     1, install, pre, post, 0
 };

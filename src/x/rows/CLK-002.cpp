@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // CLK-002: map/BG object keyframe animations (FUN_00914a10) read a clock in 1/60 s units from FUN_00908970
-// (frame counter * 2) or FUN_00908f70 (vblank), both +2 per invocation: 2x at 60 Hz.
-// Fix: both getters return a mod clock that adds half the source's delta on 60 Hz invocations (+1 per
-// 1/60 s: correct speed, and the consumer's lerp makes the motion 60 Hz smooth), the full delta otherwise.
+// (frame counter * 2) or FUN_00908f70 (vblank), both +2 per invocation whatever the frame rate: N times too
+// fast under the mod's pacing, where N invocations make one logic tick (2 at 60 fps, 4 at 120, 8 at 240).
+// Fix: both getters return a mod clock that adds 1/N of the source's delta on paced invocations (so the clock
+// still advances 2 units per 1/30 s of wall time, and the consumer's lerp makes the motion smooth at the full
+// frame rate), and the whole delta on stock invocations. The accumulator counts 1/N units, so a rate change
+// re-seeds it from the clock value it has reached.
 // Details: docs/fps60/rows/CLK-002.md
 #include "../fps60.h"
 
@@ -16,7 +19,8 @@ struct ModClock {
     clock_t_           tramp;
     uint32_t           last;         // source value at the last commit
     uint32_t           base;         // mod clock at seed
-    uint64_t           half;         // committed advance since seed, in 1/120 s
+    uint64_t           acc;          // committed advance since seed, in 1/N units of the source
+    uint32_t           n;            // N the accumulator counts in
     volatile LONG      calls;        // getter calls since the last report
     uint32_t           rep_src, rep_mod;   // source (x mul) and mod clock at the last report
 };
@@ -32,16 +36,19 @@ static bool paced_kind() {
 
 static uint32_t live(const ModClock& c) { return *c.src * c.mul; }
 
+static uint32_t units(const ModClock& c) { return c.n ? c.n : 1; }   // seeded before the first getter call
+
 static uint32_t value(const ModClock& c) {
+    uint64_t n = units(c);
     uint64_t d = (uint32_t)(live(c) - c.last);
-    uint64_t h = c.half + (paced_kind() ? d : d * 2);
-    return c.base + (uint32_t)(h >> 1);
+    uint64_t h = c.acc + (paced_kind() ? d : d * n);
+    return c.base + (uint32_t)(h / n);
 }
 
 static void commit(ModClock& c) {
     uint32_t now = live(c);
     uint64_t d = (uint32_t)(now - c.last);
-    c.half += paced_kind() ? d : d * 2;
+    c.acc += paced_kind() ? d : d * (uint64_t)units(c);
     c.last = now;
 }
 
@@ -69,18 +76,29 @@ static bool install() {
     return true;
 }
 
+static uint32_t clk_n() { int n = rate_mult(); return n > 0 ? (uint32_t)n : 1; }
+
 static void seed(ModClock& c) {
     c.last = live(c);
     c.base = c.last;
-    c.half = 0;
+    c.acc = 0;
+    c.n = clk_n();
     c.rep_src = c.last;
     c.rep_mod = c.base;
+}
+
+// The frame rate changed: keep the clock where it has got to and start counting in the new 1/N units.
+static void reseed(ModClock& c) {
+    c.base = c.base + (uint32_t)(c.acc / units(c));
+    c.acc = 0;
+    c.last = live(c);
+    c.n = clk_n();
 }
 
 // Every ~10 s while a map animation reads a clock: calls and how far the source and the mod clock moved.
 static void report(ModClock& c) {
     LONG n = InterlockedExchange(&c.calls, 0);
-    uint32_t src = live(c), mod = c.base + (uint32_t)(c.half >> 1);
+    uint32_t src = live(c), mod = c.base + (uint32_t)(c.acc / units(c));
     if (n > 0) {
         uint32_t ds = src - c.rep_src, dm = mod - c.rep_mod;
         log_line("CLK-002: %s: %ld calls in the last 600 invocations; source +%u, mod clock +%u (ratio %.2f)",
@@ -108,12 +126,17 @@ static void pre() {
 static void post() {
     commit(g_fc);
     commit(g_vb);
+    static uint32_t gen = 0;
+    if (g_hooked && rate_gen() != gen) {
+        if (gen) { reseed(g_fc); reseed(g_vb); }
+        gen = rate_gen();
+    }
     static uint32_t tick = 0;
     if (++tick % 600 == 0) { report(g_fc); report(g_vb); }
 }
 
 Row row_CLK002 = {
     "CLK-002",
-    "map/BG object animation clock advances at 60 Hz units of wall time under 60 Hz pacing",
+    "map/BG object animation clock advances at 1/60 s of wall time per unit under the mod's pacing",
     1, install, pre, post, 0
 };

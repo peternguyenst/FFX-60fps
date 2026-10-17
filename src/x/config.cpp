@@ -29,6 +29,7 @@ void config_load() {
     Config& c = g_cfg;
     c.enabled           = (int)ini_int(S, "enabled", 1);
     c.pacing            = (int)ini_int(S, "pacing", 1);
+    c.fps               = (int)ini_int(S, "fps", 60);
     c.rollback          = (int)ini_int(S, "rollback", 1);
     c.unpack_timeout_s  = (int)ini_int(S, "unpack_timeout_s", 60);
     c.log_pacing_events = (int)ini_int(S, "log_pacing_events", 1);

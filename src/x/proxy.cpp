@@ -105,8 +105,9 @@ static DWORD WINAPI init_thread(LPVOID) {
     } else {
         log_line("fps60: hot reload - this copy installs in place of the previous one");
     }
-    log_line("fps60 init: exe base=%p size=0x%X, enabled=%d pacing=%d rollback=%d", exe_base(), exe_size(),
-             g_cfg.enabled, g_cfg.pacing, g_cfg.rollback);
+    rate_init();
+    log_line("fps60 init: exe base=%p size=0x%X, enabled=%d pacing=%d fps=%d rollback=%d", exe_base(), exe_size(),
+             g_cfg.enabled, g_cfg.pacing, g_cfg.fps, g_cfg.rollback);
     if (!g_cfg.enabled) {
         log_line("fps60 disabled in fps60.ini - nothing installed.");
         return 0;
