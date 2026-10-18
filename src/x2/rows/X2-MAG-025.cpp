@@ -16,6 +16,11 @@
 // last count still yields to the next logic walk. U 18/10/2026: dressphere change body blink (magic_0937, re/ledger/
 // XFADE-BLINK.md): denied, the stream yielded at 0x1F and mode 3 then skipped it every second frame; undenied, the
 // count ran 2x (Warrior sword blink).
+// X2-MAG-025-EXEPASS0 (default 1): the EXE pass-0 walk (Fx_OpuUpdate 0x6A5CD0, walker call 0x6A5D08, reached only
+// through the effect dispatch 0x616660(0)) is held the same way (mode X2-MAG-025-MODE) on render-only invocations. It
+// runs there only when X2-MAG-008 passes the dispatch (cross-fade DLLs, X2-MAG-008-PASS-LIST): U 18/10/2026 with
+// PASS-LIST 885 937 906 the Warrior change stopped alternating dark / lit frames but played about 2x fast (0885 8.4 ->
+// 5.0 s, 0937 4.0 -> 2.6 s, 0906 6.4 -> 3.3 s; D fps60x2.log 18:17).
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
 // FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
 // cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
@@ -49,6 +54,7 @@ static void*    g_dec_tramp = nullptr;
 static void*    g_next_tramp = nullptr;
 static void*    g_gate_tramp = nullptr;
 static uint8_t* g_exe_ret = nullptr;             // return address of the EXE pass-1 walk call (0x6A5D85)
+static uint8_t* g_exe0_ret = nullptr;            // return address of the EXE pass-0 walk call (0x6A5D0D)
 static bool     g_patched = false;
 extern Row row_MAG025;
 
@@ -300,7 +306,7 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
         uint8_t p = (uint8_t)pass;
         if (!in_image(ret)) {
             if (g_mode_dll && (p == 1 || (p == 0 && g_pass0))) { held_walk(g_mode_dll, 1, unit_ctx, pass); return; }
-        } else if (g_mode_exe && ret == g_exe_ret) {
+        } else if (g_mode_exe && (ret == g_exe_ret || (g_exe0_ret && ret == g_exe0_ret))) {
             held_walk(g_mode_exe, 0, unit_ctx, pass);
             return;
         }
@@ -393,6 +399,13 @@ static bool install() {
             g_exe_ret = site + 0x13;
         }
     }
+    if (g_mode_exe && config_row("X2-MAG-025-EXEPASS0", 1)) {
+        // Fx_OpuUpdate: mov [0x1b41b9c],eax / push 0 / push 0 / call walker / add esp,8 / cmp [esi+0x58],0 / jnz +8
+        uint8_t* s0 = sig_find("X2-MAG-025 EXE pass-0 walk call",
+            "A3 ?? ?? ?? ?? 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 08 83 7E 58 00 75 08", 0x6A5CFF);
+        if (s0 && call_target(s0 + 9) == g_entry) g_exe0_ret = s0 + 0xE;
+        else log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk call not found - untouched");
+    }
     g_pass0 = config_row("X2-MAG-025-PASS0", 0);
     g_hold_pos = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
     g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
@@ -410,6 +423,8 @@ static bool install() {
     }
     if (line[0]) log_line("  X2-MAG-025: opcodes held on render-only invocations (X2-MAG-025-DENY, modes 2/3):%s", line);
     log_line("  X2-MAG-025-LOOP1F: %s", g_loop1f && g_deny[0x1F] ? "0x1F loops jump back uncounted on held walks (last count yields)" : "off");
+    if (g_exe0_ret) log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk (return gva 0x%08X, expected 0x006A5D0D) held too",
+                             rt_to_gva(g_exe0_ret));
     log_line("  X2-MAG-025: EXE pass-1 walk (return gva 0x%08X, expected 0x006A5D85): mode %d, %s",
              g_exe_ret ? rt_to_gva(g_exe_ret) : 0, g_mode_exe, mode_name(g_mode_exe));
     log_line("  X2-MAG-025: DLL-called walks (pass 1%s): mode %d, %s", g_pass0 ? " and 0" : "", g_mode_dll,
