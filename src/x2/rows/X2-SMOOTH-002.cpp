@@ -8,8 +8,9 @@
 // copies an actor's pose for the dressphere-change silhouette / outfit peel (actor = DAT_01b31040[unit+0x18]); the copy
 // and the actor's own draw then took different roots (half-way vs tick k) and the two models came apart (U 18/10/2026,
 // F6 = this row off aligns them; re/ledger/XFADE-BLINK.md). An actor copied by op 0x116 in the last 4 invocations keeps
-// the game's root (no interpolation, no render hold), and so does every actor whose tick-k root is within 5 units of it
-// (the peel's other model is another actor at the same spot: D 17:03:15 marked slot 1 id 0x0015 only, still apart).
+// the game's root (no interpolation, no render hold), and so does every other actor: holding the copied actor (slot 1
+// id 0x0015) and the two at its spot left the models apart (U 17:03 / 17:05), while SMOOTH-002 kept turning slot 0 id
+// 0x0010 elsewhere (D diag 17:07:21, rotation only); the peel's real model is not found by position.
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -99,31 +100,11 @@ static void* __cdecl h_op116(uint8_t* scr, void* pc) {
     return g_op116(scr, pc);
 }
 
-static bool peel_live(int i) {
-    uint32_t t = g_peel_inv ? g_peel_inv[i] : 0;
-    return t && g_inv + 1 - t <= 4;
-}
-
-static bool peeled(int i) {
-    if (!g_peel || !g_peel_inv) return false;
-    bool hit = peel_live(i);
-    if (!hit && g_h[i].n > 0) {
-        const float* p = g_h[i].m[1] + 12;
-        for (int m = 0; m < MAXA && !hit; m++) {
-            if (m == i || !peel_live(m) || g_h[m].n == 0) continue;
-            const float* q = g_h[m].m[1] + 12;
-            float dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
-            if (dx * dx + dy * dy + dz * dz < 25.0f) {
-                hit = true;
-                static LONG logged = 0;
-                if (InterlockedIncrement(&logged) <= 8)
-                    log_line("X2-SMOOTH-002-PEEL: slot %d id 0x%04X at the copied actor's spot (slot %d) - root kept too",
-                             i, g_h[i].id, m);
-            }
-        }
-    }
-    if (hit) g_peel_skips++;
-    return hit;
+// Any op 0x116 copy in the last 4 invocations: every root keeps the game value (= SMOOTH-002 off, as F6 showed).
+static bool peeled(int) {
+    if (!g_peel || !g_peel_last || g_inv + 1 - g_peel_last > 4) return false;
+    g_peel_skips++;
+    return true;
 }
 
 static void write_slot(int i, float* root, const float* out) {
