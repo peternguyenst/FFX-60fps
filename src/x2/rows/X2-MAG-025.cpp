@@ -21,6 +21,10 @@
 // runs there only when X2-MAG-008 passes the dispatch (cross-fade DLLs, X2-MAG-008-PASS-LIST): U 18/10/2026 with
 // PASS-LIST 885 937 906 the Warrior change stopped alternating dark / lit frames but played about 2x fast (0885 8.4 ->
 // 5.0 s, 0937 4.0 -> 2.6 s, 0906 6.4 -> 3.3 s; D fps60x2.log 18:17).
+// List profile (U 18/10/2026, Rikku -> Warrior fixed at 60 fps): while X2-MAG-008 passes a DLL named in
+// X2-MAG-008-PASS-LIST (or chained from one), DLL-called walks use X2-MAG-025-LISTMODE (default 2: mode 3 skipped a
+// draw loop on the first render-only walk after it started: one-frame dropout of the sword close-up's dark backdrop,
+// shard stutter) and DLL pass-0 walks are held too (the passed dispatch runs them on render-only invocations).
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
 // FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
 // cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
@@ -73,6 +77,7 @@ static volatile LONG g_fskipped = 0;
 // [rows]
 static int g_mode_exe = 3;                       // X2-MAG-025-MODE: EXE pass-1 walk (0 = untouched)
 static int g_mode_dll = 3;                       // X2-MAG-025-DLLMODE: DLL-called walks (0 = untouched)
+static int g_mode_list = 2;                      // X2-MAG-025-LISTMODE: DLL-called walks under the list profile
 static int g_pass0 = 0;                          // X2-MAG-025-PASS0: hold DLL pass-0 walks too
 static uint8_t g_hold_pos = 1;                   // X2-MAG-025-POS
 static bool g_deny[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
@@ -305,7 +310,9 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
         uint8_t* ret = (uint8_t*)_ReturnAddress();
         uint8_t p = (uint8_t)pass;
         if (!in_image(ret)) {
-            if (g_mode_dll && (p == 1 || (p == 0 && g_pass0))) { held_walk(g_mode_dll, 1, unit_ctx, pass); return; }
+            bool prof = g_mode_list && mag008_list_active();
+            int m = prof ? g_mode_list : g_mode_dll;
+            if (m && (p == 1 || (p == 0 && (g_pass0 || prof)))) { held_walk(m, 1, unit_ctx, pass); return; }
         } else if (g_mode_exe && (ret == g_exe_ret || (g_exe0_ret && ret == g_exe0_ret))) {
             held_walk(g_mode_exe, 0, unit_ctx, pass);
             return;
@@ -387,6 +394,8 @@ static bool install() {
     g_mode_dll = config_row("X2-MAG-025-DLLMODE", 3);
     if (g_mode_exe < 0 || g_mode_exe > 3) g_mode_exe = 3;
     if (g_mode_dll < 0 || g_mode_dll > 3) g_mode_dll = 3;
+    g_mode_list = config_row("X2-MAG-025-LISTMODE", 2);
+    if (g_mode_list < 0 || g_mode_list > 3) g_mode_list = 2;
     if (config_row("X2-MAG-025-EXE", 1) == 0) g_mode_exe = 0;
     if (g_mode_exe) {
         // FUN_006a5d30: push / call FUN_0064f580 / push 1 / push 0 / call walker / mov esi,[..] / push 0 / mov [..],0
@@ -427,8 +436,8 @@ static bool install() {
                              rt_to_gva(g_exe0_ret));
     log_line("  X2-MAG-025: EXE pass-1 walk (return gva 0x%08X, expected 0x006A5D85): mode %d, %s",
              g_exe_ret ? rt_to_gva(g_exe_ret) : 0, g_mode_exe, mode_name(g_mode_exe));
-    log_line("  X2-MAG-025: DLL-called walks (pass 1%s): mode %d, %s", g_pass0 ? " and 0" : "", g_mode_dll,
-             mode_name(g_mode_dll));
+    log_line("  X2-MAG-025: DLL-called walks (pass 1%s): mode %d, %s; list profile (X2-MAG-008-PASS-LIST): mode %d, pass 0 held",
+             g_pass0 ? " and 0" : "", g_mode_dll, mode_name(g_mode_dll), g_mode_list);
     log_line("  X2-MAG-025: walker gva=0x%08X, stream head gva=0x%08X, held gate target gva=0x%08X (expected 0x006BC406); "
              "position hold %s", rt_to_gva(g_entry), rt_to_gva(g_head), rt_to_gva(g_gate_held), g_hold_pos ? "ON" : "OFF");
     return true;

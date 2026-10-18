@@ -121,6 +121,7 @@ void*    mag006_cur_step(int* cls);               // program of the running part
 void     mag006_set_step_note(step_note_fn fn);   // diagnostics: called after each Ppp_ProgramStep
 bool     pppops_prog_marked(void* prog);          // X2-MAG-006-UNPAUSE-OPS test (X2-DIAG-PPPOPS)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb);   // X2-MAG-020 draw-only walk -> X2-MAG-026
+bool     mag008_list_active();                 // X2-MAG-008: a PASS-LIST DLL (or its chain) is loaded
 
 // Rollback: a span is snapshotted at the start of every render-only invocation and written back at its end.
 typedef bool (*span_resolver_t)(void* ctx, uint8_t** base, uint32_t* len);

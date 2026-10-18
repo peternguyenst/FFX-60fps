@@ -11,7 +11,9 @@
 // (+0x400) is non-zero (S, magic_0646 FUN_10002b90 / FUN_10003fb0). Ledger: re/ledger/XFADE-BLINK.md.
 // X2-MAG-008-PASS-LIST (ini, default empty): magic numbers passed as well, by name (U 18/10/2026: Rikku -> Warrior
 // 0885 -> 0937 -> 0906 still alternates dark / lit frames after the body fixes; none of the three is string-matched,
-// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones.
+// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones. Default "885 937 906" (Rikku ->
+// Warrior; U 18/10 fixed at 60 fps with X2-MAG-025's list profile). While a listed DLL, or one chained from it, is
+// loaded, mag008_list_active() is true (X2-MAG-025 uses its list profile then).
 #include "../x2.h"
 #include <string.h>
 #include <stdlib.h>
@@ -53,6 +55,10 @@ static bool has_xfade(const uint8_t* base, uint32_t size) {
 }
 static uint8_t* g_xbase[8];
 static bool     g_xown[8];                       // matched by string (only these start a chain: one hop)
+static bool     g_xlist[8];                      // listed, or chained from a listed DLL
+static volatile LONG g_list_loaded = 0;
+static bool     g_chain_list = false;            // the chain was started by a listed DLL
+bool mag008_list_active() { return g_list_loaded > 0; }
 // Chain: a DLL loaded within 500 ms of a passed DLL's unload is passed too (the dressphere change runs magic_0646 ->
 // magic_0938 -> magic_0931 back to back, 2-3 ms apart; 0938 has neither string; U 16/10/2026 20:45 still blinked).
 static volatile DWORD g_chain_until = 0;
@@ -72,8 +78,14 @@ static void on_load(uint8_t* base, uint32_t size, const char* name) {
         if (!chained) return;
         log_line("X2-MAG-008-PASS: %s loaded right after a passed DLL - passed too (chain)", name);
     }
+    bool prof = listed || (!own && chained && g_chain_list);
     for (int i = 0; i < 8; i++)
-        if (!g_xbase[i]) { g_xbase[i] = base; g_xown[i] = own; InterlockedIncrement(&g_pass_loaded); break; }
+        if (!g_xbase[i]) {
+            g_xbase[i] = base; g_xown[i] = own; g_xlist[i] = prof;
+            InterlockedIncrement(&g_pass_loaded);
+            if (prof) InterlockedIncrement(&g_list_loaded);
+            break;
+        }
     log_line("X2-MAG-008-PASS: %s is a cross-fade / ky model DLL - exec==0 dispatch runs on render-only invocations while loaded", name);
 }
 static void on_unload(uint8_t* base) {
@@ -81,7 +93,9 @@ static void on_unload(uint8_t* base) {
         if (g_xbase[i] == base) {
             g_xbase[i] = nullptr;
             InterlockedDecrement(&g_pass_loaded);
+            if (g_xlist[i]) InterlockedDecrement(&g_list_loaded);
             g_chain_until = g_xown[i] ? GetTickCount() + 500 : 0;
+            g_chain_list = g_xown[i] && g_xlist[i];
         }
 }
 
@@ -112,7 +126,7 @@ static bool install() {
     g_dispatch = (dispatch_t)target;
     g_pass_on = config_row("X2-MAG-008-PASS", 1);
     char buf[160];
-    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "");
+    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "885 937 906");
     for (char* q = buf; *q && g_nplist < 32;) {
         char* e = nullptr; long v = strtol(q, &e, 10);
         if (e == q) { q++; continue; }
