@@ -49,7 +49,7 @@ static DWORD g_hold_t0 = 0;
 static int   g_idlehold = 1;
 static int   g_waits = 0;
 static DWORD g_game_tid = 0;
-struct WaitSite { uint32_t gva; int kind; LONG n; double ms; int64_t last_to; };
+struct WaitSite { uint32_t gva, gva2, gva3; int kind; LONG n; double ms; int64_t last_to; };
 static WaitSite g_ws[48];
 static int g_nws = 0;
 typedef LONG (NTAPI* ntwso_t)(HANDLE, BOOLEAN, PLARGE_INTEGER);
@@ -59,17 +59,20 @@ static ntwso_t g_ntwso = nullptr;
 static ntwmo_t g_ntwmo = nullptr;
 static ntdel_t g_ntdel = nullptr;
 static bool waits_live() { return g_waits && g_tleft > 0 && GetCurrentThreadId() == g_game_tid; }
-static uint32_t exe_caller() {
-    void* fr[24];
-    USHORT n = RtlCaptureStackBackTrace(1, 24, fr, nullptr);
-    for (USHORT i = 0; i < n; i++) if (in_image(fr[i])) return rt_to_gva(fr[i]);
-    return 0;
+// first three FFX-2.exe return addresses on the stack (D 19:56: the top one is the wait wrapper FUN_0088d3d0)
+static void exe_callers(uint32_t* g) {
+    void* fr[32];
+    g[0] = g[1] = g[2] = 0;
+    USHORT n = RtlCaptureStackBackTrace(1, 32, fr, nullptr);
+    int k = 0;
+    for (USHORT i = 0; i < n && k < 3; i++) if (in_image(fr[i])) g[k++] = rt_to_gva(fr[i]);
 }
 static void wait_note(int kind, double ms, PLARGE_INTEGER to) {
-    uint32_t g = exe_caller();
+    uint32_t g[3];
+    exe_callers(g);
     int i = 0;
-    for (; i < g_nws; i++) if (g_ws[i].gva == g && g_ws[i].kind == kind) break;
-    if (i == g_nws) { if (g_nws >= 48) return; g_ws[g_nws++] = { g, kind, 0, 0.0, 0 }; }
+    for (; i < g_nws; i++) if (g_ws[i].gva == g[0] && g_ws[i].gva2 == g[1] && g_ws[i].gva3 == g[2] && g_ws[i].kind == kind) break;
+    if (i == g_nws) { if (g_nws >= 48) return; g_ws[g_nws++] = { g[0], g[1], g[2], kind, 0, 0.0, 0 }; }
     g_ws[i].n++; g_ws[i].ms += ms; g_ws[i].last_to = to ? to->QuadPart : -1;
 }
 static double qpc_ms(const LARGE_INTEGER& a) { LARGE_INTEGER b; QueryPerformanceCounter(&b); return (b.QuadPart - a.QuadPart) * 1000.0 / g_qf.QuadPart; }
@@ -98,8 +101,9 @@ static void waits_dump() {
     static const char* const K[4] = { "?", "WaitSingle", "WaitMulti", "Delay" };
     log_line("LOADWAITS: %d sites (game thread, during the trace)", g_nws);
     for (int i = 0; i < g_nws; i++)
-        log_line("  %s caller gva=0x%08X n=%ld total %.1f ms avg %.2f ms last timeout %lld (100 ns, <0 relative)", K[g_ws[i].kind],
-                 g_ws[i].gva, g_ws[i].n, g_ws[i].ms, g_ws[i].n ? g_ws[i].ms / g_ws[i].n : 0.0, (long long)g_ws[i].last_to);
+        if (g_ws[i].ms >= 20.0)
+        log_line("  %s callers gva=0x%08X < 0x%08X < 0x%08X n=%ld total %.1f ms avg %.2f ms last timeout %lld (100 ns, <0 relative)",
+                 K[g_ws[i].kind], g_ws[i].gva, g_ws[i].gva2, g_ws[i].gva3, g_ws[i].n, g_ws[i].ms, g_ws[i].n ? g_ws[i].ms / g_ws[i].n : 0.0, (long long)g_ws[i].last_to);
     g_nws = 0;
 }
 static int   g_idle = 0;                         // consecutive cheap logic invocations
