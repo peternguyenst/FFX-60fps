@@ -117,8 +117,18 @@ static const char* g_hold_why = "";
 typedef int (__cdecl* hdr_t)();
 static hdr_t g_hdr = nullptr;
 static LONG g_hdr_n = 0, g_hdr_skip = 0;
+// U 18/10 mode 3 with the render skip alone: results still 8.3 s, so the cost is per present. The present-thread
+// handoff FUN_00495630 (ReleaseSemaphore([[0x00DCED80]+0x1C]), cdecl, plain RET) is skipped too after a skipped render.
+typedef void (__cdecl* sem_t)();
+static sem_t g_sem = nullptr;
+static volatile LONG g_skipped_last = 0;
+static void __cdecl h_sem() {
+    if (InterlockedExchange(&g_skipped_last, 0)) return;
+    g_sem();
+}
 static int __cdecl h_hdr() {
     if (pacing_menu60() && (InterlockedIncrement(&g_hdr_n) & 1)) {
+        g_skipped_last = 1;
         if (InterlockedIncrement(&g_hdr_skip) == 1) log_line("X2-PACE-MENUDIV2: first HD render skipped (menu at 60 fps, GPU at 30)");
         return 0;
     }
@@ -217,6 +227,9 @@ static bool install() {
             "80 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 74 15 6A 01 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 C0 C3 E8", 0x4537B0);
         if (hr && hook_entry("X2-PACE-MENUDIV2 HD frame", hr, (void*)&h_hdr, (void**)&g_hdr))
             log_line("  X2-PACE-MENUDIV2=3: HD frame gva=0x%08X hooked (expected 0x004537B0)", rt_to_gva(hr));
+        uint8_t* sm = sig_find("X2-PACE-MENUDIV2 present handoff FUN_00495630", "A1 ?? ?? ?? ?? 6A 00 6A 01 FF 70 1C FF 15", 0x495630);
+        if (sm && hook_entry("X2-PACE-MENUDIV2 present handoff", sm, (void*)&h_sem, (void**)&g_sem))
+            log_line("  X2-PACE-MENUDIV2=3: present handoff gva=0x%08X hooked (expected 0x00495630)", rt_to_gva(sm));
     }
     if (g_waits) {
         HMODULE nt = GetModuleHandleW(L"ntdll.dll");
