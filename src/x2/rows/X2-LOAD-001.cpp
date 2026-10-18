@@ -14,6 +14,11 @@
 //    (the poll-wait; normal frames are 1-3 ms on the Deck) start a stock-pacing hold, released after 30 invocations in a
 //    row >= 0.3 ms (frame work again), cap 20 s; after a cap it re-arms only once a busy frame was seen (a paused screen
 //    also polls). U 18/10: save load 15.5 -> 1.5 s.
+// 3) X2-LOAD-001-BATTLEHOLD (default on under Wine / Proton): stock pacing from the battle setup to the running battle,
+//    i.e. while the battle state [0x00DF68A0] (X2-SR-003's site 0x61E5E2) is in 13..25 after a battle start, until it
+//    reaches 1; cap 15 s. D 19/10 Deck trace: states 0 -> 4 -> 6 -> 7 -> 9 -> 39 (encounter transition, 5.3 s, kept at
+//    60 Hz) -> 13 (13 ms load spike) -> 15 .. 24 -> 25 (1.7 s; the party appears ~2 s after the enemies, U) -> 1;
+//    the main thread waits 7.6 ms per frame in the command ring as during the save load.
 // Diagnostics (default 0): X2-LOAD-001-TRACE=N logs N invocations after a map-id change ([0x00D61748], X2-TITLE-001's
 // site 0x466FCD) or a stock invocation at the game's own divider 1 (kind, ms, gap, backlog, divider, exec, HD state block
 // [0x00DCED88] [0]/+0x338/+0x33C, PS2-menu flags [0x016BC55C]/[0x016BC560]); X2-LOAD-001-WAITS=1 hooks ntdll
@@ -39,6 +44,9 @@ static uint8_t** g_hds = nullptr;                // &DAT_00dced88
 static volatile int32_t* g_m1 = nullptr;         // 0x016BC55C
 static volatile int32_t* g_m2 = nullptr;         // 0x016BC560
 static volatile int8_t*  g_bst = nullptr;        // battle state 0x00DF68A0
+static int   g_battlehold = 0;
+static bool  g_bheld = false;
+static DWORD g_bheld_t0 = 0;
 static bool  g_held = false;
 static int   g_busy = 0;
 static DWORD g_hold_t0 = 0;
@@ -169,6 +177,20 @@ static void pre() {
         if (d1 && !was_d1 && g_tleft == 0) { g_tleft = g_trace; log_line("LOADTRACE: stock invocation at divider 1 (menu at 60 fps), next %d invocations", g_trace); }
         was_d1 = d1;
     }
+    if (g_battlehold && g_bst) {
+        int b = *g_bst;
+        if (!g_bheld && b >= 13 && b <= 25) {
+            g_bheld = true;
+            g_bheld_t0 = GetTickCount();
+            pacing_hold_stock("X2-LOAD-001 battle setup", true);
+            log_line("X2-LOAD-001-BATTLEHOLD: battle setup (state %d) - stock pacing until the battle runs", b);
+        } else if (g_bheld && (b < 13 || b > 25 || GetTickCount() - g_bheld_t0 > 15000)) {
+            g_bheld = false;
+            pacing_hold_stock("X2-LOAD-001 battle setup", false);
+            log_line("X2-LOAD-001-BATTLEHOLD: released after %lu ms (state %d%s)", GetTickCount() - g_bheld_t0, b,
+                     (b >= 13 && b <= 25) ? ", cap" : "");
+        }
+    }
     if (g_trace && g_bst) {
         static int last = -1000;
         int b = *g_bst;
@@ -202,6 +224,7 @@ static bool install() {
     g_loading = (loading_t)fn;
     g_trace = config_row("X2-LOAD-001-TRACE", 0);
     g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", on_wine() ? 1 : 0);
+    g_battlehold = config_row("X2-LOAD-001-BATTLEHOLD", on_wine() ? 1 : 0);
     g_waits = g_trace ? config_row("X2-LOAD-001-WAITS", 0) : 0;
     if (g_waits) {
         HMODULE nt = GetModuleHandleW(L"ntdll.dll");
@@ -216,6 +239,11 @@ static bool install() {
     }
     QueryPerformanceFrequency(&g_qf);
     QueryPerformanceCounter(&g_tstart);
+    if (g_trace || g_battlehold) {
+        uint8_t* bs = sig_find("X2-LOAD-001 battle state (teardown test)",
+            "80 3D ?? ?? ?? ?? 26 74 52 A0 ?? ?? ?? ?? 3C 05 74 49 3C 06 0F 85", 0x61E5E2);
+        g_bst = bs ? (volatile int8_t*)abs_operand("battle state", bs + 2) : nullptr;
+    }
     if (g_trace) {
         uint8_t* at = sig_find("X2-LOAD-001 map id (title-map test)", "83 3D ?? ?? ?? ?? 17 75 49 E8", 0x466FCD);
         g_map = at ? (volatile int32_t*)abs_operand("map id", at + 2) : nullptr;
@@ -225,12 +253,10 @@ static bool install() {
         uint8_t* mf = sig_find("X2-LOAD-001 menu early-out 0x60550C",
             "83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 01", 0x60550C);
         if (mf) { g_m1 = (volatile int32_t*)abs_operand("menu flag 1", mf + 2); g_m2 = (volatile int32_t*)abs_operand("menu flag 2", mf + 0xF); }
-        uint8_t* bs = sig_find("X2-LOAD-001 battle state (teardown test)",
-            "80 3D ?? ?? ?? ?? 26 74 52 A0 ?? ?? ?? ?? 3C 05 74 49 3C 06 0F 85", 0x61E5E2);
-        g_bst = bs ? (volatile int8_t*)abs_operand("battle state", bs + 2) : nullptr;
+
     }
-    log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70); IDLEHOLD %s%s", rt_to_gva(fn),
-             g_idlehold ? "on" : "off", on_wine() ? " (Wine / Proton)" : "");
+    log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70); IDLEHOLD %s, BATTLEHOLD %s%s", rt_to_gva(fn),
+             g_idlehold ? "on" : "off", g_battlehold && g_bst ? "on" : "off", on_wine() ? " (Wine / Proton)" : "");
     return true;
 }
 
