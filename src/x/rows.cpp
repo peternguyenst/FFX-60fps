@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------- row table
 // Order follows re/TRIAGE.md.
 static Row* g_rows[] = {
+    &row_RATE001,                                // before everything: sets the host frame rate
     &row_MAG008,
     &row_W2A002,
     &row_CLK002,

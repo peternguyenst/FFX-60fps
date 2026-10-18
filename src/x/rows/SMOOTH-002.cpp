@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SMOOTH-002: actor roots (position, heading) are rebuilt once per logic tick, so characters move at
-// 30 Hz. This row draws logic frames with each root half-way between the last two ticks (needs SMOOTH=1).
+// 30 Hz. This row draws every pass of a logic period with each root a fraction of the way between the last
+// two ticks: pass j of N draws (j + 1) / N (pacing_t), and the last pass draws tick k itself - which is
+// exactly what SMOOTH-002-RENDERHOLD already did. At 60 fps (N = 2) that is the old pair, the logic frame at
+// 0.5 and the render-only frame held at tick k. Needs SMOOTH=1.
 // Details: docs/fps60/rows/SMOOTH-002.md
 #include "smooth.h"
 #include <string.h>
@@ -132,9 +135,9 @@ static void apply_children(uint8_t* base, int n) {
 
 static void record();
 
-// Logic/backlog invocation, lerp(tick k-1, tick k, 0.5). The history is
+// Logic/backlog invocation, lerp(tick k-1, tick k, t) with t = 1/N. The history is
 // rotated first from the canonical roots (fresh tick k).
-static void apply_interp() {
+static void apply_interp(float t) {
     record();
     g_recorded_inv = true;
     uint8_t* base;
@@ -162,7 +165,7 @@ static void apply_interp() {
             }
         }
         float out[16];
-        if (!smooth_interp(h.m[0], h.m[1], 0.5f, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); continue; }
+        if (!smooth_interp(h.m[0], h.m[1], t, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); continue; }
         if (memcmp(out, root, 64) == 0) continue;
         write_slot(i, root, out);
         InterlockedIncrement(&g_st.interp);
@@ -220,6 +223,54 @@ static void apply_render_hold() {
     apply_children(base, n);
 }
 
+// Render-only pass j of the period: the roots are still at tick k, so draw them t = (j+1)/N of the way from
+// tick k-1. A root that has left tick k since the logic draw was moved outside a logic tick (MAG-021 replays a
+// magic DLL's update, which writes the EXE actor table): it is drawn on the same curve, which is what
+// SMOOTH-002-RENDERHOLD does at t = 1. A warp is never blended; it is only pinned back to tick k.
+static void apply_render(float t) {
+    if (t >= 1.0f) { apply_render_hold(); return; }
+    uint8_t* base;
+    int n;
+    if (!begin(&base, &n)) return;
+    for (int i = 0; i < n; i++) {
+        uint8_t* a = base + i * STRIDE;
+        if (a[2] == 0) continue;
+        if (g_childrel && is_child(a)) continue;
+        ActHist& h = g_h[i];
+        if (h.n < 2 || h.id != *(uint16_t*)a) { g_skip_hist++; continue; }
+        if (g_nocloth && is_cloth(a)) continue;
+        float* root = (float*)(a + ROOT);
+        bool moved = memcmp(root, h.m[1], 64) != 0;
+        if (moved && !g_renderhold) { g_skip_moved++; continue; }
+        float out[16];
+        bool warp = false;
+        if (g_warp) {
+            float cur = h.step[1], prev = h.ns >= 2 ? h.step[0] : 0.0f;
+            warp = cur > g_warp_min && cur > g_warp_ratio * prev;
+        }
+        if (warp) {
+            if (!moved) continue;                            // nothing to blend and nothing to pin back
+            memcpy(out, h.m[1], 64);
+        } else if (!smooth_interp(h.m[0], h.m[1], t, SMOOTH_CUT_DIST, out)) {
+            InterlockedIncrement(&g_st.interp_cut);
+            continue;
+        }
+        if (memcmp(out, root, 64) == 0) continue;
+        if (moved) {
+            if (g_rh_lines < 20) {
+                g_rh_lines++;
+                log_line("SMOOTH-002-RENDERHOLD: slot %d id 0x%04X moved on a render-only invocation (%.2f, %.2f, %.2f)"
+                         " -> drawn on the tick curve at t=%.2f (%.2f, %.2f, %.2f)", i, h.id, root[12], root[13],
+                         root[14], t, out[12], out[13], out[14]);
+            }
+            InterlockedIncrement(&g_rh_held);
+        }
+        write_slot(i, root, out);
+        InterlockedIncrement(&g_st.interp);
+    }
+    apply_children(base, n);
+}
+
 // SMOOTH-002-DIAG: every 600 logic windows, one line per active actor (slot, id, flags, parent, position, translation
 // and rotation step of the last tick; used to find the save sphere actor, 17/10/2026).
 static void diag_actors() {
@@ -256,6 +307,7 @@ static void diag_actors() {
 
 static void __cdecl h_draw() {
     bool applied = false;
+    float t = pacing_t();
     static LONG dumped = -1;
     if (g_diag && (g_kind == INV_LOGIC) && g_lwindows % 600 == 300 && dumped != g_lwindows) {
         dumped = g_lwindows;
@@ -282,14 +334,16 @@ static void __cdecl h_draw() {
         g_applied_inv = true;
         g_lwindows++;
         applied = true;
-        __try { apply_interp(); }
+        __try { apply_interp(t); }
         __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 apply", GetExceptionCode()); }
-    } else if (g_renderhold && row_SMOOTH002.on && !g_disabled && !g_applied_inv && smooth_live(2) && !(g_bis & 2) &&
-               g_kind == INV_BUILD) {
+    // Before the last pass of a period there is a frame to draw between the ticks whether or not RENDERHOLD
+    // is on; at t = 1 the branch is RENDERHOLD's own, so it keeps that switch.
+    } else if (row_SMOOTH002.on && !g_disabled && !g_applied_inv && smooth_live(2) && !(g_bis & 2) &&
+               g_kind == INV_BUILD && (g_renderhold || t < 1.0f)) {
         g_applied_inv = true;
         applied = true;
-        __try { apply_render_hold(); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 render hold", GetExceptionCode()); }
+        __try { apply_render(t); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 render pass", GetExceptionCode()); }
     }
 #ifdef FPS60_DEV
     if (g_trace_id && g_trace_n < g_trace_max) {
@@ -437,6 +491,6 @@ static bool install() {
 
 Row row_SMOOTH002 = {
     "SMOOTH-002",
-    "60 Hz actor roots: logic frames draw each actor's root half-way between the last two ticks (interpolation; needs master SMOOTH=1)",
+    "smooth actor roots: each pass draws a root a fraction of the way between the last two ticks (needs master SMOOTH=1)",
     1, install, pre, post, 0
 };

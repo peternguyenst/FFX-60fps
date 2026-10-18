@@ -2,8 +2,10 @@
 // DIAG-FRAMETIME (diagnostic, default off, observe only): frame-to-frame time at the start of each Sg_MainLoop
 // invocation under 60 Hz pacing (logic and render-only invocations; backlog and stock invocations reset the
 // chain). The host limiter SKS_WinMainLoop 0x62EE50 waits with Sleep() at a 5 ms timer resolution (re/MAINLOOP.md
-// section 2), which VRR displays show as uneven frames. Every DIAG-FRAMETIME-N frames: mean, standard deviation,
-// percentiles, min/max, and counts outside 16.68 ms +-1 / +-2 ms.
+// section 2), which VRR displays show as uneven frames; whole-millisecond sleeps matter more the shorter the
+// period is (4.17 ms at 240 fps), so PERF-001's timeBeginPeriod(1) belongs with this. Every DIAG-FRAMETIME-N
+// frames: mean, standard deviation, percentiles, min/max, and counts outside the rate's period by the 60 fps
+// +-1 / +-2 ms bands scaled to that period.
 #include "../fps60.h"
 #include <math.h>
 #include <string.h>
@@ -22,15 +24,17 @@ static double pct(double p) {
 
 static void dump() {
     double mean = g_sum / g_n, sd = sqrt(g_sum2 / g_n - mean * mean);
+    double want = 1000.0 / (rate_mult() * 30.0);     // the period the mod's pacing asks the limiter for
+    double w1 = want / 16.683, w2 = 2.0 * w1;        // the 1 / 2 ms bands of 60 fps, scaled to this rate
     uint32_t off1 = 0, off2 = 0;
     for (int i = 0; i <= NB; i++) {
-        double c = i * 0.125 + 0.0625, d = fabs(c - 16.683);
-        if (d > 1.0) off1 += g_hist[i];
-        if (d > 2.0) off2 += g_hist[i];
+        double c = i * 0.125 + 0.0625, d = fabs(c - want);
+        if (d > w1) off1 += g_hist[i];
+        if (d > w2) off2 += g_hist[i];
     }
     log_line("DIAG-FRAMETIME: %u frames: mean %.3f ms (%.2f fps), sd %.3f, min %.2f p1 %.2f p5 %.2f p50 %.2f p95 %.2f p99 %.2f "
-             "max %.2f; off 16.68 by >1 ms %u, >2 ms %u", g_n, mean, 1000.0 / mean, sd, g_min, pct(0.01), pct(0.05),
-             pct(0.5), pct(0.95), pct(0.99), g_max, off1, off2);
+             "max %.2f; off %.2f by >%.2f ms %u, >%.2f ms %u", g_n, mean, 1000.0 / mean, sd, g_min, pct(0.01), pct(0.05),
+             pct(0.5), pct(0.95), pct(0.99), g_max, want, w1, off1, w2, off2);
     memset(g_hist, 0, sizeof(g_hist));
     g_n = 0; g_sum = g_sum2 = 0; g_min = 1e9; g_max = 0;
 }
@@ -62,6 +66,6 @@ static bool install() {
 
 Row row_DIAGFRAMETIME = {
     "DIAG-FRAMETIME",
-    "diagnostic: frame-to-frame time histogram under 60 Hz pacing (VRR pacing check); observe only",
+    "diagnostic: frame-to-frame time histogram under the mod's pacing (VRR pacing check); observe only",
     0, install, pre, nullptr, 0
 };

@@ -101,11 +101,13 @@
     <ClCompile Include="src\x\sigs.cpp" />
     <ClCompile Include="src\x\hooks.cpp" />
     <ClCompile Include="src\x\pacing.cpp" />
+    <ClCompile Include="src\x\rate.cpp" />
     <ClCompile Include="src\x\rollback.cpp" />
     <ClCompile Include="src\x\rows.cpp" />
     <ClCompile Include="src\x\text.cpp" />
     <ClCompile Include="src\x\capture.cpp" />
     <ClCompile Include="src\x\capture_config.cpp" />
+    <ClCompile Include="src\x\rows\RATE-001.cpp" />
     <ClCompile Include="src\x\rows\MAG-008.cpp" />
     <ClCompile Include="src\x\rows\MAG-006.cpp" />
     <ClCompile Include="src\x\rows\ppp_pause.cpp" />

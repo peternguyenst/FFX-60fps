@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// SMOOTH-003: with SMOOTH-002 the root moves at 60 Hz but the skeleton pose still changes at 30 Hz. This row
-// turns on the engine's half-rate motion switch and takes a second half step of each actor's motion on
-// render-only frames, so limbs animate at 60 Hz at stock speed (needs master SMOOTH=1).
+// SMOOTH-003: with SMOOTH-002 the root moves at the frame rate but the skeleton pose still changes at 30 Hz.
+// This row turns on the engine's half-rate motion switch and takes the rest of each actor's motion step on the
+// render-only passes, so limbs animate at the frame rate at stock speed (needs master SMOOTH=1).
+//
+// One logic tick is drawn in N passes (rate.cpp: 2 at 60 fps, 4 at 120, 8 at 240), so the motion has to move
+// 1/N of a tick per pass. The engine's switch only ever halves the step - a fixed `SAR EDI,1` inside
+// Ch_StepMotion - so above 60 fps those nine bytes are replaced by a jump to sub_divide below, which shifts by
+// log2(N). At 60 fps the game's own bytes are left alone and everything here behaves exactly as before. Each
+// actor then owes N-1 sub-steps after its logic step (g_debt), one taken per render-only pass; a pass that
+// does not happen is paid, clock only, at the next logic step.
+// SMOOTH-003-SUBSTEP=0 keeps the 1/2 pair at every rate and patches no game code: limbs animate at 60 Hz while
+// the camera and actor roots follow the full frame rate.
 // Details: docs/fps60/rows/SMOOTH-003.md
 #include "smooth.h"
 #include <string.h>
@@ -40,11 +49,63 @@ static bool diag_id_match(uint16_t id) { return g_diag_id && id >= (uint16_t)g_d
 static LONG g_diag_id_lines = 0;
 static int  g_kind = INV_STOCK;
 static bool g_half_on = false;                   // we wrote 1 into the switch
+
+// ---------------------------------------------------------------- sub-step divider
+// Ch_StepMotion 0x838E16: `MOV EAX,EDI; CDQ; SUB EAX,EDX; MOV EDI,EAX; SAR EDI,1` - nine bytes that halve the
+// motion step while the half-rate switch is on. Replaced (only once a rate above 60 fps is in force) by a jump
+// to sub_divide, which does the same truncating-toward-zero division by N instead of 2.
+static int  g_substep = 1;                       // SMOOTH-003-SUBSTEP
+static volatile int32_t g_sub_n = 2;             // sub-steps per logic tick in force; read by the stub
+static uint8_t* g_sub_site = nullptr;
+static void*    g_sub_ret = nullptr;             // the instruction the nine bytes fall through to
+static bool     g_sub_patched = false;
+
+// IDIV truncates toward zero, which is exactly what the stock `CDQ; SUB EAX,EDX; SAR EDI,1` pair did for 2,
+// and it works for rates that are not a power of two (180 fps is six passes per tick). EAX and EDX are dead
+// here either way - the bytes being replaced clobber both. g_sub_n is never 0, so IDIV cannot fault.
+__declspec(naked) static void sub_divide() {
+    __asm {
+        mov  eax, edi
+        cdq
+        idiv dword ptr [g_sub_n]
+        mov  edi, eax
+        jmp  dword ptr [g_sub_ret]
+    }
+}
+
+// Game thread, once per invocation: follow the frame rate, patching the engine's divider the first time a rate
+// above 60 fps needs it. If that patch is not available the row keeps the 1/2 pair, which is still correct
+// motion at stock speed - the limbs just stay at 60 Hz.
+static void sub_update() {
+    int want = g_substep ? rate_mult() : 2;
+    if (want < 2) want = 2;
+    if (want > 2 && !g_sub_patched) {
+        if (!g_sub_site) {
+            want = 2;
+        } else {
+            g_sub_n = want;                      // set before the stub can ever be reached
+            uint8_t b[9] = { 0xE9, 0, 0, 0, 0, 0x90, 0x90, 0x90, 0x90 };
+            *(int32_t*)(b + 1) = (int32_t)((uint8_t*)&sub_divide - (g_sub_site + 5));
+            if (patch_write(g_sub_site, b, sizeof(b))) {
+                g_sub_patched = true;
+                log_line("SMOOTH-003: Ch_StepMotion step divider gva=0x%08X -> stub %p (shift by log2(N))",
+                         rt_to_gva_exe(g_sub_site), (void*)&sub_divide);
+            } else {
+                log_line("SMOOTH-003: step divider patch failed - limbs keep the 1/2 pair");
+                g_sub_site = nullptr;
+                want = 2;
+            }
+        }
+    }
+    if (want == g_sub_n) return;
+    g_sub_n = want;
+    log_line("SMOOTH-003: %d motion sub-step%s per logic tick", (int)g_sub_n, g_sub_n == 1 ? "" : "s");
+}
 static volatile bool g_in_step = false;          // inside one of OUR Ch_StepMotion calls
 static bool g_walked_inv = false;
 
 static uint8_t* g_debt_base = nullptr;
-static uint8_t  g_debt[MAXA];
+static uint8_t  g_debt[MAXA];                    // sub-steps this slot still owes before its next logic step
 static uint16_t g_debt_id[MAXA];
 static uint8_t  g_walked[MAXA];
 // Hold buffer: per slot, common regions (all walked / range actors) then the face regions (parents).
@@ -59,6 +120,15 @@ static int      g_hold_n = 0;
 
 static LONG g_sanity_reverts = 0, g_sanity_lines = 0, g_loopend_holds = 0, g_stock_steps = 0, g_guard_wrap = 0, g_guard_clamp = 0, g_guard_hold = 0, g_diag_lines = 0, g_diag_events = 0;
 static LONG g_walks = 0, g_stepped = 0, g_pays = 0, g_clock_only = 0, g_batches = 0, g_gated_seq = 0, g_gated_motev = 0;
+
+// How far past tick k-1 an actor's motion stands, as a fraction of a tick: its logic step takes it to 1/N and
+// each render-only sub-step adds another 1/N, so the sub-steps it still owes say where it is.
+static float sub_pos(int i) {
+    int owed = (i >= 0 && i < MAXA) ? (int)g_debt[i] : 0;
+    int n = g_sub_n > 0 ? (int)g_sub_n : 2;
+    if (owed > n) owed = n;
+    return (float)(n - owed) / (float)n;
+}
 
 static int slot_of(const uint8_t* a, uint8_t* base, int n) {
     if (!base || a < base) return -1;
@@ -321,8 +391,9 @@ static void out_diag(int i, uint8_t* a, int nb) {
 // At the end of a motion the render-only sample cannot move on: a play-once motion is clamped to its last frame
 // (guard kind 2) and LOOPEND holds a loop's last frame. Tidus's run is a chain of 28-frame play-once strides and
 // his idle a 40-frame loop, so each end repeated one pose for a render-only frame (U 11/10: stutter at the end of
-// his run animation). Instead, continue each bone rotation half a tick past tick k from its last two logic
-// values: k + (k - (k-1)) / 2. A channel that moved more than ENDX_MAX in the last tick (flip, cut) keeps tick k.
+// his run animation). Instead, continue each bone rotation to where this pass should stand, from its last two
+// logic values: the recorded pose is at 1/N of the tick, so lead it by sub_pos - 1/N (half a tick at 60 fps).
+// A channel that moved more than ENDX_MAX in the last tick (flip, cut) keeps tick k.
 static const float ENDX_MAX = 0.08f;               // turn per tick
 static LONG g_endx = 0;
 
@@ -333,6 +404,7 @@ static void end_extrapolate(int i, uint8_t* a) {
     if (!nb || !bones) return;
     const float* prev = g_prev_ang + (size_t)i * MAXB * 3;
     const float* cur = g_cur_ang + (size_t)i * MAXB * 3;
+    float lead = sub_pos(i) - 1.0f / (float)(g_sub_n > 0 ? (int)g_sub_n : 2);
     for (int b = 0; b < nb; b++)
         for (int c = 0; c < 3; c++) {
             float d = cur[b * 3 + c] - prev[b * 3 + c];
@@ -340,12 +412,12 @@ static void end_extrapolate(int i, uint8_t* a) {
             if (d > 0.5f) d -= 1.0f;
             if (d < -0.5f) d += 1.0f;
             if (d > ENDX_MAX || d < -ENDX_MAX) continue;
-            float v = (cur[b * 3 + c] + 0.5f * d) * 6.2831853f;
+            float v = (cur[b * 3 + c] + lead * d) * 6.2831853f;
             *(float*)(bones + b * BONE_STRIDE + BANG[c]) = v;
             *(float*)(bones + b * BONE_STRIDE + BANG[c] + 0x30) = v;
         }
     if (InterlockedIncrement(&g_endx) == 1)
-        log_line("SMOOTH-003: first end-of-motion half-tick extrapolation (ENDEXTRAP), id 0x%04X", *(const uint16_t*)a);
+        log_line("SMOOTH-003: first end-of-motion sub-tick extrapolation (ENDEXTRAP), lead %.3f, id 0x%04X", lead, *(const uint16_t*)a);
 }
 
 static bool sanity_check(int i, uint8_t* a, int nb, int32_t c0) {
@@ -421,12 +493,14 @@ static void __cdecl h_step(uint8_t* a, int full) {
     if (base != g_debt_base) { memset(g_debt, 0, sizeof(g_debt)); g_debt_base = base; }
     int i = slot_of(a, base, n);
     if (i >= 0 && g_debt[i]) {
+        uint8_t owed = g_debt[i];
         g_debt[i] = 0;
         if (g_debt_id[i] == *(uint16_t*)a) {
-            // Pay the half step the render-only walk did not take: clock only, switch forced on.
+            // Pay the sub-steps the render-only passes did not take: clock only, switch forced on.
             int32_t old = *g_half;
             *g_half = 1;
-            bool ok = safe_step(a, 0);
+            bool ok = true;
+            for (uint8_t k = 0; k < owed && ok; k++) ok = safe_step(a, 0);
             *g_half = old;
             if (!ok) { *g_half = 0; g_half_on = false; g_step(a, full); return; }
             InterlockedIncrement(&g_pays);
@@ -442,7 +516,7 @@ static void __cdecl h_step(uint8_t* a, int full) {
     }
     g_step(a, full);
     if (full && (g_sanity || g_endextrap)) __try { record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    if (i >= 0 && *g_half != 0) { g_debt[i] = 1; g_debt_id[i] = *(uint16_t*)a; }
+    if (i >= 0 && *g_half != 0) { g_debt[i] = (uint8_t)(g_sub_n - 1); g_debt_id[i] = *(uint16_t*)a; }
 }
 
 // ---------------------------------------------------------------- gates (SMOOTH-003-GATES)
@@ -771,13 +845,13 @@ static void walk() {
         uint8_t* a = base + i * STRIDE;
         span++;
         if (a[2] != 0 && (a[0x180] == 0 || a[0x181] != 0) && g_debt[i]) {
-            g_debt[i] = 0;
             uint32_t fl = *(uint32_t*)(a + FLAGS);
             bool cloth = (fl & 0x600000) == 0x600000;
-            if (g_debt_id[i] != *(uint16_t*)a) goto next;      // slot reused: drop the stale debt
-            if (cloth && g_cloth == 1) { g_debt[i] = 1; goto next; }  // paid at the next logic step
-            if (g_shortloop && short_loop(a)) { g_debt[i] = 1; goto next; }  // stock from the next logic step
-            if (stock_id(a)) { g_debt[i] = 1; goto next; }                    // bisect switch, stock from the next logic step
+            if (g_debt_id[i] != *(uint16_t*)a) { g_debt[i] = 0; goto next; }  // slot reused: drop the stale debt
+            if (cloth && g_cloth == 1) goto next;              // the whole debt is paid at the next logic step
+            if (g_shortloop && short_loop(a)) goto next;       // stock from the next logic step
+            if (stock_id(a)) goto next;                        // bisect switch, stock from the next logic step
+            g_debt[i]--;
             {
                 bool hold_pose = g_blend && (fl & 0x40) == 0 && (*(int16_t*)(a + BLEND_N) > 1 || a[MODE1] != 0);
                 if (g_hold_id && *(uint16_t*)a == (uint16_t)g_hold_id) hold_pose = true;   // bisect: tick-k pose
@@ -935,7 +1009,8 @@ static void cloth_snap_after_step(uint8_t* a, bool reset) {
 
 // Mode 4 (default; U 12/10/2026: looks best of 0/2/3/4 via F5): extrapolation overshot the swing and amplified the per-tick wind jitter (U 12/10/2026: "faster than
 // expected"). Interpolation instead: after the logic job the mesh is redeformed at the midpoint of the last two job
-// results, and a render-only frame deforms the latest one. Cloth trails the half-stepped bones by half a tick.
+// results, and a render-only pass deforms where that pass stands. Cloth trails the sub-stepped bones by the
+// rest of a tick (half of one at 60 fps): k = sub_pos - 1, so the last pass of a period deforms cur itself.
 // True when every dynamic mesh had fresh job results (and the previous tick's, if need_prev); then the mesh is
 // deformed from cur + k * (cur - prev).
 static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
@@ -972,7 +1047,9 @@ static void __cdecl h_cjob(uint8_t** list, int* count) {
             if (g_clothhold >= 3) {
                 __try {
                     for (int k = 0; k < *count; k++) {
-                        if (g_clothhold == 3 ? cloth_extrap(list[k], g_extrap_pct / 100.0f, true) : cloth_extrap(list[k], 0.0f, false)) {
+                        float lag = sub_pos(slot_of(list[k], *g_table, *g_count)) - 1.0f;
+                        if (g_clothhold == 3 ? cloth_extrap(list[k], g_extrap_pct / 100.0f, true)
+                                             : cloth_extrap(list[k], lag, lag != 0.0f)) {
                             LONG c = InterlockedIncrement(&g_extrap_n);
                             if (c % 3600 == 0) log_line("SMOOTH-003-CLOTHHOLD: %ld meshes extrapolated, %ld held (no two fresh job results)", c, (LONG)g_extrap_miss);
                             if (c == 1) log_line("SMOOTH-003-CLOTHHOLD: first cloth mesh extrapolated on a render-only frame (mode %d, id 0x%04X)", g_clothhold, *(uint16_t*)list[k]);
@@ -998,7 +1075,8 @@ static void __cdecl h_cjob(uint8_t** list, int* count) {
     __try {
         for (int k = 0; k < n; k++) {
             cloth_snap_after_step(list[k], reset[k]);
-            if (g_clothhold == 4 && !reset[k]) cloth_extrap(list[k], -0.5f, true);
+            if (g_clothhold == 4 && !reset[k])
+                cloth_extrap(list[k], sub_pos(slot_of(list[k], *g_table, *g_count)) - 1.0f, true);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-003 cloth snap", GetExceptionCode()); }
@@ -1043,6 +1121,7 @@ static void pre() {
         __try { hold_restore(); }
         __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-003 hold restore", GetExceptionCode()); }
     }
+    sub_update();
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
     if (g_kind != INV_BUILD) InterlockedIncrement(&g_step_n);
     bool want = !g_disabled && smooth_live(3) && (g_kind == INV_LOGIC || g_kind == INV_BUILD);
@@ -1206,7 +1285,7 @@ static void post() {
     static LONG reported = 0;
     if (!reported && g_stepped > 0) {
         reported = 1;
-        log_line("SMOOTH-003: first half-step motion walk on a render-only invocation");
+        log_line("SMOOTH-003: first sub-step motion walk on a render-only invocation (1/%d of a tick)", (int)g_sub_n);
     }
 }
 
@@ -1268,6 +1347,18 @@ static bool install() {
         return false;
     }
     g_half = (volatile int32_t*)read_abs(sd + 0x12);
+    // The nine bytes the half-rate switch jumps over: MOV EAX,EDI; CDQ; SUB EAX,EDX; MOV EDI,EAX; SAR EDI,1.
+    // Above 60 fps they become a jump to sub_divide; the JE at sd+0x17 lands just past them either way.
+    g_substep = config_row("SMOOTH-003-SUBSTEP", 1);
+    g_sub_site = sd + 0x19;
+    g_sub_ret = sd + 0x22;
+    if (!sig_match(g_sub_site, "8B C7 99 2B C2 8B F8 D1 FF")) {
+        log_line("  SMOOTH-003: Ch_StepMotion step divider at gva=0x%08X is not the expected halving - above 60 fps "
+                 "limbs keep the 1/2 pair", rt_to_gva_exe(g_sub_site));
+        g_sub_site = nullptr;
+    } else if (!g_substep) {
+        log_line("  SMOOTH-003: SMOOTH-003-SUBSTEP=0 - limbs keep the 1/2 pair (60 Hz) at every frame rate");
+    }
     g_freeze = (volatile int8_t*)read_abs(frz + 3);
     if (*g_half != 0) log_line("  SMOOTH-003: note: half-rate switch was %d at install (debug menu?)", *g_half);
     g_step = (step_t)step;
@@ -1387,6 +1478,6 @@ static void stop() {
 
 Row row_SMOOTH003 = {
     "SMOOTH-003",
-    "60 Hz limbs: engine half-rate motion + a half step on render-only frames (needs master SMOOTH=1)",
+    "smooth limbs: engine half-rate motion + a 1/N step of each actor per render-only pass (needs master SMOOTH=1)",
     1, install, pre, post, 0, stop
 };

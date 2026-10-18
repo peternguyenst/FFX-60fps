@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
-// 60 Hz pacing: hold the frame divider at 1 and alternate exec 1/0, so every other Sg_MainLoop invocation is
-// render-only. Game requests for 30 Hz are swallowed; requests for every-vsync (menus) and rows holding
-// stock pacing pass through. Details: docs/fps60/pacing.md, README.md "Pacing policy"
+// Pacing: hold the frame divider at 1 and run one logic tick every N Sg_MainLoop invocations, so N-1 of every
+// N invocations are render-only. N comes from rate.cpp (2 at 60 fps, 4 at 120, 8 at 240) and is 2 unless
+// RATE-001 has the host limiter at N * 29.97 Hz, so the game's speed is right at every rate. Game requests for
+// 30 Hz are swallowed; requests for every-vsync (menus) and rows holding stock pacing pass through.
+// Details: docs/fps60/pacing.md, README.md "Pacing policy"
 #include "fps60.h"
 
 static uint32_t g_wanted = 0;        // last divider value the GAME asked for
 static bool     g_wanted_known = false;
 static int      g_hold = 0;          // number of rows currently holding stock pacing
-static bool     g_force_logic = false; // a row asks every invocation to be a logic tick (game speed booster)
+static int      g_force_div = 0;     // > 0: a logic tick every g_force_div invocations (game speed booster)
 static bool     g_active = false;    // alternation applied this invocation
 static bool     g_was_active = false;
-static int      g_phase = 1;         // 1 = next rendered invocation is LOGIC
+static int      g_pass = 0;          // the pass the NEXT paced invocation runs
+static int      g_pass_cur = 0;      // the pass THIS invocation is running: 0 = the logic tick
+static int      g_period = 2;        // invocations per logic tick in force this invocation
+static uint32_t g_gen = 0;           // rate.cpp generation the period was taken from
 static int      g_kind = INV_STOCK;
 static uint64_t g_count[4] = { 0, 0, 0, 0 };
 static uint64_t g_inv = 0;
@@ -29,6 +34,18 @@ static void set_divider(uint32_t v) {
 
 bool pacing_active() { return g_active; }
 int  pacing_kind() { return g_kind; }
+int  pacing_pass() { return g_pass_cur; }
+
+// Where in the logic tick this invocation draws: pass 0 (the logic tick) draws 1/period of the way from the
+// previous tick to this one, the last pass draws tick k itself. At N = 2 this is the old 0.5 / 1.0 pair.
+// This is the pass being run now, not the one queued next - reading the queued one made the drawn fraction
+// run 0.5, 0.75, 1.0, 0.25 instead of 0.25, 0.5, 0.75, 1.0, so every period ended by jumping backwards.
+float pacing_t() {
+    int p = g_period > 0 ? g_period : 1;
+    int i = g_pass_cur;
+    if (i < 0 || i >= p) i = 0;
+    return (float)(i + 1) / (float)p;
+}
 
 void pacing_hold_stock(const char* who, bool hold) {
     g_hold += hold ? 1 : -1;
@@ -36,14 +53,16 @@ void pacing_hold_stock(const char* who, bool hold) {
     PLOG("pacing: %s %s stock pacing (holders now %d)", who, hold ? "holds" : "releases", g_hold);
 }
 
-void pacing_force_logic(bool on) { g_force_logic = on; }
+// The game speed booster asks for a logic tick every `every` invocations instead of every N, so its 2x / 4x
+// stay 2x / 4x at every frame rate (BOOST-001). 0 = off.
+void pacing_force_div(int every) { g_force_div = every > 0 ? every : 0; }
 
-// Runtime 60/30 switch (CFG-MENU, game thread). pacing_pre picks it up at the next invocation: leaving 60 Hz hands the
-// game its divider back, entering re-asserts divider 1 (the same transitions as a stock holder).
+// Runtime 60/30 switch (CFG-MENU, game thread). pacing_pre picks it up at the next invocation: leaving the mod's
+// pacing hands the game its divider back, entering re-asserts divider 1 (the same transitions as a stock holder).
 void pacing_set(bool on) {
     if ((g_cfg.pacing != 0) == on) return;
     g_cfg.pacing = on ? 1 : 0;
-    log_line("pacing: %s at runtime", on ? "60 Hz" : "stock 30");
+    log_line("pacing: %s at runtime", on ? "mod pacing" : "stock 30");
 }
 
 bool pacing_divider_request(uint32_t req) {
@@ -65,11 +84,14 @@ void pacing_pre() {
 
     bool want_active = g_cfg.pacing && g_divider_hooked && g_hold == 0 && g_wanted_known && g_wanted >= 2;
 
+    // The host limiter follows the pacing state, so the loop never runs at the mod's rate with stock pacing.
+    rate001_limiter(want_active);
+
     if (!want_active) {
-        if (g_was_active) {                          // leaving 60 Hz: give the game back its pacing
+        if (g_was_active) {                          // leaving the mod's pacing: give the game back its pacing
             set_divider(g_wanted ? g_wanted : 2);
             set_exec(1);
-            g_phase = 1;
+            g_pass = 0;
             PLOG("pacing: stock (divider -> %u, exec -> 1) at inv %llu", g_wanted, g_inv);
         }
         g_active = g_was_active = false;
@@ -78,40 +100,58 @@ void pacing_pre() {
         return;
     }
 
-    if (!g_was_active) PLOG("pacing: 60 Hz on at inv %llu (game divider %u, frame counter %u, next %s)", g_inv, g_wanted,
-                            *g_frame_counter, g_phase ? "logic" : "render-only");
+    // The logic period: N from rate.cpp, or the booster's shorter one. A rate change restarts it, so a period
+    // is never half counted at the old length.
+    int n = rate_mult();
+    int period = g_force_div > 0 ? g_force_div : n;
+    if (period < 1) period = 1;
+    if (period != g_period || rate_gen() != g_gen) {
+        if (g_was_active && period != g_period)
+            PLOG("pacing: logic period %d -> %d invocations at inv %llu", g_period, period, g_inv);
+        g_period = period;
+        g_gen = rate_gen();
+        g_pass = 0;
+    }
+
+    if (!g_was_active) PLOG("pacing: on at inv %llu (%d fps, 1 logic tick in %d; game divider %u, frame counter %u)",
+                            g_inv, n * 30, g_period, g_wanted, *g_frame_counter);
     if (*g_divider != 1) {
         if (g_was_active) PLOG("pacing: divider was %u at pre of inv %llu - re-asserted 1", *g_divider, g_inv);
         set_divider(1);
     }
 
 #ifdef FPS60_DEV
-    // Dev hotkey Num 1: shift the logic/render-only alternation by one invocation (U 12/10/2026: Echuilles light-ray
-    // flicker and boss ghost come and go between sessions; test whether they follow the alternation phase against a
+    // Dev hotkey Num 1: shift the logic/render-only pattern by one invocation (U 12/10/2026: Echuilles light-ray
+    // flicker and boss ghost come and go between sessions; test whether they follow the pattern's phase against a
     // per-invocation toggle in the game).
     static bool prev1 = false;
     if (dev_key(VK_NUMPAD1, &prev1)) {
-        g_phase ^= 1;
-        log_line("Num1: pacing phase shifted by one invocation at inv %llu (frame counter %u)", g_inv, *g_frame_counter);
+        g_pass = (g_pass + 1) % g_period;
+        log_line("Num1: pacing phase shifted by one invocation at inv %llu (next pass %d of %d, frame counter %u)",
+                 g_inv, g_pass, g_period, *g_frame_counter);
     }
 #endif
     bool backlog = *g_backlog_count > 1;
     int target;
-    if ((backlog || g_force_logic) && g_cfg.alt_backlog == ALT_BACKLOG_LOGIC) {
-        target = 1;
+    if (backlog && g_cfg.alt_backlog == ALT_BACKLOG_LOGIC) {
+        target = 1;                                  // catch-up tick: the period restarts from it
         g_kind = INV_BACKLOG;
+        g_pass_cur = 0;
+        g_pass = 1 % g_period;
     } else {
-        target = g_phase;
-        g_phase ^= 1;
-        g_kind = target ? INV_LOGIC : INV_BUILD;
+        g_pass_cur = g_pass;
+        target = g_pass_cur == 0 ? 1 : 0;
+        g_kind = target ? (g_force_div > 0 ? INV_BACKLOG : INV_LOGIC) : INV_BUILD;
+        g_pass = (g_pass_cur + 1) % g_period;
     }
     if (*g_exec_byte != target) set_exec(target);
     g_count[g_kind]++;
     g_active = g_was_active = true;
 }
 
-// Dev hot reload: the game gets its own divider and exec back before this copy goes passive.
+// Dev hot reload: the game gets its own divider, exec and frame limiter back before this copy goes passive.
 void pacing_shutdown() {
+    rate001_limiter(false);
     if (g_was_active) {
         set_divider(g_wanted ? g_wanted : 2);
         set_exec(1);
@@ -122,8 +162,9 @@ void pacing_shutdown() {
 }
 
 void pacing_post() {
-    if ((g_inv % 36000) == 0) {                      // ~10 min at 60 Hz
-        log_line("pacing stats: inv=%llu LOGIC=%llu BUILD=%llu BACKLOG=%llu STOCK=%llu", g_inv,
-                 g_count[INV_LOGIC], g_count[INV_BUILD], g_count[INV_BACKLOG], g_count[INV_STOCK]);
+    if ((g_inv % (600 * (uint64_t)(rate_mult() * 30))) == 0) {       // ~10 min of drawn frames
+        log_line("pacing stats: inv=%llu LOGIC=%llu BUILD=%llu BACKLOG=%llu STOCK=%llu (%d fps, 1 in %d)", g_inv,
+                 g_count[INV_LOGIC], g_count[INV_BUILD], g_count[INV_BACKLOG], g_count[INV_STOCK],
+                 rate_mult() * 30, g_period);
     }
 }
