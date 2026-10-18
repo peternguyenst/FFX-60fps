@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // X2-DEV-BISECT (test tool, default 1 while testing): F8 (game window focused) turns the battle/effect rows off one at
-// a time, so a visual bug can be pinned to a row without restarting: none -> X2-TEXANIM-001 -> X2-TASK-001 ->
-// X2-MAG-016 -> X2-MAG-020 -> X2-MAG-026 -> X2-CHR-001 -> X2-CHR-002 -> X2-MAG-032 -> X2-MAG-008 ->
-// X2-MAG-006 -> X2-UI-001 -> X2-LOOP-004 -> X2-LOOP-005 -> X2-MAG-009 off -> none. Each press is logged. Rows whose
-// patches do not check .on at runtime (FX-010-DRAWOPS, FX-012) and crash guards (MAG-019/027/030/031) are not listed;
-// nor X2-MAG-025: off mid-battle, effect-unit streams step 2x and overflow the effect heap (deliberate null write in
-// op_malloc FUN_0069fed0 at 0x69FF4D, D fps60x2.log 15:58:12 18/10/2026, magic_0888).
+// a time, so a visual bug can be pinned to a row without restarting: none -> X2-MAG-006 -> X2-UI-001 -> X2-LOOP-004 ->
+// X2-LOOP-005 -> X2-MAG-009 off -> none. Each press is logged. 18/10/2026 dressphere blink: TEXANIM-001, TASK-001,
+// MAG-016, MAG-020, MAG-026, CHR-001, CHR-002, MAG-032 already tested off (no change, U) and dropped from the list.
+// Not listed: X2-MAG-008 and X2-MAG-025 (off mid-battle, magic_0888 overflows the effect heap: deliberate null write in
+// op_malloc FUN_0069fed0 at 0x69FF4D, D fps60x2.log 16:03:43), rows whose patches do not check .on at runtime
+// (FX-010-DRAWOPS, FX-012) and crash guards (MAG-019/027/030/031).
 // The toggle runs in post() of the last registered row, after every other row's post(), so a row is never switched
 // between its own pre() and post(). Patches stay in place; a row that is off passes through (its stubs check .on).
 // Used for the hit-effect blink (U 12/10/2026: "frame 1 flash, frame 2 off, frame 3 flash").
@@ -13,11 +13,8 @@
 
 namespace x2 {
 
-extern Row row_TEXANIM001, row_TASK001, row_MAG016, row_MAG020, row_MAG026, row_CHR001, row_CHR002,
-    row_MAG032, row_MAG008, row_MAG006, row_UI001, row_LOOP004, row_LOOP005, row_MAG009;
-static Row* const g_list[] = { &row_TEXANIM001, &row_TASK001, &row_MAG016, &row_MAG020, &row_MAG026,
-    &row_CHR001, &row_CHR002, &row_MAG032, &row_MAG008, &row_MAG006, &row_UI001, &row_LOOP004, &row_LOOP005,
-    &row_MAG009 };
+extern Row row_MAG006, row_UI001, row_LOOP004, row_LOOP005, row_MAG009;
+static Row* const g_list[] = { &row_MAG006, &row_UI001, &row_LOOP004, &row_LOOP005, &row_MAG009 };
 static const int N = (int)(sizeof(g_list) / sizeof(g_list[0]));
 static int  g_was_on[N];
 static int  g_step = 0;                          // 0 = all as installed, k = row k-1 off
