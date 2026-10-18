@@ -200,8 +200,30 @@ static void free_mod(Mod& m) {
     memset(&m, 0, sizeof(m));
 }
 
+// MAG-021-SKIP (default "0573"): magic DLL numbers never replayed. U 18/10/2026: Braska's Final Aeon grab (magic_0573)
+// drew the held character beside the hand; MAG-021=0 fixed it. D fps60.log 21:32:16 (MAG-021-ACTORS test build): the
+// replayed update wrote 0 dwords of the actor table, yet the held actor's root still moved on render-only invocations.
+// S FUN_00832760 (root/bone build, slot +0x004): actor +0x10C != 0 -> root copied from that matrix; bone +0xC8 != 0 ->
+// bone copied from it, then cleared. Both point into the DLL, so render-only frames built the held actor from the
+// replayed (one step ahead) DLL matrices; the bone array is EXE heap the .data restore does not cover.
+static char g_skip[128] = "";
+static bool skipped(const char* name) {
+    const char* d = strstr(name, "magic_");
+    if (!d || !g_skip[0]) return false;
+    char num[8] = {};
+    for (int i = 0; i < 4 && d[6 + i] >= '0' && d[6 + i] <= '9'; i++) num[i] = d[6 + i];
+    if (strlen(num) != 4) return false;
+    for (const char* p = g_skip; (p = strstr(p, num)) != nullptr; p += 4) {
+        bool lo = p == g_skip || p[-1] == ',' || p[-1] == ' ';
+        bool hi = p[4] == 0 || p[4] == ',' || p[4] == ' ';
+        if (lo && hi) return true;
+    }
+    return false;
+}
+
 static void scan(Mod& m) {
     m.scanned = true;
+    if (skipped(m.name)) { log_line("MAG-021: %s in MAG-021-SKIP - not replayed", m.name); return; }
     if (famE_find_setter(m.base, m.size, nullptr) != 1) return;   // not family E (this shape)
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)m.base;
     IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(m.base + dos->e_lfanew);
@@ -362,6 +384,8 @@ static bool install() {
     g_thunks = (uint8_t*)exec_alloc(NSLOT * 16);
     if (!g_shadow || !g_thunks) return false;
     build_thunks();
+    config_str("rows", "MAG-021-SKIP", g_skip, sizeof(g_skip), "0573");
+    log_line("  MAG-021: not replayed (MAG-021-SKIP): %s", g_skip[0] ? g_skip : "none");
     QueryPerformanceFrequency(&g_qpf);
     if (!magic_mods_subscribe("MAG-021", on_load, on_unload)) return false;
     g_mag008_build_hook = build_hook;
