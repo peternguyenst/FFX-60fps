@@ -18,7 +18,8 @@
 // site 0x466FCD) or a stock invocation at the game's own divider 1 (kind, ms, gap, backlog, divider, exec, HD state block
 // [0x00DCED88] [0]/+0x338/+0x33C, PS2-menu flags [0x016BC55C]/[0x016BC560]); X2-LOAD-001-WAITS=1 hooks ntdll
 // NtWaitForSingleObject / NtWaitForMultipleObjects / NtDelayExecution and sums the game thread's waits during the trace
-// per three FFX-2.exe return addresses.
+// per three FFX-2.exe return addresses. The trace also starts on a battle-state change ([0x00DF68A0], X2-SR-003's site
+// 0x61E5E2; U 19/10 Deck: at battle start the party appears ~2 s after the enemies, PC fine) and logs that state.
 #include "../x2.h"
 #include <winternl.h>
 
@@ -37,6 +38,7 @@ static LARGE_INTEGER g_qf, g_tstart, g_tprev;
 static uint8_t** g_hds = nullptr;                // &DAT_00dced88
 static volatile int32_t* g_m1 = nullptr;         // 0x016BC55C
 static volatile int32_t* g_m2 = nullptr;         // 0x016BC560
+static volatile int8_t*  g_bst = nullptr;        // battle state 0x00DF68A0
 static bool  g_held = false;
 static int   g_busy = 0;
 static DWORD g_hold_t0 = 0;
@@ -142,10 +144,10 @@ static void post() {
             if (g_m1) m1 = *g_m1;
             if (g_m2) m2 = *g_m2;
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        log_line("LOADTRACE %s inv %.2f ms gap %.2f ms backlog %d div %u exec %d | hd %d %d %d menu %d %d", K[pacing_kind() & 3],
+        log_line("LOADTRACE %s inv %.2f ms gap %.2f ms backlog %d div %u exec %d | hd %d %d %d menu %d %d bst %d", K[pacing_kind() & 3],
                  (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart,
                  (g_tstart.QuadPart - g_tprev.QuadPart) * 1000.0 / g_qf.QuadPart,
-                 *g_backlog_count, *g_divider, *g_exec_byte, st, b8, bc, m1, m2);
+                 *g_backlog_count, *g_divider, *g_exec_byte, st, b8, bc, m1, m2, g_bst ? (int)*g_bst : -1);
         if (--g_tleft == 0) { log_line("LOADTRACE end"); if (g_waits) waits_dump(); }
     }
     bool l = false;
@@ -166,6 +168,15 @@ static void pre() {
         bool d1 = pacing_kind() == INV_STOCK && *g_divider == 1;
         if (d1 && !was_d1 && g_tleft == 0) { g_tleft = g_trace; log_line("LOADTRACE: stock invocation at divider 1 (menu at 60 fps), next %d invocations", g_trace); }
         was_d1 = d1;
+    }
+    if (g_trace && g_bst) {
+        static int last = -1000;
+        int b = *g_bst;
+        if (b != last) {
+            if (last != -1000 && g_tleft == 0) { g_tleft = g_trace; log_line("LOADTRACE: battle state %d -> %d, next %d invocations", last, b, g_trace); }
+            else if (last != -1000) log_line("LOADTRACE: battle state %d -> %d", last, b);
+            last = b;
+        }
     }
     if (g_map) {
         int32_t m = *g_map;
@@ -214,6 +225,9 @@ static bool install() {
         uint8_t* mf = sig_find("X2-LOAD-001 menu early-out 0x60550C",
             "83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 01", 0x60550C);
         if (mf) { g_m1 = (volatile int32_t*)abs_operand("menu flag 1", mf + 2); g_m2 = (volatile int32_t*)abs_operand("menu flag 2", mf + 0xF); }
+        uint8_t* bs = sig_find("X2-LOAD-001 battle state (teardown test)",
+            "80 3D ?? ?? ?? ?? 26 74 52 A0 ?? ?? ?? ?? 3C 05 74 49 3C 06 0F 85", 0x61E5E2);
+        g_bst = bs ? (volatile int8_t*)abs_operand("battle state", bs + 2) : nullptr;
     }
     log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70); IDLEHOLD %s%s", rt_to_gva(fn),
              g_idlehold ? "on" : "off", on_wine() ? " (Wine / Proton)" : "");
