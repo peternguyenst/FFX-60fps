@@ -50,6 +50,8 @@ static uint8_t* volatile* g_chrtab = nullptr;   // DAT_01b31040: battle chr inde
 typedef void* (__cdecl* op_t)(uint8_t* scr, void* pc);
 static op_t  g_op116 = nullptr;
 static LONG  g_peel_marks = 0, g_peel_skips = 0;
+static uint32_t g_peel_last = 0;           // g_inv + 1 of the last op 0x116 copy
+static LONG g_peel_wlines = 0;
 static float g_warp_min = 30.0f, g_warp_ratio = 3.0f;
 static LONG  g_warps = 0;
 // SMOOTH-002-RENDERHOLD (default 1): on a render-only invocation an actor whose root is no longer its tick-k root was
@@ -90,6 +92,7 @@ static void* __cdecl h_op116(uint8_t* scr, void* pc) {
                     log_line("X2-SMOOTH-002-PEEL: op 0x116 copies actor slot %d id 0x%04X - its root keeps the game value",
                              (int)((a - base) / STRIDE), *(uint16_t*)a);
                 g_peel_inv[(a - base) / STRIDE] = g_inv + 1;
+                g_peel_last = g_inv + 1;
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -124,6 +127,12 @@ static bool peeled(int i) {
 }
 
 static void write_slot(int i, float* root, const float* out) {
+    if (g_peel_last && g_inv + 1 - g_peel_last <= 4 && g_peel_wlines < 120) {
+        g_peel_wlines++;
+        log_line("X2-SMOOTH-002-PEEL diag: inv %u %s writes slot %d id 0x%04X child %d (%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f)",
+                 g_inv, g_kind == INV_BUILD ? "R" : "L", i, *(uint16_t*)((uint8_t*)root - ROOT), is_child((uint8_t*)root - ROOT) ? 1 : 0,
+                 root[12], root[13], root[14], out[12], out[13], out[14]);
+    }
     int w = g_w_n++;
     g_w_idx[w] = i;
     g_slot_w[i] = w;
