@@ -22,6 +22,8 @@
 // Also per invocation (pre, while the list is non-empty, same budget): Sg_MainLoop 0x60559D releases the effect on the
 // actors listed at 0x1E1CC00 (FUN_004515d0(model, 0)) when op 0x10F's FUN_00859e00 has not set [0x18E4D50] since the
 // last check; logged: kind, [0x18E4D50], list[0..3].
+// And FUN_00859e00 (cdecl(actor, type, bounds*, a, b, c), plain RET 0x85A085; sets the DressUpMelt shader params) is
+// entry-hooked: kind, actor, type, a, b, c, bounds +4 / +0x14 per call (same budget).
 #include "../x2.h"
 #include <stdio.h>
 
@@ -43,6 +45,18 @@ static float* g_dress_t = nullptr;       // 0x18E4D4C
 static float* g_dress_c = nullptr;       // 0x18E4D58
 static int32_t* g_dress_f = nullptr;     // 0xD6F7A0
 static volatile LONG g_left10f = 0;
+typedef void(__cdecl* melt_t)(void* actor, int type, float* bounds, float a, float b, float c);
+static melt_t g_melt = nullptr;
+static void __cdecl h_melt(void* actor, int type, float* bounds, float a, float b, float c) {
+    if (row_DIAGOP114.on && g_left10f > 0 && InterlockedDecrement(&g_left10f) >= 0) {
+        static const char* const K[4] = { "LOGIC", "RENDER", "BACKLOG", "STOCK" };
+        __try {
+            log_line("MELT %s actor %p type %d a %.4f b %.4f c %.4f bounds %.3f %.3f", K[pacing_kind() & 3], actor, type,
+                     a, b, c, bounds[1], bounds[5]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    g_melt(actor, type, bounds, a, b, c);
+}
 static int32_t* g_fx_flag = nullptr;     // 0x18E4D50
 static uint32_t* g_fx_list = nullptr;    // 0x1E1CC00 [4]
 
@@ -178,6 +192,9 @@ static bool install() {
             g_fx_flag = (int32_t*)abs_operand("fx flag", rl + 2);
             g_fx_list = (uint32_t*)abs_operand("fx list", rl + 0x15);
         }
+        uint8_t* mf = sig_find("X2-DIAG-OP114 FUN_00859e00", "55 8B EC 51 56 8B 75 10 57 D9 46 14 D8 66 04 D9 5D 10",
+            0x859E00);
+        if (mf && !hook_entry("X2-DIAG-OP114 melt", mf, (void*)&h_melt, (void**)&g_melt)) g_melt = nullptr;
         if (g_dress_t && g_dress_c && g_dress_f) {
             g_orig10f = (op_t)f10f;
             g_left10f = config_row("X2-DIAG-OP114-N10F", 1500);
