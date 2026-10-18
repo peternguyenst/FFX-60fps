@@ -10,6 +10,12 @@
 // Ch_NoSkelPass call site has a new shape (E8 at +0x13); actor stride 0x910 with per-block field shifts (low block +0xC,
 // motion block +0x10, 0x7F0+ block +0x14); hold regions re-mapped, the look-at block held whole (+0x418..+0x43B, H).
 // All CALL retargets and the cloth job entry hook are written on the game thread at the first pre().
+// X2-SMOOTH-003-PEEL (default 1): during a dressphere change this row runs as if off (stock motion, no half step), as
+// F6 (SMOOTH-003 alone off) did: with the half step the outfit peel's two models came apart (U 18/10/2026, F6 test
+// 17:18; holding X2-SMOOTH-002 over the whole change did not help, re/ledger/XFADE-BLINK.md). The change is found by
+// its middle DLL loading (X2-SMOOTH-003-PEEL-DLL, default "936 937 938") or by the OPU op 0x116 silhouette copy
+// (FUN_0085b3d0, DLL op table = magic service +0xC24, entry +0x58); the hold lasts until that DLL and the next one
+// (loaded within 120 invocations) unload, cap 1800 invocations per phase.
 // Evidence: outer repo G:\Work\ffx2-fps60 re/ledger/PORT-SMOOTH3.md (S unless tagged H), sigs tools/sigs_x2_smooth3.txt.
 #include "x2_smooth.h"
 #include <string.h>
@@ -556,9 +562,106 @@ static void walk() {
     if (bones != 0) safe_dispatch(cursor, span);
 }
 
+// ---------------------------------------------------------------- X2-SMOOTH-003-PEEL
+static int g_peel = 1;
+static volatile uint32_t g_inv = 0;
+static volatile LONG g_peel_phase = 0;           // 0 none, 1 change DLL / copy seen, 2 its DLL unloaded, 3 next DLL
+static volatile uint32_t g_peel_phase_inv = 0;
+static uint8_t* volatile g_peel_tail = nullptr;
+static int g_peel_dll[8], g_npeel_dll = 0;
+typedef void* (__cdecl* op_t)(uint8_t* scr, void* pc);
+static op_t g_op116 = nullptr;
+static volatile LONG g_peel_invs = 0;
+
+static int magic_number(const char* name) {      // "magic_0937.dll" -> 937
+    const char* p = strstr(name, "magic_");
+    return p ? atoi(p + 6) : -1;
+}
+
+static void* __cdecl h_op116(uint8_t* scr, void* pc) {
+    if (g_peel) {
+        if (g_peel_phase != 1) {
+            g_peel_phase = 1;
+            log_line("X2-SMOOTH-003-PEEL: op 0x116 silhouette copy - limbs at stock rate for the change");
+        }
+        g_peel_phase_inv = g_inv;
+    }
+    return g_op116(scr, pc);
+}
+
+static void peel_on_load(uint8_t* base, uint32_t, const char* name) {
+    int num = magic_number(name);
+    for (int k = 0; k < g_npeel_dll; k++) {
+        if (g_peel_dll[k] != num) continue;
+        g_peel_phase_inv = g_inv;
+        g_peel_phase = 1;
+        log_line("X2-SMOOTH-003-PEEL: %s loaded - limbs at stock rate for the change", name);
+        return;
+    }
+    if (g_peel_phase == 2 && g_inv - g_peel_phase_inv <= 120) {
+        g_peel_tail = base;
+        g_peel_phase_inv = g_inv;
+        g_peel_phase = 3;
+        log_line("X2-SMOOTH-003-PEEL: %s follows - limbs at stock rate until it unloads", name);
+    }
+}
+
+static void peel_on_unload(uint8_t* base) {
+    if (g_peel_phase == 1) { g_peel_phase_inv = g_inv; g_peel_phase = 2; }
+    else if (g_peel_phase == 3 && base == g_peel_tail) {
+        g_peel_tail = nullptr;
+        g_peel_phase = 0;
+        log_line("X2-SMOOTH-003-PEEL: change over - 60 Hz limbs again (%ld invocations held)", (LONG)g_peel_invs);
+    }
+}
+
+static bool peel_hold() {
+    if (!g_peel) return false;
+    LONG ph = g_peel_phase;
+    if (ph == 0) return false;
+    uint32_t cap = ph == 2 ? 120 : 1800;
+    if (g_inv - g_peel_phase_inv <= cap) return true;
+    g_peel_phase = 0;
+    return false;
+}
+
+static bool live3() { return smooth_live(3) && !peel_hold(); }
+
+static void install_peel() {
+    g_peel = config_row("X2-SMOOTH-003-PEEL", 1);
+    if (!g_peel) { log_line("  X2-SMOOTH-003-PEEL: off (ini)"); return; }
+    char buf[128];
+    config_str("rows", "X2-SMOOTH-003-PEEL-DLL", buf, sizeof(buf), "936 937 938");
+    for (char* q = buf; *q && g_npeel_dll < 8;) {
+        char* e = nullptr; long v = strtol(q, &e, 10);
+        if (e == q) { q++; continue; }
+        g_peel_dll[g_npeel_dll++] = (int)v; q = e;
+    }
+    if (!magic_mods_subscribe("X2-SMOOTH-003-PEEL", peel_on_load, peel_on_unload))
+        log_line("  X2-SMOOTH-003-PEEL: magic load hook not available - op 0x116 trigger only");
+    uint8_t* at = sig_find("X2-SMOOTH-003-PEEL MagicFile_Start table push",
+        "0F 94 C0 50 E8 ?? ?? ?? ?? 68 ?? ?? ?? ?? C7 05 ?? ?? ?? ?? 01 00 00 00 FF 15", 0x8578D1);
+    uint8_t* svc = at ? abs_operand("service table", at + 0x0A) : nullptr;
+    uint8_t* tab = svc ? (uint8_t*)(uintptr_t)*(uint32_t*)(svc + 0xC24) : nullptr;
+    uint32_t* entry = tab && in_image(tab) ? (uint32_t*)(tab + 0x16 * 4) : nullptr;
+    uint8_t* fn = entry ? (uint8_t*)(uintptr_t)*entry : nullptr;
+    // FUN_0085b3d0: PUSH EBP; MOV EBP,ESP; SUB ESP,0xE4; cookie; FLDZ; PUSH EBX/ESI/EDI; EDI=scr; ESI=pc; EBX=[scr+0x220]
+    if (!fn || !in_image(fn) || !sig_match(fn, "55 8B EC 81 EC E4 00 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC D9 EE 53 56 57 "
+                                               "8B 7D 08 8B 75 0C 8B 9F 20 02 00 00")) {
+        log_line("  X2-SMOOTH-003-PEEL: op 0x116 entry not proven (%p) - DLL trigger only", fn);
+    } else {
+        g_op116 = (op_t)fn;
+        if (!patch_u32(entry, (uint32_t)(uintptr_t)&h_op116)) g_op116 = nullptr;
+    }
+    char line[64]; int k = 0; line[0] = 0;
+    for (int i = 0; i < g_npeel_dll; i++) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " %04d", g_peel_dll[i]);
+    log_line("  X2-SMOOTH-003-PEEL: change DLLs:%s; op 0x116 entry gva=0x%08X (0x00D6F810) -> %s", line,
+             entry ? rt_to_gva(entry) : 0, g_op116 ? "stub" : "untouched");
+}
+
 // Sg_MainLoop stub (E8 0x60586C -> Ch_NoSkelPass 0x6E1610, cdecl(void)).
 static void __cdecl h_noskel() {
-    if (row_SMOOTH003.on && !g_disabled && g_kind == INV_BUILD && smooth_live(3) && *g_freeze == 0) {
+    if (row_SMOOTH003.on && !g_disabled && g_kind == INV_BUILD && live3() && *g_freeze == 0) {
         g_walks++;
         LONGLONG t0 = perf_on() ? perf_now() : 0;
         __try { walk(); }
@@ -657,7 +760,7 @@ static volatile LONG g_cjob_calls[MAXA];         // FREEZEDIAG: cloth job entrie
 static bool g_freezediag_on = false;
 
 static void __cdecl h_cjob(uint8_t** list, int* count) {
-    bool live = !g_disabled && row_SMOOTH003.on && smooth_live(3);
+    bool live = !g_disabled && row_SMOOTH003.on && live3();
     if (g_freezediag_on) __try {
         for (int k = 0; k < *count; k++) {
             int i = slot_of(list[k], *g_table, *g_count);
@@ -852,6 +955,7 @@ static void freeze_diag() {
 }
 
 static void pre() {
+    g_inv++;
     if (!g_patched) {
         g_patched = true;
         if (!apply_patches()) { row_SMOOTH003.on = 0; return; }
@@ -863,7 +967,8 @@ static void pre() {
     }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
     if (g_kind != INV_BUILD) InterlockedIncrement(&g_step_n);
-    bool want = !g_disabled && row_SMOOTH003.on && smooth_live(3) && (g_kind == INV_LOGIC || g_kind == INV_BUILD);
+    bool want = !g_disabled && row_SMOOTH003.on && live3() && (g_kind == INV_LOGIC || g_kind == INV_BUILD);
+    if (peel_hold()) InterlockedIncrement(&g_peel_invs);
     *g_half = want ? 1 : 0;
     g_half_on = want;
     g_walked_inv = false;
@@ -1042,6 +1147,7 @@ static bool install() {
     }
     g_hold_buf = (uint8_t*)calloc(MAXA, HOLD_SZ);
     if (!g_hold_buf) { log_line("  X2-SMOOTH-003: out of memory - refused"); return false; }
+    install_peel();
 
     log_line("  X2-SMOOTH-003: Ch_StepMotion gva=0x%08X (0x006E78F0) call 0x%08X (0x006E1394); Ch_NoSkelPass gva=0x%08X (0x006E1610) "
              "call 0x%08X (0x0060586C); SeqFrame gva=0x%08X (0x006D2720) call 0x%08X (0x006E7A65); Motev gva=0x%08X (0x006E27F0) "
