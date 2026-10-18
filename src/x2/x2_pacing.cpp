@@ -52,8 +52,17 @@ void pacing_set(bool on) {
     log_line("pacing: %s at runtime", on ? "60 Hz" : "stock 30 Hz");
 }
 
+// X2-PACE-MENUDIV2 ([rows], default 0, test): while a row holds stock pacing (PS2 menus), keep the game at divider 2
+// when it asks for 1 (the battle results screen asks for 60 fps; on the Steam Deck the GPU is then saturated and the
+// screen takes 6-10 s, D 18/10 LOADWAITS: 8.5 ms per frame in the command-ring wait).
+static int g_menudiv2 = -1;
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
+    if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", 0);
+    if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
+        PLOG("pacing: game asks divider 1 (wanted %u) under a stock hold -> swallowed, kept at 2 (X2-PACE-MENUDIV2)", prev);
+        return true;
+    }
     g_wanted = req;
     g_wanted_known = true;
     bool swallow = g_cfg.pacing && g_hold == 0 && req >= 2;
