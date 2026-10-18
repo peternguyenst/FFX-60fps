@@ -13,7 +13,9 @@
 // 0x0010 elsewhere (D diag 17:07:21, rotation only); the peel's real model is not found by position. The hold also
 // covers the change's next effect DLL (the outfit peel, e.g. magic_0906 after magic_0937): op 0x116 runs only in the
 // middle DLL and holding there alone left the peel apart (U 17:09). Phases: copy seen -> its DLL unloads -> the next
-// DLL loaded within 120 invocations is held until it unloads (cap 1800 invocations).
+// DLL loaded within 120 invocations is held until it unloads (cap 1800 invocations). The hold starts when a listed
+// middle DLL loads (X2-SMOOTH-002-PEEL-DLL, default "936 937 938"): op 0x116's first call sets the silhouette up from
+// the pose of that invocation, and starting at that call left the models apart (U 17:11, hold from 17:11:29.852).
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -108,7 +110,20 @@ static void* __cdecl h_op116(uint8_t* scr, void* pc) {
     return g_op116(scr, pc);
 }
 
+static int g_peel_dll[8], g_npeel_dll = 0;
+static int magic_number(const char* name) {        // "magic_0937.dll" -> 937
+    const char* p = strstr(name, "magic_");
+    return p ? atoi(p + 6) : -1;
+}
 static void peel_on_load(uint8_t* base, uint32_t, const char* name) {
+    int num = magic_number(name);
+    for (int k = 0; k < g_npeel_dll; k++) {
+        if (g_peel_dll[k] != num) continue;
+        g_peel_phase_inv = g_inv;
+        g_peel_phase = 1;
+        log_line("X2-SMOOTH-002-PEEL: %s loaded - roots held for the change", name);
+        return;
+    }
     if (g_peel_phase == 2 && g_inv - g_peel_phase_inv <= 120) {
         g_peel_tail = base;
         g_peel_phase_inv = g_inv;
@@ -467,6 +482,15 @@ static bool install() {
     g_peel_inv = (uint32_t*)calloc(MAXA, sizeof(uint32_t));
     if (g_peel && g_peel_inv) install_peel();
     else g_peel = 0;
+    {
+        char buf[128];
+        config_str("rows", "X2-SMOOTH-002-PEEL-DLL", buf, sizeof(buf), "936 937 938");
+        for (char* q = buf; *q && g_npeel_dll < 8;) {
+            char* e = nullptr; long v = strtol(q, &e, 10);
+            if (e == q) { q++; continue; }
+            g_peel_dll[g_npeel_dll++] = (int)v; q = e;
+        }
+    }
     if (g_peel && !magic_mods_subscribe("X2-SMOOTH-002-PEEL", peel_on_load, peel_on_unload))
         log_line("  X2-SMOOTH-002-PEEL: magic load hook not available - hold covers the copy DLL only");
     for (int i = 0; i < 2; i++) {
