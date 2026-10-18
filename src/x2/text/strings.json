@@ -91,6 +91,76 @@
    "kr": "전투 결과 빠르게",
    "ch": "快速戰鬥結算"
   },
+  "L_DEV_LOAD": {
+   "en": "Load Mode Pacing",
+   "fr": "Load Mode Pacing",
+   "sp": "Load Mode Pacing",
+   "de": "Load Mode Pacing",
+   "it": "Load Mode Pacing",
+   "jp": "Load Mode Pacing",
+   "kr": "Load Mode Pacing",
+   "ch": "Load Mode Pacing"
+  },
+  "L_DEV_IDLE": {
+   "en": "Idle-Wait Hold",
+   "fr": "Idle-Wait Hold",
+   "sp": "Idle-Wait Hold",
+   "de": "Idle-Wait Hold",
+   "it": "Idle-Wait Hold",
+   "jp": "Idle-Wait Hold",
+   "kr": "Idle-Wait Hold",
+   "ch": "Idle-Wait Hold"
+  },
+  "L_DEV_BATTLE": {
+   "en": "Battle Setup Hold",
+   "fr": "Battle Setup Hold",
+   "sp": "Battle Setup Hold",
+   "de": "Battle Setup Hold",
+   "it": "Battle Setup Hold",
+   "jp": "Battle Setup Hold",
+   "kr": "Battle Setup Hold",
+   "ch": "Battle Setup Hold"
+  },
+  "L_DEV_BISECT": {
+   "en": "F8 Bisect Tool",
+   "fr": "F8 Bisect Tool",
+   "sp": "F8 Bisect Tool",
+   "de": "F8 Bisect Tool",
+   "it": "F8 Bisect Tool",
+   "jp": "F8 Bisect Tool",
+   "kr": "F8 Bisect Tool",
+   "ch": "F8 Bisect Tool"
+  },
+  "L_DEV_SM1": {
+   "en": "Smooth Camera",
+   "fr": "Smooth Camera",
+   "sp": "Smooth Camera",
+   "de": "Smooth Camera",
+   "it": "Smooth Camera",
+   "jp": "Smooth Camera",
+   "kr": "Smooth Camera",
+   "ch": "Smooth Camera"
+  },
+  "L_DEV_SM2": {
+   "en": "Smooth Actor Roots",
+   "fr": "Smooth Actor Roots",
+   "sp": "Smooth Actor Roots",
+   "de": "Smooth Actor Roots",
+   "it": "Smooth Actor Roots",
+   "jp": "Smooth Actor Roots",
+   "kr": "Smooth Actor Roots",
+   "ch": "Smooth Actor Roots"
+  },
+  "L_DEV_SM3": {
+   "en": "Smooth Animation",
+   "fr": "Smooth Animation",
+   "sp": "Smooth Animation",
+   "de": "Smooth Animation",
+   "it": "Smooth Animation",
+   "jp": "Smooth Animation",
+   "kr": "Smooth Animation",
+   "ch": "Smooth Animation"
+  },
   "V_ON": {
    "en": "ON",
    "fr": "ON",
@@ -270,6 +340,146 @@
    "jp": "元のまま(60fps、Steam Deckでは遅い)",
    "kr": "원래대로(60fps, Steam Deck에서 느림)",
    "ch": "原本(60fps,Steam Deck上較慢)"
+  },
+  "H_DEV_LOAD_ON": {
+   "en": "Loading screens use the original pacing.",
+   "fr": "Loading screens use the original pacing.",
+   "sp": "Loading screens use the original pacing.",
+   "de": "Loading screens use the original pacing.",
+   "it": "Loading screens use the original pacing.",
+   "jp": "Loading screens use the original pacing.",
+   "kr": "Loading screens use the original pacing.",
+   "ch": "Loading screens use the original pacing."
+  },
+  "H_DEV_LOAD_OFF": {
+   "en": "Loading screens keep 60 fps pacing.",
+   "fr": "Loading screens keep 60 fps pacing.",
+   "sp": "Loading screens keep 60 fps pacing.",
+   "de": "Loading screens keep 60 fps pacing.",
+   "it": "Loading screens keep 60 fps pacing.",
+   "jp": "Loading screens keep 60 fps pacing.",
+   "kr": "Loading screens keep 60 fps pacing.",
+   "ch": "Loading screens keep 60 fps pacing."
+  },
+  "H_DEV_IDLE_ON": {
+   "en": "30 fps while the game waits for data (Deck loads).",
+   "fr": "30 fps while the game waits for data (Deck loads).",
+   "sp": "30 fps while the game waits for data (Deck loads).",
+   "de": "30 fps while the game waits for data (Deck loads).",
+   "it": "30 fps while the game waits for data (Deck loads).",
+   "jp": "30 fps while the game waits for data (Deck loads).",
+   "kr": "30 fps while the game waits for data (Deck loads).",
+   "ch": "30 fps while the game waits for data (Deck loads)."
+  },
+  "H_DEV_IDLE_OFF": {
+   "en": "Keep 60 fps while waiting (slow loads on Deck).",
+   "fr": "Keep 60 fps while waiting (slow loads on Deck).",
+   "sp": "Keep 60 fps while waiting (slow loads on Deck).",
+   "de": "Keep 60 fps while waiting (slow loads on Deck).",
+   "it": "Keep 60 fps while waiting (slow loads on Deck).",
+   "jp": "Keep 60 fps while waiting (slow loads on Deck).",
+   "kr": "Keep 60 fps while waiting (slow loads on Deck).",
+   "ch": "Keep 60 fps while waiting (slow loads on Deck)."
+  },
+  "H_DEV_BATTLE_ON": {
+   "en": "30 fps during battle setup (party in time on Deck).",
+   "fr": "30 fps during battle setup (party in time on Deck).",
+   "sp": "30 fps during battle setup (party in time on Deck).",
+   "de": "30 fps during battle setup (party in time on Deck).",
+   "it": "30 fps during battle setup (party in time on Deck).",
+   "jp": "30 fps during battle setup (party in time on Deck).",
+   "kr": "30 fps during battle setup (party in time on Deck).",
+   "ch": "30 fps during battle setup (party in time on Deck)."
+  },
+  "H_DEV_BATTLE_OFF": {
+   "en": "Keep 60 fps (party may appear late on Deck).",
+   "fr": "Keep 60 fps (party may appear late on Deck).",
+   "sp": "Keep 60 fps (party may appear late on Deck).",
+   "de": "Keep 60 fps (party may appear late on Deck).",
+   "it": "Keep 60 fps (party may appear late on Deck).",
+   "jp": "Keep 60 fps (party may appear late on Deck).",
+   "kr": "Keep 60 fps (party may appear late on Deck).",
+   "ch": "Keep 60 fps (party may appear late on Deck)."
+  },
+  "H_DEV_BISECT_ON": {
+   "en": "F8 turns battle rows off one at a time.",
+   "fr": "F8 turns battle rows off one at a time.",
+   "sp": "F8 turns battle rows off one at a time.",
+   "de": "F8 turns battle rows off one at a time.",
+   "it": "F8 turns battle rows off one at a time.",
+   "jp": "F8 turns battle rows off one at a time.",
+   "kr": "F8 turns battle rows off one at a time.",
+   "ch": "F8 turns battle rows off one at a time."
+  },
+  "H_DEV_BISECT_OFF": {
+   "en": "F8 does nothing.",
+   "fr": "F8 does nothing.",
+   "sp": "F8 does nothing.",
+   "de": "F8 does nothing.",
+   "it": "F8 does nothing.",
+   "jp": "F8 does nothing.",
+   "kr": "F8 does nothing.",
+   "ch": "F8 does nothing."
+  },
+  "H_DEV_SM1_ON": {
+   "en": "Camera interpolated between game ticks.",
+   "fr": "Camera interpolated between game ticks.",
+   "sp": "Camera interpolated between game ticks.",
+   "de": "Camera interpolated between game ticks.",
+   "it": "Camera interpolated between game ticks.",
+   "jp": "Camera interpolated between game ticks.",
+   "kr": "Camera interpolated between game ticks.",
+   "ch": "Camera interpolated between game ticks."
+  },
+  "H_DEV_SM1_OFF": {
+   "en": "Camera moves at 30 Hz.",
+   "fr": "Camera moves at 30 Hz.",
+   "sp": "Camera moves at 30 Hz.",
+   "de": "Camera moves at 30 Hz.",
+   "it": "Camera moves at 30 Hz.",
+   "jp": "Camera moves at 30 Hz.",
+   "kr": "Camera moves at 30 Hz.",
+   "ch": "Camera moves at 30 Hz."
+  },
+  "H_DEV_SM2_ON": {
+   "en": "Character positions interpolated between ticks.",
+   "fr": "Character positions interpolated between ticks.",
+   "sp": "Character positions interpolated between ticks.",
+   "de": "Character positions interpolated between ticks.",
+   "it": "Character positions interpolated between ticks.",
+   "jp": "Character positions interpolated between ticks.",
+   "kr": "Character positions interpolated between ticks.",
+   "ch": "Character positions interpolated between ticks."
+  },
+  "H_DEV_SM2_OFF": {
+   "en": "Character positions move at 30 Hz.",
+   "fr": "Character positions move at 30 Hz.",
+   "sp": "Character positions move at 30 Hz.",
+   "de": "Character positions move at 30 Hz.",
+   "it": "Character positions move at 30 Hz.",
+   "jp": "Character positions move at 30 Hz.",
+   "kr": "Character positions move at 30 Hz.",
+   "ch": "Character positions move at 30 Hz."
+  },
+  "H_DEV_SM3_ON": {
+   "en": "Character animation stepped at 60 Hz.",
+   "fr": "Character animation stepped at 60 Hz.",
+   "sp": "Character animation stepped at 60 Hz.",
+   "de": "Character animation stepped at 60 Hz.",
+   "it": "Character animation stepped at 60 Hz.",
+   "jp": "Character animation stepped at 60 Hz.",
+   "kr": "Character animation stepped at 60 Hz.",
+   "ch": "Character animation stepped at 60 Hz."
+  },
+  "H_DEV_SM3_OFF": {
+   "en": "Character animation at 30 Hz.",
+   "fr": "Character animation at 30 Hz.",
+   "sp": "Character animation at 30 Hz.",
+   "de": "Character animation at 30 Hz.",
+   "it": "Character animation at 30 Hz.",
+   "jp": "Character animation at 30 Hz.",
+   "kr": "Character animation at 30 Hz.",
+   "ch": "Character animation at 30 Hz."
   }
  }
 }

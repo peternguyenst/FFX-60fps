@@ -115,6 +115,14 @@ static const char* g_hold_why = "";
 
 static bool  g_rearm_block = false;              // after a cap release: wait for a busy frame
 
+// Config page switches (X2-CFG-MENU): turning a hold off releases it now.
+static void idle_release();
+static void battle_release();
+bool load_idlehold_get()   { return g_idlehold != 0; }
+void load_idlehold_set(bool on) { g_idlehold = on; if (!on) idle_release(); }
+bool load_battlehold_get() { return g_battlehold != 0; }
+void load_battlehold_set(bool on) { g_battlehold = on; if (!on) battle_release(); }
+
 static void hold_start(const char* why) {
     if (g_held) return;
     g_held = true;
@@ -123,6 +131,19 @@ static void hold_start(const char* why) {
     g_hold_why = why;
     pacing_hold_stock("X2-LOAD-001 hold", true);
     log_line("X2-LOAD-001: stock-pacing hold (%s)", why);
+}
+
+static void idle_release() {
+    if (!g_held) return;
+    g_held = false;
+    pacing_hold_stock("X2-LOAD-001 hold", false);
+    log_line("X2-LOAD-001: hold (%s) released (option turned off)", g_hold_why);
+}
+static void battle_release() {
+    if (!g_bheld) return;
+    g_bheld = false;
+    pacing_hold_stock("X2-LOAD-001 battle setup", false);
+    log_line("X2-LOAD-001-BATTLEHOLD: released (option turned off)");
 }
 
 static void post() {
@@ -239,7 +260,7 @@ static bool install() {
     }
     QueryPerformanceFrequency(&g_qf);
     QueryPerformanceCounter(&g_tstart);
-    if (g_trace || g_battlehold) {
+    {                                               // also for a runtime switch-on from the Config page
         uint8_t* bs = sig_find("X2-LOAD-001 battle state (teardown test)",
             "80 3D ?? ?? ?? ?? 26 74 52 A0 ?? ?? ?? ?? 3C 05 74 49 3C 06 0F 85", 0x61E5E2);
         g_bst = bs ? (volatile int8_t*)abs_operand("battle state", bs + 2) : nullptr;
