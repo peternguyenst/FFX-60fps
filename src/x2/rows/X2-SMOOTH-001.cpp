@@ -15,6 +15,7 @@
 #include "x2_smooth.h"
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 namespace x2 {
 
@@ -190,6 +191,16 @@ static LONG  g_trace_left = 0;
 static bool  g_f9_prev = false;
 static float g_trace_last[3];
 static bool  g_trace_have = false;
+// X2-SMOOTH-001-TRACEDLL (ini, default empty): magic numbers whose load starts the camera trace for 900 frames (the
+// dressphere change's camera frame, U 18/10/2026: one lit battle-floor frame between dark close-up frames).
+static int  g_tdll[8], g_ntdll = 0;
+static void trace_on_load(uint8_t*, uint32_t, const char* name) {
+    const char* p = strstr(name, "magic_");
+    int n = p ? atoi(p + 6) : -1;
+    for (int i = 0; i < g_ntdll; i++)
+        if (g_tdll[i] == n) { g_trace_left = 900; g_trace_have = false; log_line("X2-SMOOTH-001 trace: %s loaded - next 900 frames", name); }
+}
+static void trace_on_unload(uint8_t*) {}
 
 // Once per invocation, at post(): the view the frame was drawn with (viewport 0 finalizes run 3 times per frame).
 static void trace_frame() {
@@ -280,6 +291,16 @@ static void post() {
 }
 
 static bool install() {
+    {
+        char buf[96];
+        config_str("rows", "X2-SMOOTH-001-TRACEDLL", buf, sizeof(buf), "");
+        for (char* q = buf; *q && g_ntdll < 8;) {
+            char* e = nullptr; long v = strtol(q, &e, 10);
+            if (e == q) { q++; continue; }
+            g_tdll[g_ntdll++] = (int)v; q = e;
+        }
+        if (g_ntdll) magic_mods_subscribe("X2-SMOOTH-001-TRACEDLL", trace_on_load, trace_on_unload);
+    }
     if (!smooth_master()) { log_line("  X2-SMOOTH-001: master X2-SMOOTH=0 - off"); return false; }
     uint8_t* a = sig_find("X2-SMOOTH-001 viewport loop head",
         "BF 01 00 00 00 33 F6 33 DB 57 53 E8 ?? ?? ?? ?? 83 C4 08 85 C0 0F 8F ?? ?? ?? ?? 0F 85 ?? ?? ?? ?? 33 FF", 0x60593F);
