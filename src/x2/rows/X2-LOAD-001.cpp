@@ -20,7 +20,12 @@
 // U 19:36: battle end still slow; D: after the results menu (MENU-001 stock 19:35:41-49) the field returns at 60 Hz with
 // no map-id change (vblank source +215 per 600 invocations). X2-LOAD-001-IDLEHOLD (default 1): 20 logic invocations in
 // a row under 0.1 ms (the poll-wait; normal frames 1-3 ms on the Deck) start the same hold, whatever the trigger.
+// X2-LOAD-001-WAITS=1 (diagnostic, default 0, needs TRACE): D 19:53 Deck wchan sampling: during the load wait the main
+// thread is blocked in ntsync_schedule (a Win32 sync-object wait) ~60% of the time. Hooks ntdll NtWaitForSingleObject /
+// NtWaitForMultipleObjects / NtDelayExecution; while the trace runs, waits on the game thread are summed per first
+// FFX-2.exe return address on the stack (count, total ms, last timeout) and dumped at the trace end.
 #include "../x2.h"
+#include <winternl.h>
 
 namespace x2 {
 
@@ -42,6 +47,61 @@ static bool  g_held = false;
 static int   g_busy = 0;
 static DWORD g_hold_t0 = 0;
 static int   g_idlehold = 1;
+static int   g_waits = 0;
+static DWORD g_game_tid = 0;
+struct WaitSite { uint32_t gva; int kind; LONG n; double ms; int64_t last_to; };
+static WaitSite g_ws[48];
+static int g_nws = 0;
+typedef LONG (NTAPI* ntwso_t)(HANDLE, BOOLEAN, PLARGE_INTEGER);
+typedef LONG (NTAPI* ntwmo_t)(ULONG, const HANDLE*, int, BOOLEAN, PLARGE_INTEGER);
+typedef LONG (NTAPI* ntdel_t)(BOOLEAN, PLARGE_INTEGER);
+static ntwso_t g_ntwso = nullptr;
+static ntwmo_t g_ntwmo = nullptr;
+static ntdel_t g_ntdel = nullptr;
+static bool waits_live() { return g_waits && g_tleft > 0 && GetCurrentThreadId() == g_game_tid; }
+static uint32_t exe_caller() {
+    void* fr[24];
+    USHORT n = RtlCaptureStackBackTrace(1, 24, fr, nullptr);
+    for (USHORT i = 0; i < n; i++) if (in_image(fr[i])) return rt_to_gva(fr[i]);
+    return 0;
+}
+static void wait_note(int kind, double ms, PLARGE_INTEGER to) {
+    uint32_t g = exe_caller();
+    int i = 0;
+    for (; i < g_nws; i++) if (g_ws[i].gva == g && g_ws[i].kind == kind) break;
+    if (i == g_nws) { if (g_nws >= 48) return; g_ws[g_nws++] = { g, kind, 0, 0.0, 0 }; }
+    g_ws[i].n++; g_ws[i].ms += ms; g_ws[i].last_to = to ? to->QuadPart : -1;
+}
+static double qpc_ms(const LARGE_INTEGER& a) { LARGE_INTEGER b; QueryPerformanceCounter(&b); return (b.QuadPart - a.QuadPart) * 1000.0 / g_qf.QuadPart; }
+static LONG NTAPI h_ntwso(HANDLE h, BOOLEAN al, PLARGE_INTEGER to) {
+    if (!waits_live()) return g_ntwso(h, al, to);
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    LONG r = g_ntwso(h, al, to);
+    __try { wait_note(1, qpc_ms(t), to); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return r;
+}
+static LONG NTAPI h_ntwmo(ULONG c, const HANDLE* hs, int wt, BOOLEAN al, PLARGE_INTEGER to) {
+    if (!waits_live()) return g_ntwmo(c, hs, wt, al, to);
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    LONG r = g_ntwmo(c, hs, wt, al, to);
+    __try { wait_note(2, qpc_ms(t), to); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return r;
+}
+static LONG NTAPI h_ntdel(BOOLEAN al, PLARGE_INTEGER to) {
+    if (!waits_live()) return g_ntdel(al, to);
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    LONG r = g_ntdel(al, to);
+    __try { wait_note(3, qpc_ms(t), to); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return r;
+}
+static void waits_dump() {
+    static const char* const K[4] = { "?", "WaitSingle", "WaitMulti", "Delay" };
+    log_line("LOADWAITS: %d sites (game thread, during the trace)", g_nws);
+    for (int i = 0; i < g_nws; i++)
+        log_line("  %s caller gva=0x%08X n=%ld total %.1f ms avg %.2f ms last timeout %lld (100 ns, <0 relative)", K[g_ws[i].kind],
+                 g_ws[i].gva, g_ws[i].n, g_ws[i].ms, g_ws[i].n ? g_ws[i].ms / g_ws[i].n : 0.0, (long long)g_ws[i].last_to);
+    g_nws = 0;
+}
 static int   g_idle = 0;                         // consecutive cheap logic invocations
 static const char* g_hold_why = "";
 
@@ -84,7 +144,7 @@ static void post() {
                  (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart,
                  (g_tstart.QuadPart - g_tprev.QuadPart) * 1000.0 / g_qf.QuadPart,
                  *g_backlog_count, *g_divider, *g_exec_byte, st, b8, bc, m1, m2);
-        if (--g_tleft == 0) log_line("LOADTRACE end");
+        if (--g_tleft == 0) { log_line("LOADTRACE end"); if (g_waits) waits_dump(); }
     }
     bool l = false;
     __try { l = g_loading() != 0; } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
@@ -98,6 +158,7 @@ static void post() {
 }
 
 static void pre() {
+    g_game_tid = GetCurrentThreadId();
     if (g_map) {
         int32_t m = *g_map;
         if (m != g_lastmap) {
@@ -124,6 +185,18 @@ static bool install() {
     g_trace = config_row("X2-LOAD-001-TRACE", 0);
     g_maphold = config_row("X2-LOAD-001-MAPHOLD", 1);
     g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", 1);
+    g_waits = g_trace ? config_row("X2-LOAD-001-WAITS", 0) : 0;
+    if (g_waits) {
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        void* a = nt ? (void*)GetProcAddress(nt, "NtWaitForSingleObject") : nullptr;
+        void* b = nt ? (void*)GetProcAddress(nt, "NtWaitForMultipleObjects") : nullptr;
+        void* c = nt ? (void*)GetProcAddress(nt, "NtDelayExecution") : nullptr;
+        bool ok = a && b && c && hook_entry("X2-LOAD-001-WAITS NtWaitForSingleObject", a, (void*)&h_ntwso, (void**)&g_ntwso)
+               && hook_entry("X2-LOAD-001-WAITS NtWaitForMultipleObjects", b, (void*)&h_ntwmo, (void**)&g_ntwmo)
+               && hook_entry("X2-LOAD-001-WAITS NtDelayExecution", c, (void*)&h_ntdel, (void**)&g_ntdel);
+        log_line("  X2-LOAD-001-WAITS: ntdll wait hooks %s", ok ? "on" : "FAILED");
+        if (!ok) g_waits = 0;
+    }
     QueryPerformanceFrequency(&g_qf);
     QueryPerformanceCounter(&g_tstart);
     if (g_trace || g_maphold) {
