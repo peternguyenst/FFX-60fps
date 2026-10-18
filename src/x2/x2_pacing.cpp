@@ -58,17 +58,26 @@ void pacing_set(bool on) {
 // needs main-thread idle time between frames (D 18/10 LOADWAITS: 8.5 ms per frame in the command-ring wait). At divider
 // 2 it takes ~1 s; its counting animation plays at half speed (U 18/10, user's choice). Skipping every second HD render
 // or present at divider 1 did not help (8.3 s / 15 s): the frame loop rate itself is what matters. re/ledger/LOAD-DECK.md.
+// Mode 2 (full-speed animation at 30 fps): the menu steps in Menu_CoroutineIterate 0x7645E0 only when
+// Sg_GetTurboFactor() <= the host-frame counter [0xDF6414], which the runner resets to 0 after each Sg_MainLoop. Each
+// host frame starts with backlog count 2 (Sg_MainLoop: count >= 2 -> skip flags, count--: a no-draw invocation, then a
+// drawn one) and the counter is set to 1 before the second, so the menu steps twice per rendered frame. The pad is
+// latched per invocation, so one press is seen once.
 static int g_menudiv2 = -1;
+static bool g_menu60 = false;                    // the game asked for divider 1 under a hold and we kept 2
+static volatile int32_t* g_hostctr = nullptr;    // [0xDF6414], from the runner (call site + 0xD: MOV ECX,[ctr])
 // Config page "Fast Results" (X2-CFG-MENU): the default, and the runtime switch (the next divider request follows it).
 int  pacing_menudiv2_default() { return on_wine() ? 1 : 0; }
 bool pacing_menudiv2_get() {
     if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", pacing_menudiv2_default());
     return g_menudiv2 != 0;
 }
-void pacing_menudiv2_set(bool on) { g_menudiv2 = on ? 1 : 0; }
+void pacing_menudiv2_set(bool on) { g_menudiv2 = on ? (g_menudiv2 > 1 ? g_menudiv2 : 2) : 0; }
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
+    if (req != 1) g_menu60 = false;
     if (pacing_menudiv2_get() && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
+        g_menu60 = true;
         PLOG("pacing: game asks divider 1 (wanted %u) under a stock hold -> swallowed, kept at 2 (X2-PACE-MENUDIV2)", prev);
         return true;
     }
@@ -89,6 +98,12 @@ void pacing_pre() {
 
     bool want_active = g_cfg.pacing && g_divider_hooked && g_hold == 0 && g_wanted_known && g_wanted >= 2;
     if (!want_active) {
+        if (g_menudiv2 == 2 && g_menu60 && g_hold > 0) {
+            if (!g_hostctr && g_mainloop_callsite && sig_match(g_mainloop_callsite + 0xD, "8B 0D"))
+                g_hostctr = (volatile int32_t*)abs_operand("host frame counter", g_mainloop_callsite + 0xF);
+            if (*g_backlog_count == 0) *g_backlog_count = 2;
+            else if (*g_backlog_count == 1 && g_hostctr && *g_hostctr < 1) *g_hostctr = 1;
+        }
         if (g_was_active) {                          // leaving 60 Hz: give the game back its pacing
             set_divider(g_wanted ? g_wanted : 2);
             set_exec(1);
