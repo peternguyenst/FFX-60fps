@@ -35,6 +35,17 @@ void pacing_hold_stock(const char* who, bool hold) {
     PLOG("pacing: %s %s stock pacing (holders now %d)", who, hold ? "holds" : "releases", g_hold);
 }
 
+// Give the game its stock pacing back now (divider, exec 1), e.g. when it enters load mode at the end of an
+// invocation: no Sg_MainLoop runs during a load, so pacing_pre cannot do it. The next invocation re-enters 60 Hz.
+void pacing_leave_now(const char* why) {
+    if (!g_was_active) return;
+    set_divider(g_wanted ? g_wanted : 2);
+    set_exec(1);
+    g_phase = 1;
+    g_was_active = false;
+    PLOG("pacing: stock now for %s (divider -> %u, exec -> 1) at inv %llu", why, g_wanted, g_inv);
+}
+
 void pacing_set(bool on) {
     if ((g_cfg.pacing != 0) == on) return;
     g_cfg.pacing = on ? 1 : 0;

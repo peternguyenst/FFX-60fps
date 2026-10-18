@@ -122,6 +122,7 @@
     <ClCompile Include="src\x2\rows\X2-MAG-032.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-FTBLINK.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-OP114.cpp" />
+    <ClCompile Include="src\x2\rows\X2-LOAD-001.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-FLASH.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-PSET.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-HIT.cpp" />
