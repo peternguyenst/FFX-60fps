@@ -56,9 +56,9 @@ void pacing_set(bool on) {
 // menus), keep the game at divider 2 when it asks for 1. The battle results screen asks for 60 fps; on the Steam Deck
 // (Proton) it then takes 6-10 s (stock ~4 s; PC near-instant): it ends when background work finishes, and that work
 // needs main-thread idle time between frames (D 18/10 LOADWAITS: 8.5 ms per frame in the command-ring wait). At divider
-// 2 it takes ~1 s; its counting animation plays at half speed (U 18/10, user's choice). Skipping every second HD render
+// 2 it takes ~1 s, but alone its animation plays at half speed (the menu steps once per host frame). Skipping every second HD render
 // or present at divider 1 did not help (8.3 s / 15 s): the frame loop rate itself is what matters. re/ledger/LOAD-DECK.md.
-// Mode 2 (full-speed animation at 30 fps): the menu steps in Menu_CoroutineIterate 0x7645E0 only when
+// Full-speed animation at 30 fps (U 18/10: works, ~1 s and normal animation): the menu steps in Menu_CoroutineIterate 0x7645E0 only when
 // Sg_GetTurboFactor() <= the host-frame counter [0xDF6414], which the runner resets to 0 after each Sg_MainLoop. Each
 // host frame starts with backlog count 2 (Sg_MainLoop: count >= 2 -> skip flags, count--: a no-draw invocation, then a
 // drawn one) and the counter is set to 1 before the second, so the menu steps twice per rendered frame. The pad is
@@ -72,7 +72,7 @@ bool pacing_menudiv2_get() {
     if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", pacing_menudiv2_default());
     return g_menudiv2 != 0;
 }
-void pacing_menudiv2_set(bool on) { g_menudiv2 = on ? (g_menudiv2 > 1 ? g_menudiv2 : 2) : 0; }
+void pacing_menudiv2_set(bool on) { g_menudiv2 = on ? 1 : 0; }
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
     if (req != 1) g_menu60 = false;
@@ -98,7 +98,7 @@ void pacing_pre() {
 
     bool want_active = g_cfg.pacing && g_divider_hooked && g_hold == 0 && g_wanted_known && g_wanted >= 2;
     if (!want_active) {
-        if (g_menudiv2 == 2 && g_menu60 && g_hold > 0) {
+        if (g_menudiv2 && g_menu60 && g_hold > 0) {
             if (!g_hostctr && g_mainloop_callsite && sig_match(g_mainloop_callsite + 0xD, "8B 0D"))
                 g_hostctr = (volatile int32_t*)abs_operand("host frame counter", g_mainloop_callsite + 0xF);
             if (*g_backlog_count == 0) *g_backlog_count = 2;
