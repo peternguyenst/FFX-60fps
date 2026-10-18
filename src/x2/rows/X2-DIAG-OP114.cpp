@@ -19,6 +19,9 @@
 // "dressUpCenter" (type 0: sweep = top - t * height, t = [0x18E4D4C] += 1/17 per call; type 1: bottom - 0.1 * height
 // once flag [0xD6F7A0] == 1), "dressUpUpper", "zoomAftMat". Logged per call (X2-DIAG-OP114-N10F, default 1500): kind,
 // pc, word, t, centre, flag after the call.
+// Also per invocation (pre, while the list is non-empty, same budget): Sg_MainLoop 0x60559D releases the effect on the
+// actors listed at 0x1E1CC00 (FUN_004515d0(model, 0)) when op 0x10F's FUN_00859e00 has not set [0x18E4D50] since the
+// last check; logged: kind, [0x18E4D50], list[0..3].
 #include "../x2.h"
 #include <stdio.h>
 
@@ -40,6 +43,8 @@ static float* g_dress_t = nullptr;       // 0x18E4D4C
 static float* g_dress_c = nullptr;       // 0x18E4D58
 static int32_t* g_dress_f = nullptr;     // 0xD6F7A0
 static volatile LONG g_left10f = 0;
+static int32_t* g_fx_flag = nullptr;     // 0x18E4D50
+static uint32_t* g_fx_list = nullptr;    // 0x1E1CC00 [4]
 
 static uint8_t* __cdecl h_op10f(uint8_t* scr, uint8_t* pc) {
     uint8_t* r = g_orig10f(scr, pc);
@@ -54,6 +59,14 @@ static uint8_t* __cdecl h_op10f(uint8_t* scr, uint8_t* pc) {
 }
 
 static void pre() {
+    if (g_fx_list && g_left10f > 0 && g_fx_list[0]) {
+        static const char* const K[4] = { "LOGIC", "RENDER", "BACKLOG", "STOCK" };
+        InterlockedDecrement(&g_left10f);
+        __try {
+            log_line("OP10F-PRE %s flag %d list %08X %08X %08X %08X", K[pacing_kind() & 3], *g_fx_flag, g_fx_list[0],
+                     g_fx_list[1], g_fx_list[2], g_fx_list[3]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     static bool was = false;
     bool down = (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) != 0;
     if (down && !was) {
@@ -159,6 +172,12 @@ static bool install() {
         g_dress_t = (float*)abs_operand("dressUp t", dt + 2);
         g_dress_c = (float*)abs_operand("dressUp centre", dt + 0x1C);
         g_dress_f = (int32_t*)abs_operand("dressUp flag", df + 2);
+        uint8_t* rl = sig_find("X2-DIAG-OP114 effect release check",
+            "83 3D ?? ?? ?? ?? 00 C7 05 ?? ?? ?? ?? 00 00 00 00 75 3B 83 3D ?? ?? ?? ?? 00 74 32", 0x60559D);
+        if (rl) {
+            g_fx_flag = (int32_t*)abs_operand("fx flag", rl + 2);
+            g_fx_list = (uint32_t*)abs_operand("fx list", rl + 0x15);
+        }
         if (g_dress_t && g_dress_c && g_dress_f) {
             g_orig10f = (op_t)f10f;
             g_left10f = config_row("X2-DIAG-OP114-N10F", 1500);
