@@ -17,6 +17,9 @@
 // data loads elsewhere). H: at 60 Hz on the Deck the main thread leaves the loader no time (frame fully used, the
 // frame-sync spin). X2-LOAD-001-MAPHOLD (default 1): from a map-id change, hold stock pacing until 30 invocations in a
 // row take >= 0.3 ms (the game is doing frame work again), cap 20 s; logs the hold length.
+// U 19:36: battle end still slow; D: after the results menu (MENU-001 stock 19:35:41-49) the field returns at 60 Hz with
+// no map-id change (vblank source +215 per 600 invocations). X2-LOAD-001-IDLEHOLD (default 1): 20 logic invocations in
+// a row under 0.1 ms (the poll-wait; normal frames 1-3 ms on the Deck) start the same hold, whatever the trigger.
 #include "../x2.h"
 
 namespace x2 {
@@ -38,21 +41,37 @@ static int   g_maphold = 1;
 static bool  g_held = false;
 static int   g_busy = 0;
 static DWORD g_hold_t0 = 0;
+static int   g_idlehold = 1;
+static int   g_idle = 0;                         // consecutive cheap logic invocations
+static const char* g_hold_why = "";
+
+static void hold_start(const char* why) {
+    if (g_held) return;
+    g_held = true;
+    g_busy = 0;
+    g_hold_t0 = GetTickCount();
+    g_hold_why = why;
+    pacing_hold_stock("X2-LOAD-001 hold", true);
+    log_line("X2-LOAD-001: stock-pacing hold (%s)", why);
+}
 
 static void post() {
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    double inv_ms = (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart;
+    if (g_idlehold && !g_held && pacing_kind() == INV_LOGIC) {
+        g_idle = inv_ms < 0.1 ? g_idle + 1 : 0;
+        if (g_idle >= 20) { g_idle = 0; hold_start("poll-wait: 20 cheap logic invocations"); }
+    }
     if (g_held) {
-        LARGE_INTEGER now; QueryPerformanceCounter(&now);
-        double ms = (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart;
-        g_busy = ms >= 0.3 ? g_busy + 1 : 0;
+        g_busy = inv_ms >= 0.3 ? g_busy + 1 : 0;
         DWORD el = GetTickCount() - g_hold_t0;
         if (g_busy >= 30 || el > 20000) {
             g_held = false;
-            pacing_hold_stock("X2-LOAD-001-MAPHOLD", false);
-            log_line("X2-LOAD-001-MAPHOLD: released after %lu ms (%s)", el, g_busy >= 30 ? "frame work again" : "cap");
+            pacing_hold_stock("X2-LOAD-001 hold", false);
+            log_line("X2-LOAD-001: hold (%s) released after %lu ms (%s)", g_hold_why, el, g_busy >= 30 ? "frame work again" : "cap");
         }
     }
     if (g_tleft > 0) {
-        LARGE_INTEGER now; QueryPerformanceCounter(&now);
         static const char* const K[4] = { "L", "R", "B", "S" };
         int st = -1, b8 = -1, bc = -1, m1 = -1, m2 = -1;
         __try {
@@ -84,17 +103,13 @@ static void pre() {
         if (m != g_lastmap) {
             if (g_lastmap != 0x7FFFFFFF) {
                 if (g_trace) { g_tleft = g_trace; log_line("LOADTRACE: map 0x%X -> 0x%X, next %d invocations", g_lastmap, m, g_trace); }
-                if (g_maphold && !g_held && m != 0x17) {
-                    g_held = true;
-                    g_busy = 0;
-                    g_hold_t0 = GetTickCount();
-                    pacing_hold_stock("X2-LOAD-001-MAPHOLD", true);
-                }
+                if (g_maphold && m != 0x17) hold_start("map change");
             }
             g_lastmap = m;
         }
-        if (g_tleft > 0 || g_held) { g_tprev = g_tstart; QueryPerformanceCounter(&g_tstart); }
     }
+    g_tprev = g_tstart;
+    QueryPerformanceCounter(&g_tstart);
     if (!g_in) return;
     g_in = false;
     if (g_n <= 50) log_line("X2-LOAD-001: load over after %lu ms", GetTickCount() - g_t0);
@@ -108,6 +123,9 @@ static bool install() {
     g_loading = (loading_t)fn;
     g_trace = config_row("X2-LOAD-001-TRACE", 0);
     g_maphold = config_row("X2-LOAD-001-MAPHOLD", 1);
+    g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", 1);
+    QueryPerformanceFrequency(&g_qf);
+    QueryPerformanceCounter(&g_tstart);
     if (g_trace || g_maphold) {
         uint8_t* at = sig_find("X2-LOAD-001 map id (title-map test)", "83 3D ?? ?? ?? ?? 17 75 49 E8", 0x466FCD);
         g_map = at ? (volatile int32_t*)abs_operand("map id", at + 2) : nullptr;
