@@ -9,8 +9,12 @@
 // effects were drawn every second frame (U 16/10/2026: transformation blink, gone with X2-MAG-008 off via F8). While
 // such a DLL is loaded the dispatch runs on render-only invocations too; their update steps only when the exec getter
 // (+0x400) is non-zero (S, magic_0646 FUN_10002b90 / FUN_10003fb0). Ledger: re/ledger/XFADE-BLINK.md.
+// X2-MAG-008-PASS-LIST (ini, default empty): magic numbers passed as well, by name (U 18/10/2026: Rikku -> Warrior
+// 0885 -> 0937 -> 0906 still alternates dark / lit frames after the body fixes; none of the three is string-matched,
+// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones.
 #include "../x2.h"
 #include <string.h>
+#include <stdlib.h>
 
 namespace x2 {
 
@@ -52,9 +56,18 @@ static bool     g_xown[8];                       // matched by string (only thes
 // Chain: a DLL loaded within 500 ms of a passed DLL's unload is passed too (the dressphere change runs magic_0646 ->
 // magic_0938 -> magic_0931 back to back, 2-3 ms apart; 0938 has neither string; U 16/10/2026 20:45 still blinked).
 static volatile DWORD g_chain_until = 0;
+static int g_plist[32], g_nplist = 0;
+static bool in_plist(const char* name) {
+    const char* p = strstr(name, "magic_");
+    int n = p ? atoi(p + 6) : -1;
+    for (int i = 0; i < g_nplist; i++) if (g_plist[i] == n) return true;
+    return false;
+}
 static void on_load(uint8_t* base, uint32_t size, const char* name) {
     bool chained = g_chain_until && (LONG)(GetTickCount() - g_chain_until) < 0;
-    bool own = has_xfade(base, size);
+    bool listed = in_plist(name);
+    bool own = listed || has_xfade(base, size);
+    if (listed) log_line("X2-MAG-008-PASS: %s is in X2-MAG-008-PASS-LIST", name);
     if (!own) {
         if (!chained) return;
         log_line("X2-MAG-008-PASS: %s loaded right after a passed DLL - passed too (chain)", name);
@@ -98,6 +111,14 @@ static bool install() {
     }
     g_dispatch = (dispatch_t)target;
     g_pass_on = config_row("X2-MAG-008-PASS", 1);
+    char buf[160];
+    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "");
+    for (char* q = buf; *q && g_nplist < 32;) {
+        char* e = nullptr; long v = strtol(q, &e, 10);
+        if (e == q) { q++; continue; }
+        g_plist[g_nplist++] = (int)v; q = e;
+    }
+    if (g_nplist) log_line("  X2-MAG-008-PASS-LIST: %d magic DLL(s) passed by number", g_nplist);
     if (g_pass_on && !magic_mods_subscribe("X2-MAG-008", on_load, on_unload)) g_pass_on = 0;
     if (!patch_call_rel32(site, target, (void*)&h_fallback_dispatch)) {
         log_line("  X2-MAG-008: patch failed");
