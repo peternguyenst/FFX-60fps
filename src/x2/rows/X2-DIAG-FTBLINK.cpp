@@ -6,6 +6,11 @@
 // While a listed magic DLL is loaded (X2-DIAG-FTBLINK-DLL, default "681 80": Full Throttle and a plain attack for
 // comparison) every invocation logs, at its end: kind, the list count, state [0], +0x338, +0x33C (max 240 lines per load).
 // H1 holds if, for 0681 only, the state clears the list each invocation and RENDER counts drop below LOGIC counts.
+// X2-DIAG-FTBLINK-ALT=1 (dressphere outer-model blink, re/ledger/XFADE-BLINK.md; U 18/10: two consecutive frames draw the
+// new outfit faint, then opaque): per invocation snapshot every actor record (table 0x01CC9604, stride 0x910, up to 48)
+// and 0x400 bytes of the first 4 HD model-list objects (hdframe+0xE9D4 dword handles); per dword count A/B/A/B
+// alternation (value == value two invocations back, != the previous one). Every 120 invocations of a watched DLL, log
+// the dwords that alternated on >= 80% of them, with the last LOGIC and RENDER values (hex and float).
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +29,64 @@ static volatile LONG g_active = 0;
 static int   g_lines = 0;
 extern Row row_DIAGFTBLINK;
 
+enum { ALT_ACT = 48, ALT_MDL = 4, ALT_MDLB = 0x400, ALT_BYTES = ALT_ACT * 0x910 + ALT_MDL * ALT_MDLB, ALT_DW = ALT_BYTES / 4 };
+static int      g_alt_on = 0;
+static uint32_t g_snap[3][ALT_DW];               // ring: [g_si] newest
+static uint32_t g_lastL[ALT_DW], g_lastR[ALT_DW];
+static uint16_t g_alt[ALT_DW];
+static int      g_si = 0, g_nsnap = 0, g_nalt = 0;
+static uint16_t g_actid[ALT_ACT];
+
+static void alt_snapshot() {
+    uint32_t* cur = g_snap[g_si];
+    memset(cur, 0, sizeof(g_snap[0]));
+    __try {
+        uint8_t* base = *g_table; int n = *g_acount;
+        if (n > ALT_ACT) n = ALT_ACT;
+        for (int i = 0; base && i < n; i++) {
+            memcpy((uint8_t*)cur + i * 0x910, base + i * 0x910, 0x910);
+            g_actid[i] = *(uint16_t*)(base + i * 0x910);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try {
+        uint8_t* hf = *g_hdframe;
+        int cnt = hf ? *(int32_t*)(hf + 0xE9CC) : 0;
+        uint32_t* arr = hf ? *(uint32_t**)(hf + 0xE9D4) : nullptr;
+        for (int j = 0; arr && j < cnt && j < ALT_MDL; j++) {
+            __try { memcpy((uint8_t*)cur + ALT_ACT * 0x910 + j * ALT_MDLB, (void*)(uintptr_t)arr[j], ALT_MDLB); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    memcpy(render_only() ? g_lastR : g_lastL, cur, sizeof(g_snap[0]));
+    if (g_nsnap >= 2) {
+        const uint32_t* p1 = g_snap[(g_si + 2) % 3];
+        const uint32_t* p2 = g_snap[(g_si + 1) % 3];
+        for (int o = 0; o < ALT_DW; o++)
+            if (cur[o] == p2[o] && cur[o] != p1[o] && g_alt[o] < 0xFFFF) g_alt[o]++;
+        g_nalt++;
+    }
+    g_nsnap++;
+    g_si = (g_si + 1) % 3;
+    if (g_nalt < 120) return;
+    int shown = 0;
+    log_line("FTBLINK-ALT %s: dwords alternating on >= 80%% of %d invocations:", g_name, g_nalt);
+    for (int o = 0; o < ALT_DW && shown < 60; o++) {
+        if (g_alt[o] * 5 < g_nalt * 4) continue;
+        uint32_t b = o * 4, L = g_lastL[o], R = g_lastR[o];
+        float fl, fr; memcpy(&fl, &L, 4); memcpy(&fr, &R, 4);
+        if (b < ALT_ACT * 0x910)
+            log_line("  actor %d (id %04X) +0x%03X: LOGIC %08X (%g) RENDER %08X (%g) alt %d", b / 0x910, g_actid[b / 0x910],
+                     b % 0x910, L, fl, R, fr, g_alt[o]);
+        else
+            log_line("  model %d +0x%03X: LOGIC %08X (%g) RENDER %08X (%g) alt %d", (b - ALT_ACT * 0x910) / ALT_MDLB,
+                     (b - ALT_ACT * 0x910) % ALT_MDLB, L, fl, R, fr, g_alt[o]);
+        shown++;
+    }
+    log_line("FTBLINK-ALT %s: %d dwords shown", g_name, shown);
+    memset(g_alt, 0, sizeof(g_alt));
+    g_nalt = 0;
+}
+
 static void on_load(uint8_t* base, uint32_t, const char* name) {
     const char* p = strstr(name, "magic_");
     int n = p ? atoi(p + 6) : -1;
@@ -32,6 +95,7 @@ static void on_load(uint8_t* base, uint32_t, const char* name) {
             g_watch = base;
             strncpy_s(g_name, name, _TRUNCATE);
             g_lines = 0;
+            g_nsnap = 0; g_nalt = 0; memset(g_alt, 0, sizeof(g_alt));
             InterlockedExchange(&g_active, 1);
             log_line("X2-DIAG-FTBLINK: %s loaded - logging HD list count and clear state per invocation", name);
         }
@@ -41,6 +105,7 @@ static void on_unload(uint8_t* base) {
 }
 
 static void post() {
+    if (g_active && g_alt_on) alt_snapshot();
     if (!g_active || g_lines >= 600) return;
     int32_t cnt = -1, st = -1, b338 = -1, b33c = -1;
     __try {
@@ -93,6 +158,7 @@ static bool install() {
         if (e == p) { p++; continue; }
         g_list[g_nlist++] = (int)v; p = e;
     }
+    g_alt_on = config_row("X2-DIAG-FTBLINK-ALT", 0);
     if (!magic_mods_subscribe("X2-DIAG-FTBLINK", on_load, on_unload)) return false;
     log_line("  X2-DIAG-FTBLINK: state ptr gva=0x%08X (expected 0x00DCED88), hdframe ptr gva=0x%08X (expected 0x00DCDA04)",
              rt_to_gva(g_state), rt_to_gva(g_hdframe));
