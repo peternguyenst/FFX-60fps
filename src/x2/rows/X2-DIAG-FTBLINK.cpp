@@ -11,6 +11,9 @@
 // and 0x400 bytes of the first 4 HD model-list objects (hdframe+0xE9D4 dword handles); per dword count A/B/A/B
 // alternation (value == value two invocations back, != the previous one). Every 120 invocations of a watched DLL, log
 // the dwords that alternated on >= 80% of them, with the last LOGIC and RENDER values (hex and float).
+// Also (U 18/10: the sword close-up frames alternate near-black / lit; tint, fade, MAG-025 ruled out) the HD state:
+// hdframe [0xDCDA04] 0xEA00 bytes, PostProcessManager [0xDD10F4] 0x12400 bytes and the MotionBlur object [0xDDC74C]
+// 0x100 bytes (pointers from X2-DIAG-FLASH, which must be on).
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +32,11 @@ static volatile LONG g_active = 0;
 static int   g_lines = 0;
 extern Row row_DIAGFTBLINK;
 
-enum { ALT_ACT = 48, ALT_MDL = 4, ALT_MDLB = 0x400, ALT_BYTES = ALT_ACT * 0x910 + ALT_MDL * ALT_MDLB, ALT_DW = ALT_BYTES / 4 };
+enum { ALT_ACT = 48, ALT_MDL = 4, ALT_MDLB = 0x400, ALT_HF = 0xEA00, ALT_PPM = 0x12400, ALT_MB = 0x100,
+       ALT_O_MDL = ALT_ACT * 0x910, ALT_O_HF = ALT_O_MDL + ALT_MDL * ALT_MDLB, ALT_O_PPM = ALT_O_HF + ALT_HF,
+       ALT_O_MB = ALT_O_PPM + ALT_PPM, ALT_BYTES = ALT_O_MB + ALT_MB, ALT_DW = ALT_BYTES / 4 };
+extern uint8_t** g_ctx_ptr;                      // X2-DIAG-FLASH
+extern uint8_t** g_obj_ptr;
 static int      g_alt_on = 0;
 static uint32_t g_snap[3][ALT_DW];               // ring: [g_si] newest
 static uint32_t g_lastL[ALT_DW], g_lastR[ALT_DW];
@@ -57,6 +64,12 @@ static void alt_snapshot() {
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { uint8_t* hf = *g_hdframe; if (hf) memcpy((uint8_t*)cur + ALT_O_HF, hf, ALT_HF); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { uint8_t* p = g_ctx_ptr ? *g_ctx_ptr : nullptr; if (p) memcpy((uint8_t*)cur + ALT_O_PPM, p, ALT_PPM); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { uint8_t* p = g_obj_ptr ? *g_obj_ptr : nullptr; if (p) memcpy((uint8_t*)cur + ALT_O_MB, p, ALT_MB); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
     memcpy(render_only() ? g_lastR : g_lastL, cur, sizeof(g_snap[0]));
     if (g_nsnap >= 2) {
         const uint32_t* p1 = g_snap[(g_si + 2) % 3];
@@ -70,16 +83,20 @@ static void alt_snapshot() {
     if (g_nalt < 120) return;
     int shown = 0;
     log_line("FTBLINK-ALT %s: dwords alternating on >= 80%% of %d invocations:", g_name, g_nalt);
-    for (int o = 0; o < ALT_DW && shown < 60; o++) {
+    for (int o = 0; o < ALT_DW && shown < 150; o++) {
         if (g_alt[o] * 5 < g_nalt * 4) continue;
         uint32_t b = o * 4, L = g_lastL[o], R = g_lastR[o];
         float fl, fr; memcpy(&fl, &L, 4); memcpy(&fr, &R, 4);
         if (b < ALT_ACT * 0x910)
             log_line("  actor %d (id %04X) +0x%03X: LOGIC %08X (%g) RENDER %08X (%g) alt %d", b / 0x910, g_actid[b / 0x910],
                      b % 0x910, L, fl, R, fr, g_alt[o]);
+        else if (b < ALT_O_HF)
+            log_line("  model %d +0x%03X: LOGIC %08X (%g) RENDER %08X (%g) alt %d", (b - ALT_O_MDL) / ALT_MDLB,
+                     (b - ALT_O_MDL) % ALT_MDLB, L, fl, R, fr, g_alt[o]);
         else
-            log_line("  model %d +0x%03X: LOGIC %08X (%g) RENDER %08X (%g) alt %d", (b - ALT_ACT * 0x910) / ALT_MDLB,
-                     (b - ALT_ACT * 0x910) % ALT_MDLB, L, fl, R, fr, g_alt[o]);
+            log_line("  %s +0x%05X: LOGIC %08X (%g) RENDER %08X (%g) alt %d",
+                     b < ALT_O_PPM ? "hdframe" : b < ALT_O_MB ? "ppm" : "motionblur",
+                     b - (b < ALT_O_PPM ? ALT_O_HF : b < ALT_O_MB ? ALT_O_PPM : ALT_O_MB), L, fl, R, fr, g_alt[o]);
         shown++;
     }
     log_line("FTBLINK-ALT %s: %d dwords shown", g_name, shown);

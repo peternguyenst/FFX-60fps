@@ -21,8 +21,8 @@ typedef void(__fastcall* reset_t)(uint8_t*);
 static uint8_t* g_tint_fn = nullptr; static tint_t g_tint = nullptr;
 static uint8_t* g_bloom_fn = nullptr; static bloom_t g_bloom = nullptr;
 static uint8_t* g_reset_fn = nullptr; static reset_t g_reset = nullptr;
-static uint8_t** g_ctx_ptr = nullptr;            // [0xDD10F4]
-static uint8_t** g_obj_ptr = nullptr;            // [0xDDC74C]
+uint8_t** g_ctx_ptr = nullptr;                   // [0xDD10F4] (also read by X2-DIAG-FTBLINK-ALT)
+uint8_t** g_obj_ptr = nullptr;                   // [0xDDC74C] (also read by X2-DIAG-FTBLINK-ALT)
 
 struct Inv { int tint_n; float tint_a; int bloom_n; int bloom_arg; int at_n; float at_a; int at_lock, at_armed, at_b58, at_b59; float at_b5c; };
 static Inv g_cur = {};
