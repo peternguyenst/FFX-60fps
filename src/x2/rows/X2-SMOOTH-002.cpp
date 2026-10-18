@@ -4,6 +4,11 @@
 // F7 toggles). Sub-switches as FFX: WARP, RENDERHOLD, CHILDREL (default 1), NOCLOTH (default 0).
 // FFX-2 layout (PORT-SMOOTH.md §4-§6, S): Ch_DrawMain 0x6DBA00 (cdecl void, 2 CALLs), actor table 0x01CC9604 / count
 // 0x01CC9600, stride 0x910, root +0x1DC, flags +0x1A0, parent +0x1A8 (child root = local x parent root, 0x6E0C50).
+// X2-SMOOTH-002-PEEL (default 1): the OPU op 0x116 (FUN_0085b3d0, DLL op table = magic service +0xC24, entry +0x58)
+// copies an actor's pose for the dressphere-change silhouette / outfit peel (actor = DAT_01b31040[unit+0x18]); the copy
+// and the actor's own draw then took different roots (half-way vs tick k) and the two models came apart (U 18/10/2026,
+// F6 = this row off aligns them; re/ledger/XFADE-BLINK.md). An actor copied by op 0x116 in the last 4 invocations keeps
+// the game's root (no interpolation, no render hold).
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -37,6 +42,13 @@ static bool  g_applied_inv = false;
 static bool  g_recorded_inv = false;       // history rotated in this invocation (at the draw)
 static int   g_childrel = 0;
 static int   g_warp = 1, g_warp_lines = 0;
+static int   g_peel = 1;
+static uint32_t g_inv = 0;
+static uint32_t* g_peel_inv = nullptr;     // MAXA: g_inv + 1 when op 0x116 last copied the actor (0 = never)
+static uint8_t* volatile* g_chrtab = nullptr;   // DAT_01b31040: battle chr index -> actor
+typedef void* (__cdecl* op_t)(uint8_t* scr, void* pc);
+static op_t  g_op116 = nullptr;
+static LONG  g_peel_marks = 0, g_peel_skips = 0;
 static float g_warp_min = 30.0f, g_warp_ratio = 3.0f;
 static LONG  g_warps = 0;
 // SMOOTH-002-RENDERHOLD (default 1): on a render-only invocation an actor whose root is no longer its tick-k root was
@@ -63,6 +75,32 @@ static LONG  g_lwindows = 0, g_child = 0, g_skip_hist = 0, g_skip_moved = 0;
 
 static inline bool is_child(const uint8_t* a) { return *(const uint32_t*)(a + PARENT) != 0; }
 static inline bool is_cloth(const uint8_t* a) { return (*(const uint32_t*)(a + FLAGS) & 0x600000) == 0x600000; }
+
+static void* __cdecl h_op116(uint8_t* scr, void* pc) {
+    if (g_peel && row_SMOOTH002.on) {
+        __try {
+            uint8_t* unit = *(uint8_t**)(scr + 0x220);
+            uint8_t* a = unit ? g_chrtab[unit[0x18]] : nullptr;
+            uint8_t* base = *g_table;
+            int n = *g_count;
+            if (a && base && n > 0 && a >= base && a < base + (size_t)(n < MAXA ? n : MAXA) * STRIDE &&
+                (uint32_t)(a - base) % STRIDE == 0) {
+                if (InterlockedIncrement(&g_peel_marks) == 1)
+                    log_line("X2-SMOOTH-002-PEEL: op 0x116 copies actor slot %d id 0x%04X - its root keeps the game value",
+                             (int)((a - base) / STRIDE), *(uint16_t*)a);
+                g_peel_inv[(a - base) / STRIDE] = g_inv + 1;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return g_op116(scr, pc);
+}
+
+static bool peeled(int i) {
+    uint32_t t = g_peel_inv ? g_peel_inv[i] : 0;
+    if (!g_peel || !t || g_inv + 1 - t > 4) return false;
+    g_peel_skips++;
+    return true;
+}
 
 static void write_slot(int i, float* root, const float* out) {
     int w = g_w_n++;
@@ -134,6 +172,7 @@ static void apply_interp() {
         ActHist& h = g_h[i];
         if (h.n < 2 || h.id != *(uint16_t*)a) { g_skip_hist++; continue; }
         if (g_nocloth && is_cloth(a)) continue;
+        if (peeled(i)) continue;
         float* root = (float*)(a + ROOT);
         if (memcmp(root, h.m[1], 64) != 0) { g_skip_moved++; continue; }
         if (g_warp) {
@@ -169,6 +208,7 @@ static void apply_render_hold() {
         if (g_childrel && is_child(a)) continue;
         ActHist& h = g_h[i];
         if (h.n < 1 || h.id != *(uint16_t*)a) continue;
+        if (peeled(i)) continue;
         float* root = (float*)(a + ROOT);
         if (memcmp(root, h.m[1], 64) == 0) continue;
         if (g_rh_lines < 20) {
@@ -250,6 +290,7 @@ static void restore() {
 }
 
 static void pre() {
+    g_inv++;
     smooth_poll_hotkey();
     g_traced_inv = false;
     bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
@@ -305,14 +346,41 @@ static void post() {
     static LONG last = 0;
     if (g_diag && g_lwindows - last >= 600) {
         last = g_lwindows;
-        log_line("X2-SMOOTH-002: logic windows=%ld interp=%ld interp_cut=%ld warps=%ld renderhold=%ld skip(hist=%ld moved=%ld) | children=%ld actors=%d live=%d",
-                 g_lwindows, g_st.interp, g_st.interp_cut, g_warps, g_rh_held, g_skip_hist, g_skip_moved, g_child, *g_count, smooth_live(2));
+        log_line("X2-SMOOTH-002: logic windows=%ld interp=%ld interp_cut=%ld warps=%ld renderhold=%ld skip(hist=%ld moved=%ld peel=%ld) | children=%ld actors=%d live=%d",
+                 g_lwindows, g_st.interp, g_st.interp_cut, g_warps, g_rh_held, g_skip_hist, g_skip_moved, g_peel_skips, g_child, *g_count, smooth_live(2));
     }
     static LONG reported = 0;
     if (!reported && g_st.interp > 0) {
         reported = 1;
         log_line("X2-SMOOTH-002: first interpolated actor root on a logic invocation");
     }
+}
+
+static void install_peel() {
+    g_peel = 0;
+    uint8_t* at = sig_find("X2-SMOOTH-002-PEEL MagicFile_Start table push",
+        "0F 94 C0 50 E8 ?? ?? ?? ?? 68 ?? ?? ?? ?? C7 05 ?? ?? ?? ?? 01 00 00 00 FF 15", 0x8578D1);
+    if (!at) return;
+    uint8_t* svc = abs_operand("service table", at + 0x0A);
+    if (!svc) return;
+    uint8_t* tab = (uint8_t*)(uintptr_t)*(uint32_t*)(svc + 0xC24);
+    if (!in_image(tab)) { log_line("  X2-SMOOTH-002-PEEL: service +0xC24 = %p not in the image - off", tab); return; }
+    uint32_t* entry = (uint32_t*)(tab + 0x16 * 4);
+    uint8_t* fn = (uint8_t*)(uintptr_t)*entry;
+    // PUSH EBP; MOV EBP,ESP; SUB ESP,0xE4; cookie; FLDZ; PUSH EBX/ESI/EDI; EDI=scr; ESI=pc; EBX=[scr+0x220];
+    // LEA ECX,[EDI+0x300]; MOVZX EAX,[EBX+0x18]; MOV EDX,[EAX*4+chrtab]
+    if (!in_image(fn) || !sig_match(fn, "55 8B EC 81 EC E4 00 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC D9 EE 53 56 57 8B 7D 08 "
+                                        "8B 75 0C 8B 9F 20 02 00 00 8D 8F 00 03 00 00 0F B6 43 18 8B 14 85")) {
+        log_line("  X2-SMOOTH-002-PEEL: op table entry 0x116 = %p is not FUN_0085b3d0 - off", fn);
+        return;
+    }
+    g_chrtab = (uint8_t* volatile*)abs_operand("chr table", fn + 0x31);
+    if (!g_chrtab) return;
+    g_op116 = (op_t)fn;
+    if (!patch_u32(entry, (uint32_t)(uintptr_t)&h_op116)) return;
+    g_peel = 1;
+    log_line("  X2-SMOOTH-002-PEEL: op table gva=0x%08X (expected 0x00D6F7B8) entry 0x116 gva=0x%08X (0x0085B3D0) -> stub, "
+             "chr table gva=0x%08X (0x01B31040)", rt_to_gva(tab), rt_to_gva(fn), rt_to_gva((const void*)g_chrtab));
 }
 
 static bool install() {
@@ -351,6 +419,10 @@ static bool install() {
     g_warp_min = (float)config_row("X2-SMOOTH-002-WARP-MIN", 30);
     g_warp_ratio = (float)config_row("X2-SMOOTH-002-WARP-RATIO", 3);
     g_renderhold = config_row("X2-SMOOTH-002-RENDERHOLD", 1);
+    g_peel = config_row("X2-SMOOTH-002-PEEL", 1);
+    g_peel_inv = (uint32_t*)calloc(MAXA, sizeof(uint32_t));
+    if (g_peel && g_peel_inv) install_peel();
+    else g_peel = 0;
     for (int i = 0; i < 2; i++) {
         if (!patch_call_rel32(sites[i], fn, (void*)&h_draw)) {
             if (i == 1) patch_call_rel32(sites[0], (void*)&h_draw, fn);
