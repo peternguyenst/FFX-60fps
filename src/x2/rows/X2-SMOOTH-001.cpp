@@ -8,6 +8,10 @@
 // setter CALLs (Gfx_SetCameraFov / Gfx_SetCameraAspect) record the game's values, and an interpolated frame calls the
 // setters again with the midpoints (the cut test stays on camera block +0x10/+0x14/+0x1C).
 // Evidence: outer repo re/ledger/PORT-SMOOTH.md §1-§3 (S).
+// X2-SMOOTH-001-RHCUT (default 0, test): render-hold also when the render-only view jumped beyond SMOOTH_CUT_DIST.
+// U 18/10/2026 (dressphere change, Warrior): three consecutive frames dark close-up / lit battle floor / dark close-up;
+// H: the change's camera is set on logic invocations only, a render-only frame gets the battle camera, which the
+// distance test passes as a cut. Logs the first held jump and counts them.
 #include "x2_smooth.h"
 #include <string.h>
 #include <math.h>
@@ -109,10 +113,14 @@ static void write_view(const float* out, int tag) {
     if (tag == 3 || tag == 1) { commit_slot0(); g_committed = true; }
 }
 
+static int  g_rhcut = 0;
+static LONG g_rhcut_n = 0, g_rhtag_n = 0;
 static void render_hold(int vp) {
     CamHist& h = g_h[vp];
     if (!g_renderhold || !h.valid || !smooth_live(1) || *g_dbg) return;
     int tag = src_tag();
+    if (tag != h.tag && g_rhcut && InterlockedIncrement(&g_rhtag_n) <= 4)    // not held: log the source switch
+        log_line("X2-SMOOTH-001-RHCUT: render-only camera source %d differs from tick k's %d (vp %d) - not held", tag, h.tag, vp);
     if (tag != h.tag || (tag == 1 && vp == 1)) return;
     if (g_written && memcmp(g_view, g_out, 64) == 0) return;       // already ours this invocation
     InterlockedIncrement(&g_rh_checked);
@@ -121,7 +129,11 @@ static void render_hold(int vp) {
     if (!smooth_affine_inverse(g_view, ia) || !smooth_affine_inverse(h.prev, ib)) return;
     float dx = ia[12] - ib[12], dy = ia[13] - ib[13], dz = ia[14] - ib[14];
     float d = sqrtf(dx * dx + dy * dy + dz * dz);                // eye moved this far outside a logic tick
-    if (d > SMOOTH_CUT_DIST) return;                             // a cut on a render-only frame: let it through
+    if (d > SMOOTH_CUT_DIST) {                                   // a cut on a render-only frame: let it through
+        if (!g_rhcut) return;
+        if (InterlockedIncrement(&g_rhcut_n) == 1)
+            log_line("X2-SMOOTH-001-RHCUT: first render-only view jump past the cut distance (eye moved %.2f, source %d) - held", d, tag);
+    }
     g_rh_sum += d;
     if (d > g_rh_max) g_rh_max = d;
     write_view(h.prev, tag);
@@ -255,9 +267,9 @@ static void post() {
     static LONG last = 0;
     if (g_logic_calls - last >= 1800) {
         last = g_logic_calls;
-        log_line("X2-SMOOTH-001: logic calls=%ld interp=%ld cut=%ld skip_hist=%ld fov_interp=%ld fov_cut=%ld rot_cuts=%ld | renderhold "
+        log_line("X2-SMOOTH-001: rhcut=%ld logic calls=%ld interp=%ld cut=%ld skip_hist=%ld fov_interp=%ld fov_cut=%ld rot_cuts=%ld | renderhold "
                  "checked=%ld held=%ld eye avg %.2f max %.2f | lastwrite commits=%ld rearmed=%ld | src=%d live=%d",
-                 g_logic_calls, g_st.interp, g_st.interp_cut, g_skip_hist, g_fov_interp, g_fov_cut, g_rot_cuts, g_rh_checked, g_rh_held,
+                 g_rhcut_n, g_logic_calls, g_st.interp, g_st.interp_cut, g_skip_hist, g_fov_interp, g_fov_cut, g_rot_cuts, g_rh_checked, g_rh_held,
                  g_rh_held ? g_rh_sum / g_rh_held : 0.0f, g_rh_max, g_lw_commits, g_lw_rearm, src_tag(), smooth_live(1));
     }
     static LONG reported = 0;
@@ -336,6 +348,7 @@ static bool install() {
     g_fov = config_row("X2-SMOOTH-001-FOV", 1);
     g_renderhold = config_row("X2-SMOOTH-001-RENDERHOLD", 1);
     g_cut_cos = cosf((float)config_row("X2-SMOOTH-001-CUTDEG", 20) * 0.017453293f);
+    g_rhcut = config_row("X2-SMOOTH-001-RHCUT", 0);
     uint8_t* fs = g_fov ? sig_find("X2-SMOOTH-001-FOV setters",
         "8D 45 CC 50 E8 ?? ?? ?? ?? 8D 45 D0 50 E8 ?? ?? ?? ?? 83 C4 08 83 3D", 0x6504DF) : nullptr;
     if (g_fov) {
