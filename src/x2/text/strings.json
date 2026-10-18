@@ -81,6 +81,16 @@
    "kr": "수직 동기화",
    "ch": "垂直同步"
   },
+  "L_RESULTS": {
+   "en": "Fast Results",
+   "fr": "Résultats rapides",
+   "sp": "Resultados rápidos",
+   "de": "Schnelle Ergebnisse",
+   "it": "Risultati rapidi",
+   "jp": "戦闘結果を速く",
+   "kr": "전투 결과 빠르게",
+   "ch": "快速戰鬥結算"
+  },
   "V_ON": {
    "en": "ON",
    "fr": "ON",
@@ -240,6 +250,26 @@
    "jp": "元のまま(ティアリングが出ることがあります)",
    "kr": "원래대로(티어링이 생길 수 있습니다)",
    "ch": "原本(畫面可能撕裂)"
+  },
+  "H_RESULTS_ON": {
+   "en": "Battle results at 30 fps: done fast (Steam Deck).",
+   "fr": "Résultats de combat à 30 i/s : rapides (Steam Deck).",
+   "sp": "Resultados de combate a 30 fps: rápidos (Steam Deck).",
+   "de": "Kampfergebnis mit 30 fps: schnell (Steam Deck).",
+   "it": "Risultati della battaglia a 30 fps: veloci (Steam Deck).",
+   "jp": "戦闘結果を30fpsで表示(Steam Deckで速い)",
+   "kr": "전투 결과를 30fps로 표시(Steam Deck에서 빠름)",
+   "ch": "戰鬥結算以30fps顯示(Steam Deck上較快)"
+  },
+  "H_RESULTS_OFF": {
+   "en": "Original: results at 60 fps (slow on Steam Deck).",
+   "fr": "D’origine : résultats à 60 i/s (lent sur Steam Deck).",
+   "sp": "Original: resultados a 60 fps (lento en Steam Deck).",
+   "de": "Original: Ergebnis mit 60 fps (langsam auf Steam Deck).",
+   "it": "Originale: risultati a 60 fps (lento su Steam Deck).",
+   "jp": "元のまま(60fps、Steam Deckでは遅い)",
+   "kr": "원래대로(60fps, Steam Deck에서 느림)",
+   "ch": "原本(60fps,Steam Deck上較慢)"
   }
  }
 }

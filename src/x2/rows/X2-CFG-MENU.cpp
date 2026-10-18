@@ -17,6 +17,7 @@
 //   call sites 0x789B1E / 0x7891B4 (the 20-byte wrapper pattern has 3 hits).
 // - Glyph map: FFX-2 menu_txt of all 8 languages decodes with the FFX-2 tables (S, data); the strings are generated
 //   with those tables (tools/gen_text_x2.py). ON/OFF are the game's own words per language.
+// - Fast Results (X2-PACE-MENUDIV2, x2_pacing.cpp): battle results screen at 30 fps; default on under Wine / Proton.
 // - Options whose row was off at startup are shown and saved, and take effect at the next start (row_set never installs
 //   at runtime). Soft Reset is the [x2] soft_reset key: off writes 0, on writes the default chord unless one is set.
 #include "../x2.h"
@@ -91,6 +92,8 @@ static bool live_idle()   { return row_CHR002.installed != 0; }
 static int  get_vsync()   { return row_VSYNC.on != 0; }
 static void set_vsync(bool on) { row_set(row_VSYNC, on); }
 static bool live_vsync()  { return row_VSYNC.installed != 0; }
+static int  get_results() { return pacing_menudiv2_get(); }
+static void set_results(bool on) { pacing_menudiv2_set(on); }
 
 static Opt g_opts[] = {
     { T_L_FPS,    T_H_FPS_ON,    T_H_FPS_OFF,    get_fps,    set_fps,    "x2",   "pacing",       1, live_always },
@@ -100,6 +103,7 @@ static Opt g_opts[] = {
     { T_L_TURBO,  T_H_TURBO_ON,  T_H_TURBO_OFF,  get_turbo,  set_turbo,  "rows", "X2-DEV-TURBO", 1, live_turbo },
     { T_L_IDLE,   T_H_IDLE_ON,   T_H_IDLE_OFF,   get_idle,   set_idle,   "rows", "X2-CHR-002",   1, live_idle },
     { T_L_VSYNC,  T_H_VSYNC_ON,  T_H_VSYNC_OFF,  get_vsync,  set_vsync,  "rows", "X2-VSYNC",     0, live_vsync },
+    { T_L_RESULTS, T_H_RESULTS_ON, T_H_RESULTS_OFF, get_results, set_results, "rows", "X2-PACE-MENUDIV2", 0, live_always },
 };
 enum { N_OPTS = sizeof(g_opts) / sizeof(g_opts[0]) };
 
@@ -230,6 +234,7 @@ static bool install() {
         r.init = row_init;
         r.apply = row_apply;
         Opt& o = g_opts[i];
+        if (!strcmp(o.key, "X2-PACE-MENUDIV2")) o.want = pacing_menudiv2_default();   // on under Wine / Proton
         o.want = !strcmp(o.key, "soft_reset") ? config_row("X2-SR-003", 1)
                : !strcmp(o.key, "pacing") ? g_cfg.pacing : config_row(o.key, o.want);
     }

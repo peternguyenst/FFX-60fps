@@ -59,10 +59,16 @@ void pacing_set(bool on) {
 // 2 it takes ~1 s; its counting animation plays at half speed (U 18/10, user's choice). Skipping every second HD render
 // or present at divider 1 did not help (8.3 s / 15 s): the frame loop rate itself is what matters. re/ledger/LOAD-DECK.md.
 static int g_menudiv2 = -1;
+// Config page "Fast Results" (X2-CFG-MENU): the default, and the runtime switch (the next divider request follows it).
+int  pacing_menudiv2_default() { return on_wine() ? 1 : 0; }
+bool pacing_menudiv2_get() {
+    if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", pacing_menudiv2_default());
+    return g_menudiv2 != 0;
+}
+void pacing_menudiv2_set(bool on) { g_menudiv2 = on ? 1 : 0; }
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
-    if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", on_wine() ? 1 : 0);
-    if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
+    if (pacing_menudiv2_get() && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
         PLOG("pacing: game asks divider 1 (wanted %u) under a stock hold -> swallowed, kept at 2 (X2-PACE-MENUDIV2)", prev);
         return true;
     }
