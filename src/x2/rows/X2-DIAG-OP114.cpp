@@ -14,6 +14,11 @@
 // A/B drop test, X2-DIAG-OP114-DROP (ini, default 0; Numpad 8 cycles, logged): 1 = skip both calls on RENDER
 // invocations, 2 = skip the 1st call of each invocation (instance k0, "FrameBuffer" texture), 3 = skip the 2nd call
 // (k1, dds texture), 4 = skip both always. A skipped call returns pc + 0x10 as the op does (word >> 12 == 1 only).
+// Run 4 (U 18/10: the body blink is made in magic_0937, stock bisect): op 0x10F (FUN_0085a090, entry +0x3C) is hooked
+// too. Its modes 0xC000-0xE000 set the actor model's DressUpFast shader parameters "dressUpType" (0/1/2),
+// "dressUpCenter" (type 0: sweep = top - t * height, t = [0x18E4D4C] += 1/17 per call; type 1: bottom - 0.1 * height
+// once flag [0xD6F7A0] == 1), "dressUpUpper", "zoomAftMat". Logged per call (X2-DIAG-OP114-N10F, default 1500): kind,
+// pc, word, t, centre, flag after the call.
 #include "../x2.h"
 #include <stdio.h>
 
@@ -30,6 +35,23 @@ static int g_drop = 0;                   // game thread
 static int g_call = 0;                   // call index in this invocation (game thread)
 static uint8_t* g_lastpc = nullptr;
 extern Row row_DIAGOP114;
+static op_t g_orig10f = nullptr;
+static float* g_dress_t = nullptr;       // 0x18E4D4C
+static float* g_dress_c = nullptr;       // 0x18E4D58
+static int32_t* g_dress_f = nullptr;     // 0xD6F7A0
+static volatile LONG g_left10f = 0;
+
+static uint8_t* __cdecl h_op10f(uint8_t* scr, uint8_t* pc) {
+    uint8_t* r = g_orig10f(scr, pc);
+    if (row_DIAGOP114.on && g_left10f > 0 && InterlockedDecrement(&g_left10f) >= 0) {
+        __try {
+            static const char* const K[4] = { "LOGIC", "RENDER", "BACKLOG", "STOCK" };
+            log_line("OP10F %s pc %p word %04X ret %+d | t %.4f centre %.3f flag %d", K[pacing_kind() & 3], pc,
+                     *(uint16_t*)(scr + 0x21A), (int)(r - pc), *g_dress_t, *g_dress_c, *g_dress_f);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return r;
+}
 
 static void pre() {
     static bool was = false;
@@ -126,6 +148,28 @@ static bool install() {
         return false;
     }
     g_orig = (op_t)fn;
+    // op 0x10F: FUN_0085a090 prologue, and its dressUp globals
+    uint32_t* e10f = (uint32_t*)(tab + 0x0F * 4);
+    uint8_t* f10f = (uint8_t*)(uintptr_t)*e10f;
+    uint8_t* dt = sig_find("X2-DIAG-OP114 dressUp sweep",
+        "D9 05 ?? ?? ?? ?? D9 C0 DE CA D9 CA DE E1 D9 9D 24 FE FF FF D9 85 24 FE FF FF D9 15 ?? ?? ?? ?? D9 C9 DC 05", 0x85A924);
+    uint8_t* df = sig_find("X2-DIAG-OP114 dressUp flag", "C7 05 ?? ?? ?? ?? 01 00 00 00 EB 39 83 F8 01 75 34", 0x85A95E);
+    if (in_image(f10f) && dt && df &&
+        sig_match(f10f, "55 8B EC 81 EC E4 01 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC D9 05 ?? ?? ?? ?? 53 56")) {
+        g_dress_t = (float*)abs_operand("dressUp t", dt + 2);
+        g_dress_c = (float*)abs_operand("dressUp centre", dt + 0x1C);
+        g_dress_f = (int32_t*)abs_operand("dressUp flag", df + 2);
+        if (g_dress_t && g_dress_c && g_dress_f) {
+            g_orig10f = (op_t)f10f;
+            g_left10f = config_row("X2-DIAG-OP114-N10F", 1500);
+            if (patch_u32(e10f, (uint32_t)(uintptr_t)&h_op10f))
+                log_line("  X2-DIAG-OP114: op 0x10F entry gva=0x%08X -> stub (FUN gva=0x%08X, 0x0085A090); t gva=0x%08X "
+                         "(0x018E4D4C) centre 0x%08X (0x018E4D58) flag 0x%08X (0x00D6F7A0)", rt_to_gva(e10f),
+                         rt_to_gva(f10f), rt_to_gva(g_dress_t), rt_to_gva(g_dress_c), rt_to_gva(g_dress_f));
+        }
+    } else {
+        log_line("  X2-DIAG-OP114: op 0x10F entry %p / dressUp sites not as proven - op 0x10F not logged", f10f);
+    }
     g_left = config_row("X2-DIAG-OP114-N", 1200);
     g_drop = config_row("X2-DIAG-OP114-DROP", 0);
     if (g_drop < 0 || g_drop > 4) g_drop = 0;
