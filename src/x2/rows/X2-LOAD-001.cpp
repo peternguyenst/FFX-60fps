@@ -7,6 +7,9 @@
 // and the last invocation's exec byte (0 after a render-only one). Fix: at the end of an invocation that leaves the game
 // in load mode, the stock divider and exec 1 are put back (pacing_leave_now); the first invocation after the load turns
 // 60 Hz on again. Logs each load and its length.
+// U 18/10 19:23: still slow; D: the Deck save load never entered load mode (Sg_MainLoop ran at ~60 inv/s for the 15 s).
+// X2-LOAD-001-TRACE=N (diagnostic, default 0): after each map-id change ([0x00D61748], X2-TITLE-001's site 0x466FCD),
+// log N invocations: kind, invocation ms, ms since the previous invocation start, backlog count, divider, exec byte.
 #include "../x2.h"
 
 namespace x2 {
@@ -17,8 +20,21 @@ static bool  g_in = false;
 static DWORD g_t0 = 0;
 static LONG  g_n = 0;
 extern Row row_LOAD001;
+static volatile int32_t* g_map = nullptr;
+static int32_t g_lastmap = 0x7FFFFFFF;
+static int   g_trace = 0, g_tleft = 0;
+static LARGE_INTEGER g_qf, g_tstart, g_tprev;
 
 static void post() {
+    if (g_tleft > 0) {
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        static const char* const K[4] = { "L", "R", "B", "S" };
+        log_line("LOADTRACE %s inv %.2f ms gap %.2f ms backlog %d div %u exec %d", K[pacing_kind() & 3],
+                 (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart,
+                 (g_tstart.QuadPart - g_tprev.QuadPart) * 1000.0 / g_qf.QuadPart,
+                 *g_backlog_count, *g_divider, *g_exec_byte);
+        if (--g_tleft == 0) log_line("LOADTRACE end");
+    }
     bool l = false;
     __try { l = g_loading() != 0; } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     if (!l) return;
@@ -31,6 +47,14 @@ static void post() {
 }
 
 static void pre() {
+    if (g_trace && g_map) {
+        int32_t m = *g_map;
+        if (m != g_lastmap) {
+            if (g_lastmap != 0x7FFFFFFF) { g_tleft = g_trace; log_line("LOADTRACE: map 0x%X -> 0x%X, next %d invocations", g_lastmap, m, g_trace); }
+            g_lastmap = m;
+        }
+        if (g_tleft > 0) { g_tprev = g_tstart; QueryPerformanceCounter(&g_tstart); }
+    }
     if (!g_in) return;
     g_in = false;
     if (g_n <= 50) log_line("X2-LOAD-001: load over after %lu ms", GetTickCount() - g_t0);
@@ -42,6 +66,13 @@ static bool install() {
         "A1 ?? ?? ?? ?? 85 C0 74 1E 80 78 70 00 75 0F 83 B8 E0 00 00 00 00 7D 06", 0x44CD70);
     if (!fn) return false;
     g_loading = (loading_t)fn;
+    g_trace = config_row("X2-LOAD-001-TRACE", 0);
+    if (g_trace) {
+        uint8_t* at = sig_find("X2-LOAD-001 map id (title-map test)", "83 3D ?? ?? ?? ?? 17 75 49 E8", 0x466FCD);
+        g_map = at ? (volatile int32_t*)abs_operand("map id", at + 2) : nullptr;
+        QueryPerformanceFrequency(&g_qf);
+        QueryPerformanceCounter(&g_tstart);
+    }
     log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70)", rt_to_gva(fn));
     return true;
 }
