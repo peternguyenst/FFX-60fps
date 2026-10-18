@@ -10,6 +10,12 @@
 //   3: as 2, but a WAIT-0 stream runs only if its last logic walk ran handlers and yielded at the PC it started
 //      from (per-frame draw/poll loops: FFX's battle-entry shatter blinked without them).
 // Position integration is held in every mode (X2-MAG-025-POS); listed opcodes never run (X2-MAG-025-DENY, modes 2/3).
+// X2-MAG-025-LOOP1F (default 1, needs 0x1F in DENY): a held walk that reaches the 0x1F loop counter (Opu_Op1FLoopCounter
+// 0x6A7610: --[unit+0xB4+(op>>12)], or +0xB4 with op&0x200; non-zero -> PC + [PC+2], else PC + 4) jumps back without
+// counting while the count would stay non-zero, so a per-frame draw loop draws on render-only invocations too; the
+// last count still yields to the next logic walk. U 18/10/2026: dressphere change body blink (magic_0937, re/ledger/
+// XFADE-BLINK.md): denied, the stream yielded at 0x1F and mode 3 then skipped it every second frame; undenied, the
+// count ran 2x (Warrior sword blink).
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
 // FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
 // cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
@@ -65,6 +71,7 @@ static int g_pass0 = 0;                          // X2-MAG-025-PASS0: hold DLL p
 static uint8_t g_hold_pos = 1;                   // X2-MAG-025-POS
 static bool g_deny[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
 static int  g_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
+static int  g_loop1f = 1;                        // X2-MAG-025-LOOP1F
 
 static volatile uint8_t g_hold = 0;              // mode of the held walk running now (0 = none)
 static uint8_t g_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
@@ -92,6 +99,9 @@ static RepeatSlot* rep_slot(uint8_t* rec, bool add) {
 static struct { uint8_t* rec; int s; uint32_t pc; uint8_t wait; bool valid; } g_cur;
 static volatile uint8_t g_skip_stream = 0;
 static volatile uint8_t g_deny_now = 0;
+static volatile uint8_t g_loop_now = 0;
+static uint32_t g_loop_pc = 0;
+static volatile LONG g_loop_runs = 0;
 
 static void __cdecl on_stream_entry(uint8_t* scr, uint8_t* rec) {
     int st = *(int16_t*)(scr + 0x216) & 3;
@@ -121,9 +131,21 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
     else r->mask &= (uint8_t)~(1 << st);
 }
 
-static void __cdecl on_handler(uint8_t* scr) {
-    int op = *(uint16_t*)(scr + 0x21A) & 0x1FF;
+static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
+    uint16_t word = *(uint16_t*)(scr + 0x21A);
+    int op = word & 0x1FF;
     g_deny_now = g_deny[op] ? 1 : 0;
+    g_loop_now = 0;
+    if (op == 0x1F && g_deny_now && g_loop1f) {
+        uint8_t* unit = *(uint8_t**)(scr + 0x220);
+        uint8_t* ctr = unit ? unit + 0xB4 + ((word & 0x200) ? 0 : (uint8_t)(word >> 12)) : nullptr;
+        if (ctr && (uint8_t)(*ctr - 1) != 0) {
+            g_loop_pc = (uint32_t)(uintptr_t)(pc + *(int16_t*)(pc + 2));
+            g_loop_now = 1;
+            g_deny_now = 0;
+            InterlockedIncrement(&g_loop_runs);
+        }
+    }
     if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_src][op] : &g_opcnt[g_src][op]);
 }
 
@@ -184,14 +206,20 @@ __declspec(naked) static void h_hcall() {
         cmp byte ptr [g_hold], 2
         jb pass
         pushad
+        push esi                                 // PC of the opcode
         push ebx
         call on_handler
-        add esp, 4
+        add esp, 8
         popad
+        cmp byte ptr [g_loop_now], 0
+        jne loop1f
         cmp byte ptr [g_deny_now], 0
         je pass
         mov eax, esi
         mov byte ptr [ebx + 0x210], 1
+        jmp dword ptr [g_hcall_after]
+    loop1f:
+        mov eax, dword ptr [g_loop_pc]           // 0x1F jump-back target, count untouched, no yield
         jmp dword ptr [g_hcall_after]
     pass:
         jmp dword ptr [g_hcall_tramp]
@@ -358,6 +386,7 @@ static bool install() {
     g_pass0 = config_row("X2-MAG-025-PASS0", 0);
     g_hold_pos = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
     g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
+    g_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
     char deny[256];
     config_str("rows", "X2-MAG-025-DENY", deny, sizeof(deny), "1F,7F");   // loop counter, battle signal
     char line[256]; int k = 0; line[0] = 0;
@@ -369,6 +398,7 @@ static bool install() {
         t = e;
     }
     if (line[0]) log_line("  X2-MAG-025: opcodes held on render-only invocations (X2-MAG-025-DENY, modes 2/3):%s", line);
+    log_line("  X2-MAG-025-LOOP1F: %s", g_loop1f && g_deny[0x1F] ? "0x1F loops jump back uncounted on held walks (last count yields)" : "off");
     log_line("  X2-MAG-025: EXE pass-1 walk (return gva 0x%08X, expected 0x006A5D85): mode %d, %s",
              g_exe_ret ? rt_to_gva(g_exe_ret) : 0, g_mode_exe, mode_name(g_mode_exe));
     log_line("  X2-MAG-025: DLL-called walks (pass 1%s): mode %d, %s", g_pass0 ? " and 0" : "", g_mode_dll,
@@ -426,8 +456,8 @@ static void post() {
     LONG total = g_held[0] + g_held[1];
     if (++tick % 1800 == 0 && total != last) {
         last = total;
-        log_line("X2-MAG-025: held walks so far: EXE %ld, DLL %ld; WAIT-0 streams on mode-3 walks: %ld ran, %ld held",
-                 g_held[0], g_held[1], g_ro_run, g_ro_blocked);
+        log_line("X2-MAG-025: held walks so far: EXE %ld, DLL %ld; WAIT-0 streams on mode-3 walks: %ld ran, %ld held; "
+                 "0x1F loops run uncounted %ld", g_held[0], g_held[1], g_ro_run, g_ro_blocked, g_loop_runs);
     }
 }
 
