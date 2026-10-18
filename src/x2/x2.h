@@ -79,7 +79,8 @@ int  pacing_kind();
 inline bool render_only() { return pacing_kind() == INV_BUILD; }
 void pacing_hold_stock(const char* who, bool hold); // a row asks for stock pacing (e.g. FMV)
 void pacing_set(bool on);                         // runtime 60 Hz on/off ([x2] pacing; X2-CFG-MENU)
-void pacing_leave_now(const char* why);           // stock divider + exec 1 now (X2-LOAD-001: load mode)
+void pacing_leave_now(const char* why);
+bool pacing_menu60();                             // a held PS2 menu runs at the game's divider 1 (X2-PACE-MENUDIV2=3)           // stock divider + exec 1 now (X2-LOAD-001: load mode)
 
 // ---------------------------------------------------------------- x2_magic_mods.cpp
 typedef void (*magic_load_fn)(uint8_t* base, uint32_t size, const char* name);   // loader lock

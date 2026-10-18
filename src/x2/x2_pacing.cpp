@@ -60,12 +60,19 @@ void pacing_set(bool on) {
 // once with it: two game steps per rendered frame, 60 steps/s at 30 frames/s (the game's own frameskip path;
 // Sg_WaitFrameSync recomputes the count only when it is 0).
 static int g_menudiv2 = -1;
-static bool g_menu60 = false;                    // the game asked for divider 1 under a hold and we kept 2
+static bool g_menu60 = false;                    // the game asked for divider 1 under a hold (kept 2 in modes 1/2)
+// Mode 3 (U 18/10: mode 2 did not restore the animation speed: the menu step gate counts host frames, not
+// invocations): the game keeps its divider 1 (menu at full speed) and X2-LOAD-001 skips the HD render
+// (FUN_004537b0) of every second app frame while pacing_menu60() is true: 30 rendered frames/s, menu logic at 60.
+bool pacing_menu60() { return g_menu60 && g_hold > 0; }
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
     if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", 0);
     if (req != 1) g_menu60 = false;
-    if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
+    if (g_menudiv2 == 3 && g_hold > 0 && req == 1) {
+        g_menu60 = true;
+        PLOG("pacing: game asks divider 1 under a stock hold -> passed, every second HD render skipped (X2-PACE-MENUDIV2=3)");
+    } else if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
         g_menu60 = true;
         PLOG("pacing: game asks divider 1 (wanted %u) under a stock hold -> swallowed, kept at 2 (X2-PACE-MENUDIV2)", prev);
         return true;

@@ -112,6 +112,19 @@ static void waits_dump() {
 static int   g_idle = 0;                         // consecutive cheap logic invocations
 static const char* g_hold_why = "";
 
+// X2-PACE-MENUDIV2=3: skip the HD frame (FUN_004537b0: Hd_FrameRender + frame end, cdecl, plain RET) on every second
+// app frame while pacing_menu60() (battle results screen at the game's own 60 fps): GPU at 30 frames/s, menu at 60.
+typedef int (__cdecl* hdr_t)();
+static hdr_t g_hdr = nullptr;
+static LONG g_hdr_n = 0, g_hdr_skip = 0;
+static int __cdecl h_hdr() {
+    if (pacing_menu60() && (InterlockedIncrement(&g_hdr_n) & 1)) {
+        if (InterlockedIncrement(&g_hdr_skip) == 1) log_line("X2-PACE-MENUDIV2: first HD render skipped (menu at 60 fps, GPU at 30)");
+        return 0;
+    }
+    return g_hdr();
+}
+
 static void hold_start(const char* why) {
     if (g_held) return;
     g_held = true;
@@ -199,6 +212,12 @@ static bool install() {
     g_maphold = config_row("X2-LOAD-001-MAPHOLD", 1);
     g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", 1);
     g_waits = g_trace ? config_row("X2-LOAD-001-WAITS", 0) : 0;
+    if (config_row("X2-PACE-MENUDIV2", 0) == 3) {
+        uint8_t* hr = sig_find("X2-PACE-MENUDIV2 HD frame FUN_004537b0",
+            "80 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 74 15 6A 01 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 C0 C3 E8", 0x4537B0);
+        if (hr && hook_entry("X2-PACE-MENUDIV2 HD frame", hr, (void*)&h_hdr, (void**)&g_hdr))
+            log_line("  X2-PACE-MENUDIV2=3: HD frame gva=0x%08X hooked (expected 0x004537B0)", rt_to_gva(hr));
+    }
     if (g_waits) {
         HMODULE nt = GetModuleHandleW(L"ntdll.dll");
         void* a = nt ? (void*)GetProcAddress(nt, "NtWaitForSingleObject") : nullptr;
