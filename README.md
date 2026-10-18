@@ -41,8 +41,8 @@ diagnostic switches) is the development copy, `fps60.ini` in the source tree. `s
 and would otherwise have to fall all the way to 120.
 
 The **Frame Rate** row on the game's Config page sets the same thing without a restart, and writes it back to
-the ini when you leave the page. A Config row has room for four values, so it offers the rate you configured
-plus the next most useful ones, with 30 standing for the game's original pacing.
+the ini when you leave the page. Left and right step the rate by 30, from 30 (the game's original pacing) up to
+240; the row shows the current rate with its two neighbours.
 
 Everything above 60 needs two things:
 
