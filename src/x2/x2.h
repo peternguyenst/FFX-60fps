@@ -100,6 +100,12 @@ struct Row {
 };
 void rows_install_all();
 bool row_on(const char* id);
+bool perf_on();                                 // X2-DIAG-PERF (x2_perf.cpp)
+LONGLONG perf_now();
+void perf_row(int idx, LONGLONG dt);
+void perf_walk(LONGLONG dt);
+void perf_inv_begin();
+void perf_inv_end();
 bool row_set(Row& r, bool on);                  // runtime on/off of an installed row (false: not installed)
 bool menu002_user_on();                         // X2-MENU-002 user switch (Num 9, X2-CFG-MENU)
 void menu002_set_user(bool on);

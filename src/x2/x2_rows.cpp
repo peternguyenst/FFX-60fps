@@ -98,11 +98,21 @@ bool row_set(Row& r, bool on) {
     return true;
 }
 
+Row** x2_row_list() { return g_rows; }
+
 void rows_pre() {
+    if (perf_on()) {
+        for (Row** p = g_rows; *p; p++) if ((*p)->on && (*p)->pre) { LONGLONG t = perf_now(); (*p)->pre(); perf_row((int)(p - g_rows), perf_now() - t); }
+        return;
+    }
     for (Row** p = g_rows; *p; p++) if ((*p)->on && (*p)->pre) (*p)->pre();
 }
 
 void rows_post() {
+    if (perf_on()) {
+        for (Row** p = g_rows; *p; p++) if ((*p)->on && (*p)->post) { LONGLONG t = perf_now(); (*p)->post(); perf_row((int)(p - g_rows), perf_now() - t); }
+        return;
+    }
     for (Row** p = g_rows; *p; p++) if ((*p)->on && (*p)->post) (*p)->post();
 }
 

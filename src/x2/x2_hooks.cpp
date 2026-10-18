@@ -17,6 +17,7 @@ static void on_fault(const char* where, DWORD code) {
 extern "C" void __cdecl x2_pre() {
     if (g_disabled) return;
     __try {
+        if (perf_on()) perf_inv_begin();
         hooks_install_divider_on_game_thread();
         pacing_pre();
         rollback_pre();
@@ -31,6 +32,7 @@ extern "C" void __cdecl x2_post() {
         rows_post();
         rollback_post();
         pacing_post();
+        if (perf_on()) perf_inv_end();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("post", GetExceptionCode()); }
 }
