@@ -72,6 +72,8 @@ static uint8_t g_hold_pos = 1;                   // X2-MAG-025-POS
 static bool g_deny[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
 static int  g_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
 static int  g_loop1f = 1;                        // X2-MAG-025-LOOP1F
+static volatile LONG g_optrace = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
+static bool g_trace_on = false;
 
 static volatile uint8_t g_hold = 0;              // mode of the held walk running now (0 = none)
 static uint8_t g_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
@@ -134,6 +136,14 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
 static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
     uint16_t word = *(uint16_t*)(scr + 0x21A);
     int op = word & 0x1FF;
+    if (g_optrace > 0 && (g_trace_on || op == 0x1F)) {
+        g_trace_on = true;
+        uint8_t* u = *(uint8_t**)(scr + 0x220);
+        if (InterlockedDecrement(&g_optrace) >= 0)
+            log_line("X2-MAG-025 optrace %s scr %p stream %d pc %p word %04X op %03X unit %p +18 %02X +B4 %02X +B5 %02X",
+                     g_src ? "DLL" : "EXE", scr, *(int16_t*)(scr + 0x216) & 3, pc, word, op, u,
+                     u ? u[0x18] : 0, u ? u[0xB4] : 0, u ? u[0xB5] : 0);
+    }
     g_deny_now = g_deny[op] ? 1 : 0;
     g_loop_now = 0;
     if (op == 0x1F && g_deny_now && g_loop1f) {
@@ -387,6 +397,7 @@ static bool install() {
     g_hold_pos = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
     g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
     g_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
+    g_optrace = config_row("X2-MAG-025-OPTRACE", 0);
     char deny[256];
     config_str("rows", "X2-MAG-025-DENY", deny, sizeof(deny), "1F,7F");   // loop counter, battle signal
     char line[256]; int k = 0; line[0] = 0;
