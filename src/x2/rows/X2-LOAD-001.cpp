@@ -13,6 +13,10 @@
 // and the early-out inputs: HD state block [0x00DCED88] [0] / +0x338 / +0x33C (FUN_00452220 == 2 -> Sg_MainLoop returns
 // at its top) and the PS2-menu flags [0x016BC55C] / [0x016BC560] (0x60550C -> 0x6060A9). D 19:26: ~600 invocations of
 // 0.03 ms each for ~10 s after the map change.
+// D 19:30: those 0.03 ms invocations have hd 0 0 0 and menu 0 0: Sg_MainLoop runs its normal path and only polls (the
+// data loads elsewhere). H: at 60 Hz on the Deck the main thread leaves the loader no time (frame fully used, the
+// frame-sync spin). X2-LOAD-001-MAPHOLD (default 1): from a map-id change, hold stock pacing until 30 invocations in a
+// row take >= 0.3 ms (the game is doing frame work again), cap 20 s; logs the hold length.
 #include "../x2.h"
 
 namespace x2 {
@@ -30,8 +34,23 @@ static LARGE_INTEGER g_qf, g_tstart, g_tprev;
 static uint8_t** g_hds = nullptr;                // &DAT_00dced88
 static volatile int32_t* g_m1 = nullptr;         // 0x016BC55C
 static volatile int32_t* g_m2 = nullptr;         // 0x016BC560
+static int   g_maphold = 1;
+static bool  g_held = false;
+static int   g_busy = 0;
+static DWORD g_hold_t0 = 0;
 
 static void post() {
+    if (g_held) {
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        double ms = (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart;
+        g_busy = ms >= 0.3 ? g_busy + 1 : 0;
+        DWORD el = GetTickCount() - g_hold_t0;
+        if (g_busy >= 30 || el > 20000) {
+            g_held = false;
+            pacing_hold_stock("X2-LOAD-001-MAPHOLD", false);
+            log_line("X2-LOAD-001-MAPHOLD: released after %lu ms (%s)", el, g_busy >= 30 ? "frame work again" : "cap");
+        }
+    }
     if (g_tleft > 0) {
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
         static const char* const K[4] = { "L", "R", "B", "S" };
@@ -60,13 +79,21 @@ static void post() {
 }
 
 static void pre() {
-    if (g_trace && g_map) {
+    if (g_map) {
         int32_t m = *g_map;
         if (m != g_lastmap) {
-            if (g_lastmap != 0x7FFFFFFF) { g_tleft = g_trace; log_line("LOADTRACE: map 0x%X -> 0x%X, next %d invocations", g_lastmap, m, g_trace); }
+            if (g_lastmap != 0x7FFFFFFF) {
+                if (g_trace) { g_tleft = g_trace; log_line("LOADTRACE: map 0x%X -> 0x%X, next %d invocations", g_lastmap, m, g_trace); }
+                if (g_maphold && !g_held && m != 0x17) {
+                    g_held = true;
+                    g_busy = 0;
+                    g_hold_t0 = GetTickCount();
+                    pacing_hold_stock("X2-LOAD-001-MAPHOLD", true);
+                }
+            }
             g_lastmap = m;
         }
-        if (g_tleft > 0) { g_tprev = g_tstart; QueryPerformanceCounter(&g_tstart); }
+        if (g_tleft > 0 || g_held) { g_tprev = g_tstart; QueryPerformanceCounter(&g_tstart); }
     }
     if (!g_in) return;
     g_in = false;
@@ -80,7 +107,8 @@ static bool install() {
     if (!fn) return false;
     g_loading = (loading_t)fn;
     g_trace = config_row("X2-LOAD-001-TRACE", 0);
-    if (g_trace) {
+    g_maphold = config_row("X2-LOAD-001-MAPHOLD", 1);
+    if (g_trace || g_maphold) {
         uint8_t* at = sig_find("X2-LOAD-001 map id (title-map test)", "83 3D ?? ?? ?? ?? 17 75 49 E8", 0x466FCD);
         g_map = at ? (volatile int32_t*)abs_operand("map id", at + 2) : nullptr;
         uint8_t* hs = sig_find("X2-LOAD-001 HD state block (list clear test)",
