@@ -52,28 +52,17 @@ void pacing_set(bool on) {
     log_line("pacing: %s at runtime", on ? "60 Hz" : "stock 30 Hz");
 }
 
-// X2-PACE-MENUDIV2 ([rows], default 0, test): while a row holds stock pacing (PS2 menus), keep the game at divider 2
-// when it asks for 1 (the battle results screen asks for 60 fps; on the Steam Deck the GPU is then saturated and the
-// screen takes 6-10 s, D 18/10 LOADWAITS: 8.5 ms per frame in the command-ring wait). U 18/10: mode 1 brings the
-// results screen to ~1 s but its animation runs at half speed (the menu steps once per frame). Mode 2: also start each
-// host frame with backlog count 2, so Sg_MainLoop runs once with the draw skipped (count >= 2: skip flags, count--) and
-// once with it: two game steps per rendered frame, 60 steps/s at 30 frames/s (the game's own frameskip path;
-// Sg_WaitFrameSync recomputes the count only when it is 0).
+// X2-PACE-MENUDIV2 ([rows], default on under Wine / Proton, off on Windows): while a row holds stock pacing (PS2
+// menus), keep the game at divider 2 when it asks for 1. The battle results screen asks for 60 fps; on the Steam Deck
+// (Proton) it then takes 6-10 s (stock ~4 s; PC near-instant): it ends when background work finishes, and that work
+// needs main-thread idle time between frames (D 18/10 LOADWAITS: 8.5 ms per frame in the command-ring wait). At divider
+// 2 it takes ~1 s; its counting animation plays at half speed (U 18/10, user's choice). Skipping every second HD render
+// or present at divider 1 did not help (8.3 s / 15 s): the frame loop rate itself is what matters. re/ledger/LOAD-DECK.md.
 static int g_menudiv2 = -1;
-static bool g_menu60 = false;                    // the game asked for divider 1 under a hold (kept 2 in modes 1/2)
-// Mode 3 (U 18/10: mode 2 did not restore the animation speed: the menu step gate counts host frames, not
-// invocations): the game keeps its divider 1 (menu at full speed) and X2-LOAD-001 skips the HD render
-// (FUN_004537b0) of every second app frame while pacing_menu60() is true: 30 rendered frames/s, menu logic at 60.
-bool pacing_menu60() { return g_menu60 && g_hold > 0; }
 bool pacing_divider_request(uint32_t req) {
     uint32_t prev = g_wanted;
-    if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", 0);
-    if (req != 1) g_menu60 = false;
-    if (g_menudiv2 == 3 && g_hold > 0 && req == 1) {
-        g_menu60 = true;
-        PLOG("pacing: game asks divider 1 under a stock hold -> passed, every second HD render skipped (X2-PACE-MENUDIV2=3)");
-    } else if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
-        g_menu60 = true;
+    if (g_menudiv2 < 0) g_menudiv2 = config_row("X2-PACE-MENUDIV2", on_wine() ? 1 : 0);
+    if (g_menudiv2 && g_hold > 0 && req == 1) {         // g_wanted stays 2, so the stock path keeps divider 2
         PLOG("pacing: game asks divider 1 (wanted %u) under a stock hold -> swallowed, kept at 2 (X2-PACE-MENUDIV2)", prev);
         return true;
     }
@@ -94,7 +83,6 @@ void pacing_pre() {
 
     bool want_active = g_cfg.pacing && g_divider_hooked && g_hold == 0 && g_wanted_known && g_wanted >= 2;
     if (!want_active) {
-        if (g_menudiv2 == 2 && g_menu60 && g_hold > 0 && *g_backlog_count == 0) *g_backlog_count = 2;
         if (g_was_active) {                          // leaving 60 Hz: give the game back its pacing
             set_divider(g_wanted ? g_wanted : 2);
             set_exec(1);

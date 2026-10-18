@@ -41,6 +41,17 @@ void config_str(const char* sect, const char* key, char* out, int size, const ch
     out[i] = 0;
 }
 
+// Running under Wine / Proton (ntdll exports wine_get_version). Rows whose cost exists only behind Proton's slower
+// present path (Steam Deck) default on there and off on Windows.
+bool on_wine() {
+    static int w = -1;
+    if (w < 0) {
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        w = (nt && GetProcAddress(nt, "wine_get_version")) ? 1 : 0;
+    }
+    return w != 0;
+}
+
 int config_row(const char* row_id, int def) {
     // user-facing switches in [x2] that stand for a row: soft_reset=<buttons>|0|off (X2-SR-003), as FFX [fps60]
     if (!strcmp(row_id, "X2-SR-003")) {

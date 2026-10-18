@@ -31,6 +31,7 @@ struct Config {
 extern Config g_cfg;
 void config_load();
 int  config_row(const char* row_id, int def);    // [rows] X2-ROW-ID=0|1
+bool on_wine();                                  // running under Wine / Proton
 void config_str(const char* sect, const char* key, char* out, int size, const char* def);   // ASCII string key
 bool config_write(const char* sect, const char* key, const char* value);   // fps60x2.ini (X2-CFG-MENU)
 

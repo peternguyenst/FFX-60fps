@@ -1,32 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-LOAD-001 (FFX-2 only, default 1): loads (save load, map change, battle start / end) take far longer at 60 Hz on the
-// Steam Deck (U 18/10/2026: save load 14 s with the mod, 2 s stock, fast with pacing=0; PC unaffected). While the game is
-// in load mode (App_Animate / Sg_AppRender 0x42F4C0 / 0x42F7F0 test app+0x3AD = FUN_0044cd70(): [0x00DD10D0] != 0 and
-// (byte +0x70 != 0 or int +0xE0 >= 0)) Sg_MainLoop does not run: each app frame runs the load step FUN_00455bd0 and
-// draws the loading screen FUN_00453800. pacing_pre never sees those frames, so they kept our divider 1 (60 frames/s)
-// and the last invocation's exec byte (0 after a render-only one). Fix: at the end of an invocation that leaves the game
-// in load mode, the stock divider and exec 1 are put back (pacing_leave_now); the first invocation after the load turns
-// 60 Hz on again. Logs each load and its length.
-// U 18/10 19:23: still slow; D: the Deck save load never entered load mode (Sg_MainLoop ran at ~60 inv/s for the 15 s).
-// X2-LOAD-001-TRACE=N (diagnostic, default 0): after each map-id change ([0x00D61748], X2-TITLE-001's site 0x466FCD),
-// log N invocations: kind, invocation ms, ms since the previous invocation start, backlog count, divider, exec byte,
-// and the early-out inputs: HD state block [0x00DCED88] [0] / +0x338 / +0x33C (FUN_00452220 == 2 -> Sg_MainLoop returns
-// at its top) and the PS2-menu flags [0x016BC55C] / [0x016BC560] (0x60550C -> 0x6060A9). D 19:26: ~600 invocations of
-// 0.03 ms each for ~10 s after the map change.
-// D 19:30: those 0.03 ms invocations have hd 0 0 0 and menu 0 0: Sg_MainLoop runs its normal path and only polls (the
-// data loads elsewhere). H: at 60 Hz on the Deck the main thread leaves the loader no time (frame fully used, the
-// frame-sync spin). X2-LOAD-001-MAPHOLD (default 1): from a map-id change, hold stock pacing until 30 invocations in a
-// row take >= 0.3 ms (the game is doing frame work again), cap 20 s; logs the hold length.
-// U 19:36: battle end still slow; D: after the results menu (MENU-001 stock 19:35:41-49) the field returns at 60 Hz with
-// no map-id change (vblank source +215 per 600 invocations). X2-LOAD-001-IDLEHOLD (default 1): 20 logic invocations in
-// a row under 0.1 ms (the poll-wait; normal frames 1-3 ms on the Deck) start the same hold, whatever the trigger.
-// X2-LOAD-001-WAITS=1 (diagnostic, default 0, needs TRACE): D 19:53 Deck wchan sampling: during the load wait the main
-// thread is blocked in ntsync_schedule (a Win32 sync-object wait) ~60% of the time. Hooks ntdll NtWaitForSingleObject /
-// NtWaitForMultipleObjects / NtDelayExecution; while the trace runs, waits on the game thread are summed per first
-// FFX-2.exe return address on the stack (count, total ms, last timeout) and dumped at the trace end.
-// The trace (and WAITS) also starts when a stock invocation runs at the game's own divider 1 (rising edge): the battle
-// results screen (PS2 menu held stock by X2-MENU-001, the game asks divider 1), U 18/10: ~4 s stock / 6-10 s with the
-// mod on the Deck, near-instant on the PC.
+// X2-LOAD-001 (FFX-2 only): stock pacing while the game is loading. re/ledger/LOAD-DECK.md (S + D).
+// Mechanism (D 18/10/2026, Steam Deck / Proton): during a load the game logic only polls (Sg_MainLoop ~0.03 ms) while
+// its data arrives in the background, and the main thread spends most of each frame waiting in PApplication::frame's
+// command-buffer reservation FUN_008823f0 (0xAB76EE, waits for the render side when its ring is full: 10.3 s of a 15 s
+// save load). The background work needs main-thread idle time between frames; at our 60 Hz the frame loop leaves
+// almost none (save load 14 s; stock 2 s; fast with pacing=0; every other row ruled out by a bisect). The PC has the
+// headroom and is unaffected. Skipping renders or presents at 60 Hz did not help; only the frame-loop rate does.
+// 1) Load mode (default on): while App_Animate / Sg_AppRender (0x42F4C0 / 0x42F7F0) see app+0x3AD = FUN_0044cd70()
+//    ([0x00DD10D0] != 0 and (byte +0x70 != 0 or int +0xE0 >= 0)), Sg_MainLoop does not run, so pacing_pre never sees
+//    those frames; post() of an invocation that leaves the game in load mode puts the stock divider and exec 1 back
+//    (pacing_leave_now). Logs each load and its length.
+// 2) X2-LOAD-001-IDLEHOLD (default on under Wine / Proton, off on Windows): 20 logic invocations in a row under 0.1 ms
+//    (the poll-wait; normal frames are 1-3 ms on the Deck) start a stock-pacing hold, released after 30 invocations in a
+//    row >= 0.3 ms (frame work again), cap 20 s; after a cap it re-arms only once a busy frame was seen (a paused screen
+//    also polls). U 18/10: save load 15.5 -> 1.5 s.
+// Diagnostics (default 0): X2-LOAD-001-TRACE=N logs N invocations after a map-id change ([0x00D61748], X2-TITLE-001's
+// site 0x466FCD) or a stock invocation at the game's own divider 1 (kind, ms, gap, backlog, divider, exec, HD state block
+// [0x00DCED88] [0]/+0x338/+0x33C, PS2-menu flags [0x016BC55C]/[0x016BC560]); X2-LOAD-001-WAITS=1 hooks ntdll
+// NtWaitForSingleObject / NtWaitForMultipleObjects / NtDelayExecution and sums the game thread's waits during the trace
+// per three FFX-2.exe return addresses.
 #include "../x2.h"
 #include <winternl.h>
 
@@ -45,7 +37,6 @@ static LARGE_INTEGER g_qf, g_tstart, g_tprev;
 static uint8_t** g_hds = nullptr;                // &DAT_00dced88
 static volatile int32_t* g_m1 = nullptr;         // 0x016BC55C
 static volatile int32_t* g_m2 = nullptr;         // 0x016BC560
-static int   g_maphold = 1;
 static bool  g_held = false;
 static int   g_busy = 0;
 static DWORD g_hold_t0 = 0;
@@ -112,28 +103,7 @@ static void waits_dump() {
 static int   g_idle = 0;                         // consecutive cheap logic invocations
 static const char* g_hold_why = "";
 
-// X2-PACE-MENUDIV2=3: skip the HD frame (FUN_004537b0: Hd_FrameRender + frame end, cdecl, plain RET) on every second
-// app frame while pacing_menu60() (battle results screen at the game's own 60 fps): GPU at 30 frames/s, menu at 60.
-typedef int (__cdecl* hdr_t)();
-static hdr_t g_hdr = nullptr;
-static LONG g_hdr_n = 0, g_hdr_skip = 0;
-// U 18/10 mode 3 with the render skip alone: results still 8.3 s, so the cost is per present. The present-thread
-// handoff FUN_00495630 (ReleaseSemaphore([[0x00DCED80]+0x1C]), cdecl, plain RET) is skipped too after a skipped render.
-typedef void (__cdecl* sem_t)();
-static sem_t g_sem = nullptr;
-static volatile LONG g_skipped_last = 0;
-static void __cdecl h_sem() {
-    if (InterlockedExchange(&g_skipped_last, 0)) return;
-    g_sem();
-}
-static int __cdecl h_hdr() {
-    if (pacing_menu60() && (InterlockedIncrement(&g_hdr_n) & 1)) {
-        g_skipped_last = 1;
-        if (InterlockedIncrement(&g_hdr_skip) == 1) log_line("X2-PACE-MENUDIV2: first HD render skipped (menu at 60 fps, GPU at 30)");
-        return 0;
-    }
-    return g_hdr();
-}
+static bool  g_rearm_block = false;              // after a cap release: wait for a busy frame
 
 static void hold_start(const char* why) {
     if (g_held) return;
@@ -148,7 +118,8 @@ static void hold_start(const char* why) {
 static void post() {
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
     double inv_ms = (now.QuadPart - g_tstart.QuadPart) * 1000.0 / g_qf.QuadPart;
-    if (g_idlehold && !g_held && pacing_kind() == INV_LOGIC) {
+    if (inv_ms >= 0.3) g_rearm_block = false;
+    if (g_idlehold && !g_held && !g_rearm_block && pacing_kind() == INV_LOGIC) {
         g_idle = inv_ms < 0.1 ? g_idle + 1 : 0;
         if (g_idle >= 20) { g_idle = 0; hold_start("poll-wait: 20 cheap logic invocations"); }
     }
@@ -157,6 +128,7 @@ static void post() {
         DWORD el = GetTickCount() - g_hold_t0;
         if (g_busy >= 30 || el > 20000) {
             g_held = false;
+            g_rearm_block = g_busy < 30;
             pacing_hold_stock("X2-LOAD-001 hold", false);
             log_line("X2-LOAD-001: hold (%s) released after %lu ms (%s)", g_hold_why, el, g_busy >= 30 ? "frame work again" : "cap");
         }
@@ -200,7 +172,6 @@ static void pre() {
         if (m != g_lastmap) {
             if (g_lastmap != 0x7FFFFFFF) {
                 if (g_trace) { g_tleft = g_trace; log_line("LOADTRACE: map 0x%X -> 0x%X, next %d invocations", g_lastmap, m, g_trace); }
-                if (g_maphold && m != 0x17) hold_start("map change");
             }
             g_lastmap = m;
         }
@@ -219,18 +190,8 @@ static bool install() {
     if (!fn) return false;
     g_loading = (loading_t)fn;
     g_trace = config_row("X2-LOAD-001-TRACE", 0);
-    g_maphold = config_row("X2-LOAD-001-MAPHOLD", 1);
-    g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", 1);
+    g_idlehold = config_row("X2-LOAD-001-IDLEHOLD", on_wine() ? 1 : 0);
     g_waits = g_trace ? config_row("X2-LOAD-001-WAITS", 0) : 0;
-    if (config_row("X2-PACE-MENUDIV2", 0) == 3) {
-        uint8_t* hr = sig_find("X2-PACE-MENUDIV2 HD frame FUN_004537b0",
-            "80 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 74 15 6A 01 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 C0 C3 E8", 0x4537B0);
-        if (hr && hook_entry("X2-PACE-MENUDIV2 HD frame", hr, (void*)&h_hdr, (void**)&g_hdr))
-            log_line("  X2-PACE-MENUDIV2=3: HD frame gva=0x%08X hooked (expected 0x004537B0)", rt_to_gva(hr));
-        uint8_t* sm = sig_find("X2-PACE-MENUDIV2 present handoff FUN_00495630", "A1 ?? ?? ?? ?? 6A 00 6A 01 FF 70 1C FF 15", 0x495630);
-        if (sm && hook_entry("X2-PACE-MENUDIV2 present handoff", sm, (void*)&h_sem, (void**)&g_sem))
-            log_line("  X2-PACE-MENUDIV2=3: present handoff gva=0x%08X hooked (expected 0x00495630)", rt_to_gva(sm));
-    }
     if (g_waits) {
         HMODULE nt = GetModuleHandleW(L"ntdll.dll");
         void* a = nt ? (void*)GetProcAddress(nt, "NtWaitForSingleObject") : nullptr;
@@ -244,7 +205,7 @@ static bool install() {
     }
     QueryPerformanceFrequency(&g_qf);
     QueryPerformanceCounter(&g_tstart);
-    if (g_trace || g_maphold) {
+    if (g_trace) {
         uint8_t* at = sig_find("X2-LOAD-001 map id (title-map test)", "83 3D ?? ?? ?? ?? 17 75 49 E8", 0x466FCD);
         g_map = at ? (volatile int32_t*)abs_operand("map id", at + 2) : nullptr;
         uint8_t* hs = sig_find("X2-LOAD-001 HD state block (list clear test)",
@@ -253,10 +214,9 @@ static bool install() {
         uint8_t* mf = sig_find("X2-LOAD-001 menu early-out 0x60550C",
             "83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 01", 0x60550C);
         if (mf) { g_m1 = (volatile int32_t*)abs_operand("menu flag 1", mf + 2); g_m2 = (volatile int32_t*)abs_operand("menu flag 2", mf + 0xF); }
-        QueryPerformanceFrequency(&g_qf);
-        QueryPerformanceCounter(&g_tstart);
     }
-    log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70)", rt_to_gva(fn));
+    log_line("  X2-LOAD-001: load-mode test gva=0x%08X (expected 0x0044CD70); IDLEHOLD %s%s", rt_to_gva(fn),
+             g_idlehold ? "on" : "off", on_wine() ? " (Wine / Proton)" : "");
     return true;
 }
 
