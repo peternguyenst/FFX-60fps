@@ -16,6 +16,12 @@
 // its middle DLL loading (X2-SMOOTH-003-PEEL-DLL, default "936 937 938") or by the OPU op 0x116 silhouette copy
 // (FUN_0085b3d0, DLL op table = magic service +0xC24, entry +0x58); the hold lasts until that DLL and the next one
 // (loaded within 120 invocations) unload, cap 1800 invocations per phase.
+// X2-SMOOTH-003-PEEL-DRAW (default 0, test): in that window the peel's actors (D 18/10 FTBLINK-ALT: ids 0x001F, 0x4005)
+// get +0x1A0 bit 0x1000000 on logic invocations only (actor update 0x6E137C; cleared every invocation at 0x605693), so
+// Ch_DrawMain loop 3 (lights FUN_006ddaa0, the flag-8 mesh pass FUN_00454d30, model-list add) runs on logic invocations
+// only; X2-CHR-001 re-lists the model on render-only ones without the rest (U 18/10: the outer model's weight alternates
+// per frame). On render-only invocations in the window this sets the bit again, before Ch_NoSkelPass, on the actors that
+// had it at the last logic invocation (same id), with no walk step: loop 3 runs with the held pose.
 // Evidence: outer repo G:\Work\ffx2-fps60 re/ledger/PORT-SMOOTH3.md (S unless tagged H), sigs tools/sigs_x2_smooth3.txt.
 #include "x2_smooth.h"
 #include <string.h>
@@ -564,6 +570,7 @@ static void walk() {
 
 // ---------------------------------------------------------------- X2-SMOOTH-003-PEEL
 static int g_peel = 1;
+static int g_peel_draw = 0;                      // X2-SMOOTH-003-PEEL-DRAW
 static volatile uint32_t g_inv = 0;
 static volatile LONG g_peel_phase = 0;           // 0 none, 1 change DLL / copy seen, 2 its DLL unloaded, 3 next DLL
 static volatile uint32_t g_peel_phase_inv = 0;
@@ -629,6 +636,8 @@ static bool live3() { return smooth_live(3) && !peel_hold(); }
 
 static void install_peel() {
     g_peel = config_row("X2-SMOOTH-003-PEEL", 1);
+    g_peel_draw = config_row("X2-SMOOTH-003-PEEL-DRAW", 0);
+    log_line("  X2-SMOOTH-003-PEEL-DRAW: %s", g_peel_draw ? "on (render-only loop 3 for the peel's actors)" : "off");
     if (!g_peel) { log_line("  X2-SMOOTH-003-PEEL: off (ini)"); return; }
     char buf[128];
     config_str("rows", "X2-SMOOTH-003-PEEL-DLL", buf, sizeof(buf), "936 937 938");
@@ -659,8 +668,35 @@ static void install_peel() {
              entry ? rt_to_gva(entry) : 0, g_op116 ? "stub" : "untouched");
 }
 
+// X2-SMOOTH-003-PEEL-DRAW
+static uint16_t g_step_id[MAXA];                 // id of actors with F_STEP at the last logic Ch_NoSkelPass, 0 = none
+static volatile LONG g_peel_draw_n = 0;
+static void peel_draw(bool logic) {
+    uint8_t* base = *g_table;
+    int n = *g_count;
+    if (!base || n <= 0) return;
+    if (n > MAXA) n = MAXA;
+    for (int i = 0; i < n; i++) {
+        uint8_t* a = base + i * STRIDE;
+        uint32_t fl = *(uint32_t*)(a + FLAGS);
+        if (logic) { g_step_id[i] = (a[ACTIVE] && (fl & F_STEP)) ? *(uint16_t*)a : 0; continue; }
+        if (g_step_id[i] && a[ACTIVE] && *(uint16_t*)a == g_step_id[i] && !(fl & F_STEP)) {
+            *(uint32_t*)(a + FLAGS) = fl | F_STEP;
+            InterlockedIncrement(&g_peel_draw_n);
+        }
+    }
+}
+
 // Sg_MainLoop stub (E8 0x60586C -> Ch_NoSkelPass 0x6E1610, cdecl(void)).
 static void __cdecl h_noskel() {
+    if (g_peel_draw && row_SMOOTH003.on && !g_disabled && (g_kind == INV_LOGIC || g_kind == INV_BUILD)) {
+        static bool was = false;
+        bool hold = peel_hold();
+        if (hold) __try { peel_draw(g_kind == INV_LOGIC); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (hold != was) log_line("X2-SMOOTH-003-PEEL-DRAW: %s (%ld actor flags set so far)", hold ? "on" : "off",
+                                  (LONG)g_peel_draw_n);
+        was = hold;
+    }
     if (row_SMOOTH003.on && !g_disabled && g_kind == INV_BUILD && live3() && *g_freeze == 0) {
         g_walks++;
         LONGLONG t0 = perf_on() ? perf_now() : 0;
