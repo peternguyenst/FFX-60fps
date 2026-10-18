@@ -24,6 +24,9 @@
 // thread is blocked in ntsync_schedule (a Win32 sync-object wait) ~60% of the time. Hooks ntdll NtWaitForSingleObject /
 // NtWaitForMultipleObjects / NtDelayExecution; while the trace runs, waits on the game thread are summed per first
 // FFX-2.exe return address on the stack (count, total ms, last timeout) and dumped at the trace end.
+// The trace (and WAITS) also starts when a stock invocation runs at the game's own divider 1 (rising edge): the battle
+// results screen (PS2 menu held stock by X2-MENU-001, the game asks divider 1), U 18/10: ~4 s stock / 6-10 s with the
+// mod on the Deck, near-instant on the PC.
 #include "../x2.h"
 #include <winternl.h>
 
@@ -163,6 +166,12 @@ static void post() {
 
 static void pre() {
     g_game_tid = GetCurrentThreadId();
+    if (g_trace) {
+        static bool was_d1 = false;
+        bool d1 = pacing_kind() == INV_STOCK && *g_divider == 1;
+        if (d1 && !was_d1 && g_tleft == 0) { g_tleft = g_trace; log_line("LOADTRACE: stock invocation at divider 1 (menu at 60 fps), next %d invocations", g_trace); }
+        was_d1 = d1;
+    }
     if (g_map) {
         int32_t m = *g_map;
         if (m != g_lastmap) {
