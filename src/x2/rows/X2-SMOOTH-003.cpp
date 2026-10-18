@@ -290,6 +290,81 @@ static void sanity_check(int i, uint8_t* a, int nb, int32_t c0) {
     }
 }
 
+// ---------------------------------------------------------------- key hold (X2-SMOOTH-003-KEYHOLD)
+// Port of FFX SMOOTH-003-KEYHOLD (FFX ledger SMOOTH-003-KEYDECODE.md). U 18/10/2026: Rikku's legs alternate between two
+// poses on consecutive frames in a cutscene (map 0xB3); D (FREEZEDIAG trace 05:49:37.65): 16 bones swing exactly
+// 0.785 rad between every logic and render-only frame for 4 frames at a motion start. The half-frame sample lerps each
+// rotation channel between the stream keys prev (+0x18) and value (+0x16) (shortest path, masked with res-1); cutscene
+// data can store one rotation as two Euler forms (or near gimbal lock) in consecutive keys, which stock never samples
+// between: the lerp is a wrong pose. A bone whose keys differ by more than KEYHOLD-D (scaled to the motion's key
+// resolution) on any rotation channel keeps the pre-step pose: nodes +0x1C/+0x20 and bone +0xE4..+0xEC / +0x114..+0x11C.
+// Stream cursors are untouched (the next logic decode is unchanged). FFX-2 layout (outer repo re/ledger/KEYHOLD-X2.md,
+// S): pose [a+0x758] = 9 nodes of 0x2C per entry (stride 0x18C), rotation nodes have byte +5 set, linked list head
+// [a+0x75C] (read fresh: 0x6E89D0 relocates it), key resolution res = [a+0x7F8] (0x1000..0x8000, one turn), sampled
+// clock +0x754, pose entry -> bone remap [a+0x768] (count u16 +2, bone u16 at +8+2c, 0xFFFF none; null = identity).
+static const uint32_t P_POSE = 0x758, P_LIST = 0x75C, P_SCLK = 0x754, P_REMAP = 0x768, P_RES = 0x7F8, NODE = 0x2C, ENTRY = 0x18C;
+static int      g_keyhold = 1, g_keyhold_d = 0x300;
+static uint8_t  g_kh_pose[MAXB * ENTRY];
+static uint8_t  g_kh_bones[MAXB * BONE_STRIDE];
+static uint8_t  g_kh_mark[MAXB];
+static volatile LONG g_keyholds = 0, g_keyhold_lines = 0;
+
+// Before the render-only step: save pose entries and bones. Returns the entry count (0 = no check).
+static int keyhold_save(const uint8_t* a) {
+    if (!g_keyhold) return 0;
+    int nb = bone_count(a);
+    const uint8_t* pose = *(uint8_t* const*)(a + P_POSE);
+    const uint8_t* bones = *(uint8_t* const*)(a + BONES);
+    if (!nb || !pose || !bones) return 0;
+    memcpy(g_kh_pose, pose, (size_t)nb * ENTRY);
+    memcpy(g_kh_bones, bones, (size_t)nb * BONE_STRIDE);
+    return nb;
+}
+
+static void keyhold_apply(int i, uint8_t* a, int nb) {
+    if ((*(const int32_t*)(a + P_SCLK) & 0xFF) == 0) return;          // whole frame: no lerp between keys
+    int32_t res = *(const int32_t*)(a + P_RES);
+    if (res != 0x1000 && res != 0x2000 && res != 0x4000 && res != 0x8000) return;
+    uint8_t* pose = *(uint8_t**)(a + P_POSE);
+    uint8_t* bones = *(uint8_t**)(a + BONES);
+    if (!pose || !bones) return;
+    int mask = res - 1, half = res / 2, thr = g_keyhold_d * (res / 0x1000);
+    memset(g_kh_mark, 0, (size_t)nb);
+    int marked = 0, guard = nb * 9;
+    for (uint8_t* n = *(uint8_t**)(a + P_LIST); n && guard-- > 0; n = *(uint8_t**)n) {
+        if (n < pose || n >= pose + (size_t)nb * ENTRY || (n - pose) % NODE) break;   // not a node of this pose: stop
+        if (!n[5]) continue;                                                       // linear channel
+        int d = (int)(uint16_t)(*(const int16_t*)(n + 0x16) - *(const int16_t*)(n + 0x18)) & mask;
+        if (d > half) d = res - d;
+        if (d <= thr) continue;
+        int e = (int)((n - pose) / ENTRY);
+        if (!g_kh_mark[e]) { g_kh_mark[e] = 1; marked++; }
+    }
+    if (!marked) return;
+    const uint8_t* remap = *(const uint8_t* const*)(a + P_REMAP);
+    int rcount = remap ? *(const uint16_t*)(remap + 2) : 0;
+    for (int e = 0; e < nb; e++) {
+        if (!g_kh_mark[e]) continue;
+        for (int c = 0; c < 3; c++) {                                  // rotation channels: output +0x1C, current +0x20
+            uint8_t* dst = pose + (size_t)e * ENTRY + c * NODE;
+            const uint8_t* src = g_kh_pose + (size_t)e * ENTRY + c * NODE;
+            memcpy(dst + 0x1C, src + 0x1C, 8);
+        }
+        int b = e;
+        if (remap) { if (e >= rcount) continue; b = *(const uint16_t*)(remap + 8 + 2 * e); if (b == 0xFFFF || b >= nb) continue; }
+        uint8_t* hb = bones + (size_t)b * BONE_STRIDE;
+        const uint8_t* kb = g_kh_bones + (size_t)b * BONE_STRIDE;
+        memcpy(hb + 0xE4, kb + 0xE4, 12);
+        memcpy(hb + 0x114, kb + 0x114, 12);
+        LONG c = InterlockedIncrement(&g_keyholds);
+        if (g_keyhold_lines < 30) {
+            InterlockedIncrement(&g_keyhold_lines);
+            log_line("X2-SMOOTH-003-KEYHOLD: slot %d id 0x%04X pose entry %d bone %d held (keys > 0x%X of res 0x%X), %ld so far",
+                     i, *(const uint16_t*)a, e, b, thr, res, c);
+        }
+    }
+}
+
 // X2-SMOOTH-003-STOCK-ID / -STOCK-ID-END (decimal, inclusive; bisect switch, port of FFX): actors in this id range
 // take whole stock steps (no half step), so which actor's half step causes a glitch can be found by halving.
 static int g_stock_id = 0, g_stock_id_end = 0;
@@ -408,9 +483,11 @@ static bool walk_step(int i, uint8_t* a, uint32_t fl) {
         return true;
     }
     if (kind) *(int32_t*)(a + M_CLOCK) = cs;
-    int nb = 0;
+    int nb = 0, kh = 0;
     __try { nb = sanity_save(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) { nb = 0; }
+    __try { kh = keyhold_save(a); } __except (EXCEPTION_EXECUTE_HANDLER) { kh = 0; }
     bool ok = safe_step(a, 1);
+    if (ok && kh) __try { keyhold_apply(i, a, kh); } __except (EXCEPTION_EXECUTE_HANDLER) { fault("keyhold", GetExceptionCode()); }
     if (ok && nb) __try { sanity_check(i, a, nb, c0); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     // X2-SMOOTH-003-ENDEXTRAP-ONCE (default 1 in FFX-2): a play-once motion clamped at its last frame (kind 2) repeats
     // that pose on the render-only frame; walks/runs are chains of play-once strides (FFX: Tidus's run, 28 frames),
@@ -483,8 +560,10 @@ static void walk() {
 static void __cdecl h_noskel() {
     if (row_SMOOTH003.on && !g_disabled && g_kind == INV_BUILD && smooth_live(3) && *g_freeze == 0) {
         g_walks++;
+        LONGLONG t0 = perf_on() ? perf_now() : 0;
         __try { walk(); }
         __except (EXCEPTION_EXECUTE_HANDLER) { fault("walk", GetExceptionCode()); }
+        if (t0) perf_walk(perf_now() - t0);
     }
     g_noskel();
 }
@@ -671,6 +750,11 @@ static const uint32_t ROOT = 0x1DC;              // root matrix (X2-SMOOTH-002, 
 // FREEZEDIAG-ID / -ID-END (decimal actor ids): every invocation of these actors is traced while a magic DLL is loaded.
 // U 18/10: the freeze comes during Blitz Ace (magic_0749) three times; Seymour 0x113F = 4415.
 static int g_trace_id = 0, g_trace_id_end = 0;
+// FREEZEDIAG-ALWAYS (default 0): trace those ids on every invocation, not only while a magic DLL is loaded (U 18/10/2026:
+// Rikku's legs jump between two consecutive frames in a cutscene). Each trace line also gives the largest bone angle
+// change since the slot's previous traced invocation (radians, wrapped) and how many channels changed by > 0.5 rad.
+static int g_trace_always = 0;
+static float* g_trace_prev[MAXA];
 static volatile LONG g_magic_loaded = 0;
 static void fd_on_load(uint8_t*, uint32_t, const char*) { InterlockedIncrement(&g_magic_loaded); }
 static void fd_on_unload(uint8_t*) { InterlockedDecrement(&g_magic_loaded); }
@@ -706,11 +790,31 @@ static void freeze_diag() {
         e.clock = *(int32_t*)(a + M_CLOCK); e.flags = *(uint32_t*)(a + FLAGS);
         e.chg = chg; e.jobs = (uint8_t)(jobs - s.jobs);
         s.jobs = jobs; s.hb = hb; s.hc = hc; s.hr = hr;
-        if (g_magic_loaded > 0 && id >= g_trace_id && id <= g_trace_id_end) {
+        if ((g_magic_loaded > 0 || g_trace_always) && id >= g_trace_id && id <= g_trace_id_end) {
             const float* r = (const float*)(a + ROOT);
-            log_line("X2-SMOOTH-003-FREEZEDIAG trace: inv %ld %c slot %d id 0x%04X chg %d jobs %d wdh %d%d%d clock 0x%X seq 0x%X flags 0x%08X "
+            float maxd = 0; int maxb = -1, maxc = 0, big = 0;
+            if (!g_trace_prev[i]) g_trace_prev[i] = (float*)calloc((size_t)MAXB * 3 + 1, sizeof(float));
+            float* pv = g_trace_prev[i];
+            if (pv) {
+                bool have = pv[MAXB * 3] == (float)id;
+                for (int b = 0; b < nb; b++)
+                    for (int c = 0; c < 3; c++) {
+                        float v = *(const float*)(bones + b * BONE_STRIDE + BANG[c]);
+                        if (have) {
+                            float d = v - pv[b * 3 + c];
+                            while (d > 3.14159265f) d -= 6.2831853f;
+                            while (d < -3.14159265f) d += 6.2831853f;
+                            if (d < 0) d = -d;
+                            if (d > maxd) { maxd = d; maxb = b; maxc = c; }
+                            if (d > 0.5f) big++;
+                        }
+                        pv[b * 3 + c] = v;
+                    }
+                pv[MAXB * 3] = (float)id;
+            }
+            log_line("X2-SMOOTH-003-FREEZEDIAG trace: inv %ld %c slot %d id 0x%04X maxd %.3f bone %d ch %d big %d | chg %d jobs %d wdh %d%d%d clock 0x%X seq 0x%X flags 0x%08X "
                      "root (%.2f, %.2f, %.2f) fwd (%.3f, %.3f) start 0x%X end 0x%X len 0x%X loops %d short %d | stock %ld lend %ld wrap %ld clamp %ld ghold %ld",
-                     g_freeze_inv, kind, i, id, chg, e.jobs, e.walked, e.debt, e.held, e.clock, *(uint32_t*)(a + M_SEQ), e.flags,
+                     g_freeze_inv, kind, i, id, maxd, maxb, maxc, big, chg, e.jobs, e.walked, e.debt, e.held, e.clock, *(uint32_t*)(a + M_SEQ), e.flags,
                      r[12], r[13], r[14], r[8], r[10], *(int32_t*)(a + M_START), *(int32_t*)(a + M_END), *(int32_t*)(a + M_LEN),
                      (int)*(int16_t*)(a + M_LOOPS), short_loop(a), g_stock_steps, g_loopend_holds, g_guard_wrap, g_guard_clamp, g_guard_hold);
         }
@@ -859,6 +963,26 @@ static bool install() {
     g_endextrap = config_row("X2-SMOOTH-003-ENDEXTRAP", 1);
     g_endextrap_once = config_row("X2-SMOOTH-003-ENDEXTRAP-ONCE", 1);
     g_sanity = config_row("X2-SMOOTH-003-SANITY", 1);
+    g_keyhold = config_row("X2-SMOOTH-003-KEYHOLD", 1);
+    g_keyhold_d = config_row("X2-SMOOTH-003-KEYHOLD-D", 0x300);
+    if (g_keyhold_d < 0x80 || g_keyhold_d > 0x800) g_keyhold_d = 0x300;
+    if (g_keyhold) {
+        // Cross-checks of the layout KEYHOLD reads (KEYHOLD-X2.md, each 1 hit in the export):
+        // Ch_DecodeKeys: MOV EAX,[EDI+0x7F8] (res) .. MOV EDI,[EDI+0x75C] (node list)
+        uint8_t* k1 = sig_find("X2-SMOOTH-003-KEYHOLD decode res/list",
+            "8B 87 F8 07 00 00 A3 ?? ?? ?? ?? A1 ?? ?? ?? ?? 48 A3 ?? ?? ?? ?? A1 ?? ?? ?? ?? 8B BF 5C 07 00 00", 0x6E848F);
+        // rotation flag +5, lerp(prev +0x18, value +0x16) -> output +0x1C
+        uint8_t* k2 = sig_find("X2-SMOOTH-003-KEYHOLD decode lerp",
+            "80 7F 05 00 74 23 0F BF 47 16 DD D8 53 50 0F BF 47 18 50 E8 ?? ?? ?? ?? 83 C4 0C D9 5F 1C", 0x6E84D7);
+        // Ch_SamplePose: res +0x7F8, pose +0x758
+        uint8_t* k3 = sig_find("X2-SMOOTH-003-KEYHOLD sample pose",
+            "8B 87 F8 07 00 00 8B B7 58 07 00 00 99 2B C2 D1 F8 89 45 08 8B 87 D0 01 00 00", 0x6E7AF3);
+        // Ch_SamplePose: remap +0x768, bone u16 at +8+2c, 0xFFFF = none
+        uint8_t* k4 = sig_find("X2-SMOOTH-003-KEYHOLD sample remap",
+            "8B 87 68 07 00 00 85 C0 74 16 3B 55 F4 0F 8D ?? ?? ?? ?? 0F B7 54 50 08 81 FA FF FF 00 00", 0x6E80C1);
+        if (!k1 || !k2 || !k3 || !k4) { g_keyhold = 0; log_line("  X2-SMOOTH-003-KEYHOLD: layout cross-check failed - off"); }
+        else log_line("  X2-SMOOTH-003-KEYHOLD: on, threshold 0x%X per 0x1000 key units (pose +0x758, list +0x75C, res +0x7F8)", g_keyhold_d);
+    }
     g_stock_id = config_row("X2-SMOOTH-003-STOCK-ID", 0);
     g_stock_id_end = config_row("X2-SMOOTH-003-STOCK-ID-END", 0);
     if (g_endextrap || g_sanity) {
@@ -876,6 +1000,7 @@ static bool install() {
         g_freezediag_on = g_fs != nullptr;
         g_trace_id = config_row("X2-SMOOTH-003-FREEZEDIAG-ID", 0);
         g_trace_id_end = config_row("X2-SMOOTH-003-FREEZEDIAG-ID-END", 0);
+        g_trace_always = config_row("X2-SMOOTH-003-FREEZEDIAG-ALWAYS", 0);
         if (!g_trace_id_end) g_trace_id_end = g_trace_id;
         if (g_trace_id && g_fs && magic_mods_subscribe("X2-SMOOTH-003-FREEZEDIAG", fd_on_load, fd_on_unload))
             log_line("  X2-SMOOTH-003-FREEZEDIAG: trace ids 0x%04X..0x%04X while a magic DLL is loaded", g_trace_id, g_trace_id_end);
