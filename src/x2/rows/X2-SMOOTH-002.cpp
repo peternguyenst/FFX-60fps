@@ -10,7 +10,10 @@
 // F6 = this row off aligns them; re/ledger/XFADE-BLINK.md). An actor copied by op 0x116 in the last 4 invocations keeps
 // the game's root (no interpolation, no render hold), and so does every other actor: holding the copied actor (slot 1
 // id 0x0015) and the two at its spot left the models apart (U 17:03 / 17:05), while SMOOTH-002 kept turning slot 0 id
-// 0x0010 elsewhere (D diag 17:07:21, rotation only); the peel's real model is not found by position.
+// 0x0010 elsewhere (D diag 17:07:21, rotation only); the peel's real model is not found by position. The hold also
+// covers the change's next effect DLL (the outfit peel, e.g. magic_0906 after magic_0937): op 0x116 runs only in the
+// middle DLL and holding there alone left the peel apart (U 17:09). Phases: copy seen -> its DLL unloads -> the next
+// DLL loaded within 120 invocations is held until it unloads (cap 1800 invocations).
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -52,6 +55,9 @@ typedef void* (__cdecl* op_t)(uint8_t* scr, void* pc);
 static op_t  g_op116 = nullptr;
 static LONG  g_peel_marks = 0, g_peel_skips = 0;
 static uint32_t g_peel_last = 0;           // g_inv + 1 of the last op 0x116 copy
+static volatile LONG g_peel_phase = 0;     // 0 none, 1 copy seen, 2 its DLL unloaded, 3 next DLL loaded
+static uint8_t* volatile g_peel_tail = nullptr;
+static volatile uint32_t g_peel_phase_inv = 0;
 static LONG g_peel_wlines = 0;
 static float g_warp_min = 30.0f, g_warp_ratio = 3.0f;
 static LONG  g_warps = 0;
@@ -94,21 +100,48 @@ static void* __cdecl h_op116(uint8_t* scr, void* pc) {
                              (int)((a - base) / STRIDE), *(uint16_t*)a);
                 g_peel_inv[(a - base) / STRIDE] = g_inv + 1;
                 g_peel_last = g_inv + 1;
+                if (g_peel_phase != 1) g_peel_phase = 1;
+                g_peel_phase_inv = g_inv;
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     return g_op116(scr, pc);
 }
 
-// Any op 0x116 copy in the last 4 invocations: every root keeps the game value (= SMOOTH-002 off, as F6 showed).
+static void peel_on_load(uint8_t* base, uint32_t, const char* name) {
+    if (g_peel_phase == 2 && g_inv - g_peel_phase_inv <= 120) {
+        g_peel_tail = base;
+        g_peel_phase_inv = g_inv;
+        g_peel_phase = 3;
+        log_line("X2-SMOOTH-002-PEEL: %s follows the copy DLL - roots held until it unloads", name);
+    }
+}
+
+static void peel_on_unload(uint8_t* base) {
+    if (g_peel_phase == 1) { g_peel_phase_inv = g_inv; g_peel_phase = 2; }
+    else if (g_peel_phase == 3 && base == g_peel_tail) { g_peel_tail = nullptr; g_peel_phase = 0; }
+}
+
+// Any op 0x116 copy in the last 4 invocations, or the change it belongs to still running: every root keeps the game
+// value (= SMOOTH-002 off, as F6 showed).
+static bool peel_hold() {
+    if (!g_peel) return false;
+    if (g_peel_last && g_inv + 1 - g_peel_last <= 4) return true;
+    LONG ph = g_peel_phase;
+    if (ph == 1) { if (g_inv - g_peel_phase_inv <= 1800) return true; g_peel_phase = 0; return false; }
+    if (ph == 2) { if (g_inv - g_peel_phase_inv <= 120) return true; g_peel_phase = 0; return false; }
+    if (ph == 3) { if (g_inv - g_peel_phase_inv <= 1800) return true; g_peel_phase = 0; return false; }
+    return false;
+}
+
 static bool peeled(int) {
-    if (!g_peel || !g_peel_last || g_inv + 1 - g_peel_last > 4) return false;
+    if (!peel_hold()) return false;
     g_peel_skips++;
     return true;
 }
 
 static void write_slot(int i, float* root, const float* out) {
-    if (g_peel_last && g_inv + 1 - g_peel_last <= 4 && g_peel_wlines < 120) {
+    if (peel_hold() && g_peel_wlines < 120) {
         g_peel_wlines++;
         log_line("X2-SMOOTH-002-PEEL diag: inv %u %s writes slot %d id 0x%04X child %d (%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f)",
                  g_inv, g_kind == INV_BUILD ? "R" : "L", i, *(uint16_t*)((uint8_t*)root - ROOT), is_child((uint8_t*)root - ROOT) ? 1 : 0,
@@ -434,6 +467,8 @@ static bool install() {
     g_peel_inv = (uint32_t*)calloc(MAXA, sizeof(uint32_t));
     if (g_peel && g_peel_inv) install_peel();
     else g_peel = 0;
+    if (g_peel && !magic_mods_subscribe("X2-SMOOTH-002-PEEL", peel_on_load, peel_on_unload))
+        log_line("  X2-SMOOTH-002-PEEL: magic load hook not available - hold covers the copy DLL only");
     for (int i = 0; i < 2; i++) {
         if (!patch_call_rel32(sites[i], fn, (void*)&h_draw)) {
             if (i == 1) patch_call_rel32(sites[0], (void*)&h_draw, fn);
