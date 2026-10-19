@@ -15,7 +15,8 @@
 // counting while the count would stay non-zero, so a per-frame draw loop draws on render-only invocations too; the
 // last count still yields to the next logic walk. U 18/10/2026: dressphere change body blink (magic_0937, re/ledger/
 // XFADE-BLINK.md): denied, the stream yielded at 0x1F and mode 3 then skipped it every second frame; undenied, the
-// count ran 2x (Warrior sword blink).
+// count ran 2x (Warrior sword blink). Once per loop per held walk: a 0x1F reached again by the same unit in the same
+// walk (body without a yield) stays denied, else the walk never ends (U 19/10/2026 Power Break hang, magic_0021).
 // X2-MAG-025-EXEPASS0 (default 1): the EXE pass-0 walk (Fx_OpuUpdate 0x6A5CD0, walker call 0x6A5D08, reached only
 // through the effect dispatch 0x616660(0)) is held the same way (mode X2-MAG-025-MODE) on render-only invocations. It
 // runs there only when X2-MAG-008 passes the dispatch (cross-fade DLLs, X2-MAG-008-PASS-LIST): U 18/10/2026 with
@@ -123,6 +124,13 @@ static volatile uint8_t g_deny_now = 0;
 static volatile uint8_t g_loop_now = 0;
 static uint32_t g_loop_pc = 0;
 static volatile LONG g_loop_runs = 0;
+// LOOP1F guard: the uncounted jump-backs of the held walk running now. A loop whose body does not yield reaches the
+// same 0x1F again in the same walk; jumping back uncounted would never end (U 19/10/2026: Power Break hang, magic_0021
+// inner loop 0x99 / 0x1F counter 0 at file VA 0x1000553E, no WAIT in the body).
+static uint8_t* g_loop_unit = nullptr;
+static uint8_t* g_loop_at = nullptr;
+static int      g_loop_walk_n = 0;
+static volatile LONG g_loop_repeats = 0;
 
 static void __cdecl on_stream_entry(uint8_t* scr, uint8_t* rec) {
     int st = *(int16_t*)(scr + 0x216) & 3;
@@ -169,10 +177,21 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
         uint8_t* unit = *(uint8_t**)(scr + 0x220);
         uint8_t* ctr = unit ? unit + 0xB4 + ((word & 0x200) ? 0 : (uint8_t)(word >> 12)) : nullptr;
         if (ctr && (uint8_t)(*ctr - 1) != 0) {
-            g_loop_pc = (uint32_t)(uintptr_t)(pc + *(int16_t*)(pc + 2));
-            g_loop_now = 1;
-            g_deny_now = 0;
-            InterlockedIncrement(&g_loop_runs);
+            if ((unit == g_loop_unit && pc == g_loop_at) || g_loop_walk_n >= 64) {
+                // non-yielding body: stay denied (the stream yields here; the next logic walk counts the loop)
+                LONG n = InterlockedIncrement(&g_loop_repeats);
+                if (n <= 5 || n % 600 == 0)
+                    log_line("X2-MAG-025-LOOP1F: 0x1F at %p reached again in one held %s walk (unit %p, #%ld) - yields "
+                             "instead", pc, g_src ? "DLL" : "EXE", unit, n);
+            } else {
+                g_loop_unit = unit;
+                g_loop_at = pc;
+                g_loop_walk_n++;
+                g_loop_pc = (uint32_t)(uintptr_t)(pc + *(int16_t*)(pc + 2));
+                g_loop_now = 1;
+                g_deny_now = 0;
+                InterlockedIncrement(&g_loop_runs);
+            }
         }
     }
     if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_src][op] : &g_opcnt[g_src][op]);
@@ -306,11 +325,20 @@ __declspec(naked) static void h_fcall() {
 static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
     InterlockedIncrement(&g_held[src]);
     uint8_t saved = g_hold, saved_src = g_src;
+    uint8_t* saved_unit = g_loop_unit;
+    uint8_t* saved_at = g_loop_at;
+    int saved_n = g_loop_walk_n;
     g_hold = (uint8_t)mode;
     g_src = src;
+    g_loop_unit = nullptr;
+    g_loop_at = nullptr;
+    g_loop_walk_n = 0;
     g_walk_tramp(unit_ctx, pass);
     g_hold = saved;
     g_src = saved_src;
+    g_loop_unit = saved_unit;
+    g_loop_at = saved_at;
+    g_loop_walk_n = saved_n;
 }
 
 static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
