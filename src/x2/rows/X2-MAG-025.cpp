@@ -351,7 +351,7 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
     if (g_slow > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
         uint8_t* ret = (uint8_t*)_ReturnAddress();
         int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe0_ret && ret == g_exe0_ret) ? 0 : -1;
-        if (k >= 0 && (g_slow_src >> k & 1) && (g_slow_n[k]++ % (uint32_t)g_slow) != 0) {
+        if (k >= 0 && (g_slow_n[k]++ % (uint32_t)g_slow) != 0 && (g_slow_src >> k & 1)) {
             held_walk(1, k ? 1 : 0, unit_ctx, pass);
             return;
         }
@@ -546,6 +546,14 @@ static void log_ops(int src) {
 static void post() {
     static uint32_t tick = 0;
     if (g_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); }
+    if (g_slow > 1 && tick % 60 == 59) {
+        static uint32_t seen[3] = {0, 0, 0};
+        if (g_slow_n[0] != seen[0] || g_slow_n[1] != seen[1] || g_slow_n[2] != seen[2]) {
+            log_line("X2-MAG-025-SLOWTEST: logic-frame walks seen so far (1 in %d stepped): EXE pass0 %lu, DLL pass0 %lu, "
+                     "DLL pass1 %lu", g_slow, (unsigned long)g_slow_n[0], (unsigned long)g_slow_n[1], (unsigned long)g_slow_n[2]);
+            for (int i = 0; i < 3; i++) seen[i] = g_slow_n[i];
+        }
+    }
     static LONG reported[2] = {0, 0};
     for (int s = 0; s < 2; s++)
         if (!reported[s] && g_held[s] > 0) {
