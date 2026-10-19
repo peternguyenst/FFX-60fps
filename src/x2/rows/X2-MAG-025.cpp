@@ -35,6 +35,8 @@
 // X2-MAG-025-SLOWTEST=N (test, default 0): while the list profile is active, the walks picked by X2-MAG-025-SLOWSRC
 // (bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1; default 1) step on 1 logic invocation in N (mode-1 hold on the
 // others), so what they drive plays N times slower: tells which walk drives an effect (U 20/10: Rikku's light balls).
+// X2-MAG-025-DLL0DENY=hex,hex (default empty): opcodes also held (stream yields at them) on held DLL pass-0 walks only.
+// X2-MAG-025-OPDIAG counts EXE, DLL pass 1 and DLL pass 0 separately.
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
 // FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
 // cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
@@ -105,7 +107,9 @@ static volatile uint8_t g_hold = 0;              // mode of the held walk runnin
 static uint8_t g_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
 static volatile LONG g_held[2] = {0, 0};         // held walks: EXE, DLL
 static volatile LONG g_ro_run = 0, g_ro_blocked = 0;   // mode 3: WAIT-0 streams on held walks
-static volatile LONG g_opcnt[2][512], g_opden[2][512];
+static volatile LONG g_opcnt[3][512], g_opden[3][512];   // EXE, DLL pass 1, DLL pass 0
+static uint8_t g_dsrc = 0;                       // opdiag / DLL0DENY source: 0 EXE, 1 DLL pass 1, 2 DLL pass 0
+static bool g_deny_dll0[512];                    // X2-MAG-025-DLL0DENY=hex,hex: also held on DLL pass-0 walks
 
 // Mode 3: per stream, did its last logic walk run handlers (WAIT 0 at entry) and yield at the PC it started from?
 // Keyed by unit record; 4 stream bits each.
@@ -177,7 +181,7 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
                      g_src ? "DLL" : "EXE", scr, *(int16_t*)(scr + 0x216) & 3, pc, word, op, u,
                      u ? u[0x18] : 0, u ? u[0xB4] : 0, u ? u[0xB5] : 0);
     }
-    g_deny_now = g_deny[op] ? 1 : 0;
+    g_deny_now = (g_deny[op] || (g_dsrc == 2 && g_deny_dll0[op])) ? 1 : 0;
     g_loop_now = 0;
     if (op == 0x1F && g_deny_now && g_loop1f) {
         uint8_t* unit = *(uint8_t**)(scr + 0x220);
@@ -200,7 +204,7 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
             }
         }
     }
-    if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_src][op] : &g_opcnt[g_src][op]);
+    if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_dsrc][op] : &g_opcnt[g_dsrc][op]);
 }
 
 // Mode 1: skip the whole stream loop.
@@ -330,18 +334,20 @@ __declspec(naked) static void h_fcall() {
 
 static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
     InterlockedIncrement(&g_held[src]);
-    uint8_t saved = g_hold, saved_src = g_src;
+    uint8_t saved = g_hold, saved_src = g_src, saved_dsrc = g_dsrc;
     uint8_t* saved_unit = g_loop_unit;
     uint8_t* saved_at = g_loop_at;
     int saved_n = g_loop_walk_n;
     g_hold = (uint8_t)mode;
     g_src = src;
+    g_dsrc = src == 0 ? 0 : (uint8_t)pass == 0 ? 2 : 1;
     g_loop_unit = nullptr;
     g_loop_at = nullptr;
     g_loop_walk_n = 0;
     g_walk_tramp(unit_ctx, pass);
     g_hold = saved;
     g_src = saved_src;
+    g_dsrc = saved_dsrc;
     g_loop_unit = saved_unit;
     g_loop_at = saved_at;
     g_loop_walk_n = saved_n;
@@ -495,6 +501,16 @@ static bool install() {
         t = e;
     }
     if (line[0]) log_line("  X2-MAG-025: opcodes held on render-only invocations (X2-MAG-025-DENY, modes 2/3):%s", line);
+    config_str("rows", "X2-MAG-025-DLL0DENY", deny, sizeof(deny), "");
+    k = 0; line[0] = 0;
+    for (char* t = deny; *t;) {
+        char* e = nullptr;
+        unsigned long op = strtoul(t, &e, 16);
+        if (e == t) { t++; continue; }
+        if (op < 512) { g_deny_dll0[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
+        t = e;
+    }
+    if (line[0]) log_line("  X2-MAG-025-DLL0DENY: also held on render-only DLL pass-0 walks (modes 2/3):%s", line);
     log_line("  X2-MAG-025-LOOP1F: %s", g_loop1f && g_deny[0x1F] ? "0x1F loops jump back uncounted on held walks (last count yields)" : "off");
     if (g_exe0_ret) log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk (return gva 0x%08X, expected 0x006A5D0D) held too",
                              rt_to_gva(g_exe0_ret));
@@ -540,12 +556,12 @@ static void log_ops(int src) {
         if (n) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " %02X:%ld", op, n);
         if (d) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " %02X:held%ld", op, d);
     }
-    if (line[0]) log_line("X2-MAG-025 opdiag %s: held-walk handlers (op:count):%s", src ? "DLL" : "EXE", line);
+    if (line[0]) log_line("X2-MAG-025 opdiag %s: held-walk handlers (op:count):%s", src == 0 ? "EXE" : src == 1 ? "DLL pass1" : "DLL pass0", line);
 }
 
 static void post() {
     static uint32_t tick = 0;
-    if (g_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); }
+    if (g_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); log_ops(2); }
     if (g_slow > 1 && tick % 60 == 59) {
         static uint32_t seen[3] = {0, 0, 0};
         if (g_slow_n[0] != seen[0] || g_slow_n[1] != seen[1] || g_slow_n[2] != seen[2]) {
