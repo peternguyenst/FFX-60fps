@@ -32,6 +32,9 @@
 // X2-MAG-025-DLLPASS0MODE (default 0 = the DLL mode, LISTMODE or DLLMODE): mode for DLL-called pass-0 walks;
 // PASS0MODE covers the EXE walk only. U 18/10: both at 1 brought the sword's dark / lit frames back; EXE 1 + DLL 0
 // keeps the light balls' duration and the sword.
+// X2-MAG-025-SLOWTEST=N (test, default 0): while the list profile is active, the walks picked by X2-MAG-025-SLOWSRC
+// (bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1; default 1) step on 1 logic invocation in N (mode-1 hold on the
+// others), so what they drive plays N times slower: tells which walk drives an effect (U 20/10: Rikku's light balls).
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
 // FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
 // cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
@@ -94,6 +97,9 @@ static int  g_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk
 static int  g_loop1f = 1;                        // X2-MAG-025-LOOP1F
 static volatile LONG g_optrace = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
 static bool g_trace_on = false;
+static int  g_slow = 0;                          // X2-MAG-025-SLOWTEST=N: list profile only, chosen walks step 1 logic frame in N
+static int  g_slow_src = 1;                      // X2-MAG-025-SLOWSRC: bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1
+static uint32_t g_slow_n[3];
 
 static volatile uint8_t g_hold = 0;              // mode of the held walk running now (0 = none)
 static uint8_t g_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
@@ -342,6 +348,14 @@ static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
 }
 
 static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
+    if (g_slow > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
+        uint8_t* ret = (uint8_t*)_ReturnAddress();
+        int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe0_ret && ret == g_exe0_ret) ? 0 : -1;
+        if (k >= 0 && (g_slow_src >> k & 1) && (g_slow_n[k]++ % (uint32_t)g_slow) != 0) {
+            held_walk(1, k ? 1 : 0, unit_ctx, pass);
+            return;
+        }
+    }
     if (row_MAG025.on && !g_disabled && render_only()) {
         uint8_t* ret = (uint8_t*)_ReturnAddress();
         uint8_t p = (uint8_t)pass;
@@ -464,6 +478,12 @@ static bool install() {
     g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
     g_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
     g_optrace = config_row("X2-MAG-025-OPTRACE", 0);
+    g_slow = config_row("X2-MAG-025-SLOWTEST", 0);
+    g_slow_src = config_row("X2-MAG-025-SLOWSRC", 1);
+    if (g_slow > 1)
+        log_line("  X2-MAG-025-SLOWTEST: test, under the list profile walks%s%s%s step on 1 logic frame in %d",
+                 g_slow_src & 1 ? " EXE-pass0" : "", g_slow_src & 2 ? " DLL-pass0" : "", g_slow_src & 4 ? " DLL-pass1" : "",
+                 g_slow);
     char deny[256];
     config_str("rows", "X2-MAG-025-DENY", deny, sizeof(deny), "1F,7F");   // loop counter, battle signal
     char line[256]; int k = 0; line[0] = 0;
