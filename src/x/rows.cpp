@@ -49,6 +49,7 @@ static Row* g_rows[] = {
     &row_QOLSAVEICON,
     &row_CFGMENU,                                // after the rows it switches
     &row_FX010,
+    &row_MAG028,                                 // after MAG-006 / FX-010 (they resolve the pause flag)
     &row_DIAG_BTLSIG,
     &row_DIAG_DRAWSTEP,
     &row_DIAG_TEXTDUMP,
