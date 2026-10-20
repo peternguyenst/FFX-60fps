@@ -195,6 +195,7 @@ uint8_t* mag006_entry();                        // Ppp_ProgramStep entry (null i
 bool     mag006_pause_exe_caller(uint8_t* ret); // MAG-006 pauses this EXE call site like a DLL caller
 extern Row row_FX010;                            // rows/FX-010.cpp
 extern Row row_DIAG_BTLSIG;                      // rows/DIAG-BTLSIG.cpp (diagnostic, default off)
+extern Row row_DIAG_PAUSEWATCH;                  // rows/DIAG-PAUSEWATCH.cpp (diagnostic, default off)
 extern Row row_DIAG_HANGDUMP;                    // rows/DIAG-HANGDUMP.cpp (diagnostic, observe only)
 extern Row row_DIAG_TEXTDUMP;                    // rows/DIAG-TEXTDUMP.cpp (diagnostic, default off)
 extern Row row_DIAG_DRAWSTEP;                    // rows/DIAG-DRAWSTEP.cpp (diagnostic, default off)

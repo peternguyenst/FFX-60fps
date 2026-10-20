@@ -153,6 +153,7 @@
     <ClCompile Include="src\x\rows\QOL-SAVEICON.cpp" />
     <ClCompile Include="src\x\rows\FX-010.cpp" />
     <ClCompile Include="src\x\rows\DIAG-HANGDUMP.cpp" />
+    <ClCompile Include="src\x\rows\DIAG-PAUSEWATCH.cpp" />
     <ClCompile Include="src\x\rows\DIAG-BTLSIG.cpp" />
     <ClCompile Include="src\x\rows\DIAG-DRAWSTEP.cpp" />
     <ClCompile Include="src\x\rows\DIAG-TEXTDUMP.cpp" />
