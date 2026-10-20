@@ -33,6 +33,15 @@ static const char PAT_DIRECT_B[] =
     "8B 80 F4 03 00 00 FF D0 8B 0D ?? ?? ?? ?? F7 D8 1B C0 40 89 01";
 static bool g_direct = true;
 
+// MAG-018-UNLOAD: a family-E DLL whose last draw was render-only unloads with the pause flag at 1, and no draw is
+// left to clear it: every particle program stays frozen for the rest of the battle (Thundaga/Death, then Life on
+// Yuna: magic_0114's records never finish, no end signal 0x0206, soft-lock; D 20/10/2026 DAT_0230fd34 == 1 live).
+// The next logic invocation writes 0, what the DLL's stock last draw would have left.
+static bool g_unload_fix = true;
+static int32_t* volatile g_stale_pf = nullptr;   // pause flag left at 1 by an unloaded DLL
+static char g_stale_name[24];
+static volatile LONG g_unload_resets = 0;
+
 // Shared with MAG-021: number of exec-pause setters in a loaded module's code (1 = family E with this
 // shape); *hit = the first one.
 int famE_find_setter(uint8_t* mod, uint32_t size, uint8_t** hit_out) {
@@ -96,19 +105,45 @@ static void on_load(uint8_t* base, uint32_t size, const char* name) {
     }
 }
 
+// magic_mods.cpp, loader lock; the image is still mapped.
 static void on_unload(uint8_t* base) {
-    for (int i = 0; i < MAX_MODS; i++) if (g_mods[i].mod == base) g_mods[i].mod = nullptr;
+    for (int i = 0; i < MAX_MODS; i++) {
+        FamE& m = g_mods[i];
+        if (m.mod != base) continue;
+        if (g_unload_fix && m.scanned && m.ptr_var) {
+            int32_t* pf = *m.ptr_var;
+            if (pf && *pf == 1) { memcpy(g_stale_name, m.name, sizeof(g_stale_name)); g_stale_pf = pf; }
+        }
+        m.mod = nullptr;
+    }
 }
 
 static bool install() {
     g_direct = config_row("MAG-018-DIRECT", 1) != 0;
+    g_unload_fix = config_row("MAG-018-UNLOAD", 1) != 0;
     if (!magic_mods_subscribe("MAG-018", on_load, on_unload)) return false;
-    log_line("  MAG-018: watching magic DLL loads for the family-E exec-pause setter");
+    log_line("  MAG-018: watching magic DLL loads for the family-E exec-pause setter (MAG-018-UNLOAD %d)", g_unload_fix);
     return true;
 }
 
 static void pre() {
     bool logic = pacing_kind() != INV_BUILD;
+    if (g_stale_pf && logic && !g_disabled) {
+        int32_t* pf = g_stale_pf;
+        g_stale_pf = nullptr;
+        __try {
+            if (*pf == 1) {
+                *pf = 0;
+                LONG n = InterlockedIncrement(&g_unload_resets);
+                if (n <= 5 || n % 50 == 0)
+                    log_line("MAG-018-UNLOAD: %s unloaded with the pause flag at 1 - reset at a logic invocation (%ld so far)",
+                             g_stale_name, n);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            log_line("MAG-018-UNLOAD: fault 0x%08lX on the pause flag", GetExceptionCode());
+        }
+    }
     for (int i = 0; i < MAX_MODS; i++) {
         FamE& m = g_mods[i];
         if (!m.mod) continue;
