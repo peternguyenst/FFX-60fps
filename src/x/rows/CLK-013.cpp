@@ -5,7 +5,7 @@
 // the voice (U 17/10/2026: cutscene before Yunalesca, voice out of sync and never back, also reported by other
 // users without turbo).
 // Fix: hold stock 30 Hz pacing while the SyncData mode flag DAT_012fb8a0 is 1 (CLK-013=1; CLK-013-HOLD=0 only logs).
-// Default off (17/10/2026): not reproduced by the user; players who see the desync can turn it on in fps60.ini.
+// Default on again (21/10/2026, user: lips out of sync with the voice in a cutscene); was off 17/10-21/10.
 // CLK-013-DIAG=1 logs the entries fetched per invocation kind every 120 invocations while the mode is on.
 // Details: docs/fps60/rows/CLK-013.md
 #include "../fps60.h"
@@ -77,6 +77,6 @@ static bool install() {
 
 Row row_CLK013 = {
     "CLK-013",
-    "hold stock pacing while a SyncData (wall-clock synced) cutscene runs (voice sync; opt-in, not yet confirmed)",
-    0, install, pre, post, 0, release_hold
+    "hold stock pacing while a SyncData (wall-clock synced) cutscene runs (voice sync)",
+    1, install, pre, post, 0, release_hold
 };
