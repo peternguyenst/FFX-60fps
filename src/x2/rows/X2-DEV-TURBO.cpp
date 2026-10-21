@@ -40,6 +40,8 @@ static int __cdecl h_active() {
     return g_held && row_DEVTURBO.on ? 1 : g_active_tramp();
 }
 
+bool devturbo_held() { return g_held && row_DEVTURBO.on; }
+
 static bool install() {
     g_key = config_row("X2-DEV-TURBO-KEY", 0x60);
     g_speed = config_row("X2-DEV-TURBO-SPEED", 10);

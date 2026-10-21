@@ -46,6 +46,9 @@ void pacing_leave_now(const char* why) {
     PLOG("pacing: stock now for %s (divider -> %u, exec -> 1) at inv %llu", why, g_wanted, g_inv);
 }
 
+static bool g_turbo = false;
+void pacing_turbo(bool on) { g_turbo = on; }
+
 void pacing_set(bool on) {
     if ((g_cfg.pacing != 0) == on) return;
     g_cfg.pacing = on ? 1 : 0;
@@ -127,6 +130,10 @@ void pacing_pre() {
     if (*g_backlog_count > 1) {
         target = 1;
         g_kind = INV_BACKLOG;
+    } else if (g_turbo) {                         // X2-PACE-TURBO: count = booster / 2 per host frame, all logic
+        target = 1;
+        g_phase = 1;
+        g_kind = INV_LOGIC;
     } else {
         target = g_phase;
         g_phase ^= 1;
