@@ -9,10 +9,11 @@
 // effects were drawn every second frame (U 16/10/2026: transformation blink, gone with X2-MAG-008 off via F8). While
 // such a DLL is loaded the dispatch runs on render-only invocations too; their update steps only when the exec getter
 // (+0x400) is non-zero (S, magic_0646 FUN_10002b90 / FUN_10003fb0). Ledger: re/ledger/XFADE-BLINK.md.
-// X2-MAG-008-PASS-LIST (ini, default empty): magic numbers passed as well, by name (U 18/10/2026: Rikku -> Warrior
+// X2-MAG-008-PASS-LIST (ini): magic numbers passed as well, by name (U 18/10/2026: Rikku -> Warrior
 // 0885 -> 0937 -> 0906 still alternates dark / lit frames after the body fixes; none of the three is string-matched,
-// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones. Default "885 937 906" (Rikku ->
-// Warrior; U 18/10 fixed at 60 fps with X2-MAG-025's list profile). While a listed DLL, or one chained from it, is
+// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones. Default "885 937 906 212" (Rikku ->
+// Warrior; U 18/10 fixed at 60 fps with X2-MAG-025's list profile; 212 = arena "VS." intro wave overlay, blinked every
+// second frame, U 21/10 fixed by the list, ARENA-VS.md). While a listed DLL, or one chained from it, is
 // loaded, mag008_list_active() is true (X2-MAG-025 uses its list profile then).
 #include "../x2.h"
 #include <string.h>
@@ -126,7 +127,7 @@ static bool install() {
     g_dispatch = (dispatch_t)target;
     g_pass_on = config_row("X2-MAG-008-PASS", 1);
     char buf[160];
-    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "885 937 906");
+    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "885 937 906 212");
     for (char* q = buf; *q && g_nplist < 32;) {
         char* e = nullptr; long v = strtol(q, &e, 10);
         if (e == q) { q++; continue; }
