@@ -7,7 +7,7 @@
 //   afterwards). Capped at 40 lines.
 // - ExitProcess / TerminateProcess(own process): the exit code and the caller chain, so a silent exit through the
 //   game's own error path shows who asked for it.
-// - every ~60 s (3600 invocations): private bytes, working set, free address space (total, largest block) and the
+// - every 60 s (checked after each invocation): private bytes, working set, free address space (total, largest block) and the
 //   handle count. U 22/10/2026 (friend): crashes after ~30 min battles / back-to-back cups, log ends with no fault
 //   line; this shows whether anything grows toward exhaustion before such a crash.
 // Observe only: the handler always returns EXCEPTION_CONTINUE_SEARCH and the exit hooks call the originals.
@@ -130,8 +130,11 @@ static void log_mem() {
 }
 
 static void post() {
-    static uint32_t n = 0;
-    if (++n % 3600 == 1) log_mem();
+    static ULONGLONG next = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now < next) return;
+    next = now + 60000;
+    log_mem();
 }
 
 static bool install() {
