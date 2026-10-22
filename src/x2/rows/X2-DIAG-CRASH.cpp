@@ -7,9 +7,13 @@
 //   afterwards). Capped at 40 lines.
 // - ExitProcess / TerminateProcess(own process): the exit code and the caller chain, so a silent exit through the
 //   game's own error path shows who asked for it.
+// - every ~60 s (3600 invocations): private bytes, working set, free address space (total, largest block) and the
+//   handle count. U 22/10/2026 (friend): crashes after ~30 min battles / back-to-back cups, log ends with no fault
+//   line; this shows whether anything grows toward exhaustion before such a crash.
 // Observe only: the handler always returns EXCEPTION_CONTINUE_SEARCH and the exit hooks call the originals.
 #include "../x2.h"
 #include <stdio.h>
+#include <psapi.h>                 // K32* (kernel32, PSAPI_VERSION 2)
 
 namespace x2 {
 
@@ -102,6 +106,34 @@ static BOOL WINAPI h_term(HANDLE h, UINT code) {
     return g_term_tramp(h, code);
 }
 
+static void log_mem() {
+    PROCESS_MEMORY_COUNTERS_EX pm = {};
+    pm.cb = sizeof(pm);
+    K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof(pm));
+    uint64_t free_total = 0, free_big = 0;
+    uint8_t* p = nullptr;
+    MEMORY_BASIC_INFORMATION mbi;
+    while (VirtualQuery(p, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_FREE) {
+            free_total += mbi.RegionSize;
+            if (mbi.RegionSize > free_big) free_big = mbi.RegionSize;
+        }
+        uint8_t* n = (uint8_t*)mbi.BaseAddress + mbi.RegionSize;
+        if (n <= p) break;
+        p = n;
+    }
+    DWORD handles = 0;
+    GetProcessHandleCount(GetCurrentProcess(), &handles);
+    log_line("X2-DIAG-CRASH: memory private %lu MB, working set %lu MB, free VA %lu MB (largest %lu MB), handles %lu",
+             (unsigned long)(pm.PrivateUsage >> 20), (unsigned long)(pm.WorkingSetSize >> 20),
+             (unsigned long)(free_total >> 20), (unsigned long)(free_big >> 20), handles);
+}
+
+static void post() {
+    static uint32_t n = 0;
+    if (++n % 3600 == 1) log_mem();
+}
+
 static bool install() {
     g_veh = AddVectoredExceptionHandler(1, veh);
     if (!g_veh) { log_line("  X2-DIAG-CRASH: AddVectoredExceptionHandler failed"); return false; }
@@ -118,7 +150,7 @@ static bool install() {
 Row row_DIAGCRASH = {
     "X2-DIAG-CRASH",
     "diagnostic: log faults (module+offset, registers, stack) and who calls ExitProcess / TerminateProcess",
-    0, install, nullptr, nullptr, 0
+    0, install, nullptr, post, 0
 };
 
 } // namespace x2
