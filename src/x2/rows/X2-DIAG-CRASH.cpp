@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-CRASH (diagnostic, default 0): U 18/10/2026: the game closed itself while a commsphere recording was viewed
+// X2-DIAG-CRASH (diagnostic, default 1 since 22/10/2026: the mod is in progress, user): U 18/10/2026: the game closed itself while a commsphere recording was viewed
 // (log ends 0.0 s after magic_0760.dll loaded; no mod fault line, no Windows crash record or dump). Logs:
 // - every first-chance fault of the kinds below (vectored handler, first in the chain): code, faulting module + offset
 //   (FFX-2.exe also as Ghidra VA), the accessed address, registers, and up to 12 stack words that point into code
@@ -153,7 +153,7 @@ static bool install() {
 Row row_DIAGCRASH = {
     "X2-DIAG-CRASH",
     "diagnostic: log faults (module+offset, registers, stack) and who calls ExitProcess / TerminateProcess",
-    0, install, nullptr, post, 0
+    1, install, nullptr, post, 0
 };
 
 } // namespace x2
