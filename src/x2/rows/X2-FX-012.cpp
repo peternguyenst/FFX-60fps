@@ -36,16 +36,30 @@ static bool install() {
     return true;
 }
 
+static uint32_t g_orig16 = 0, g_orig18 = 0;
+static bool g_applied = false, g_live = true;
+
 static void pre() {
     static bool done = false;
     if (done || !g_fn) return;
     done = true;
     // game thread, between invocations: the op is not running while the 6 bytes are written
+    g_orig16 = *(uint32_t*)(g_fn + 0x16);
+    g_orig18 = *(uint32_t*)(g_fn + 0x18);
     if (!patch_u32(g_fn + 0x18, 0x90909090u) || !patch_u32(g_fn + 0x16, 0x90909090u)) {
         log_line("X2-FX-012: patch failed");
         return;
     }
+    g_applied = true;
     log_line("X2-FX-012: pppop_flash gate NOPed (full-screen flash queued on paused render-only steps too)");
+}
+
+// X2-DEV-BISECT-AUTO (game thread, between invocations): stock gate back (off) or NOPed again (on).
+void fx012_set_live(bool on) {
+    if (!g_applied || on == g_live) return;
+    g_live = on;
+    if (on) { patch_u32(g_fn + 0x18, 0x90909090u); patch_u32(g_fn + 0x16, 0x90909090u); }
+    else { patch_u32(g_fn + 0x18, g_orig18); patch_u32(g_fn + 0x16, g_orig16); }
 }
 
 Row row_FX012 = {

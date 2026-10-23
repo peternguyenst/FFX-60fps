@@ -99,6 +99,13 @@ static bool install() {
     return true;
 }
 
+// stock and patched dwords for X2-DEV-BISECT-AUTO's runtime switch (the spawn / integrate stubs stay: with the gate
+// back, a paused draw never reaches them and unpaused they pass through)
+static uint32_t g_gate_orig[2], g_gate_new[2];
+static bool g_gate_ok[2] = {};
+static uint32_t g_t3_orig[3], g_t3_new[3];      // m+0x3A, m+0xD, m+0x11
+static bool g_t3_ok = false, g_live = true;
+
 static void pre() {
     if (g_patched) return;
     g_patched = true;
@@ -115,18 +122,35 @@ static void pre() {
             log_line("X2-FX-010-DRAWOPS: %s gate JNZ patch failed (stubs pass through, gate stock)", k_name[i]);
             continue;
         }
+        g_gate_orig[i] = w; g_gate_new[i] = (w & 0xFFFF0000) | 0x9090; g_gate_ok[i] = true;
         log_line("X2-FX-010-DRAWOPS: %s gate NOPed: draws while paused, spawn/integrate once per tick", k_name[i]);
     }
     if (g_t3) {
         // branch first (it then lands on the inner check, same as stock at pause 0), the entry JNE last
         uint8_t* m = g_t3;
         uint32_t w = *(uint32_t*)(m + 0x11);       // rel32 high half, then 81 7F
-        if (!patch_u32(m + 0x3A, (uint32_t)(g_t3_inner - (m + 0x3E))) ||
-            !patch_u32(m + 0xD, 0x90909090u) || !patch_u32(m + 0x11, (w & 0xFFFF0000u) | 0x9090u)) {
+        g_t3_orig[0] = *(uint32_t*)(m + 0x3A); g_t3_orig[1] = *(uint32_t*)(m + 0xD); g_t3_orig[2] = w;
+        g_t3_new[0] = (uint32_t)(g_t3_inner - (m + 0x3E)); g_t3_new[1] = 0x90909090u; g_t3_new[2] = (w & 0xFFFF0000u) | 0x9090u;
+        if (!patch_u32(m + 0x3A, g_t3_new[0]) || !patch_u32(m + 0xD, g_t3_new[1]) || !patch_u32(m + 0x11, g_t3_new[2])) {
             log_line("X2-FX-010-DRAWOPS-TAIL3: patch failed");
             return;
         }
+        g_t3_ok = true;
         log_line("X2-FX-010-DRAWOPS-TAIL3: KeShpTail3 entry gate NOPed (draws while paused), +0x290 step behind the inner check");
+    }
+}
+
+// X2-DEV-BISECT-AUTO (game thread, between invocations): stock gates back (off) or NOPed again (on). TAIL3 keeps the
+// install order: on = branch then entry, off = entry then branch.
+void fx010_set_live(bool on) {
+    if (!g_patched || on == g_live) return;
+    g_live = on;
+    for (int i = 0; i < 2; i++)
+        if (g_gate_ok[i]) patch_u32(g_gate[i] + 7, on ? g_gate_new[i] : g_gate_orig[i]);
+    if (g_t3_ok) {
+        uint8_t* m = g_t3;
+        if (on) { patch_u32(m + 0x3A, g_t3_new[0]); patch_u32(m + 0xD, g_t3_new[1]); patch_u32(m + 0x11, g_t3_new[2]); }
+        else { patch_u32(m + 0x11, g_t3_orig[2]); patch_u32(m + 0xD, g_t3_orig[1]); patch_u32(m + 0x3A, g_t3_orig[0]); }
     }
 }
 

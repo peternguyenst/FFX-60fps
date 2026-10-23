@@ -19,6 +19,7 @@ void smooth_set_live(bool on) {
     g_live = on ? 1 : 0;
     log_line("X2-CFG-MENU: SMOOTH rows %s", on ? "ON" : "OFF (installed, pass-through)");
 }
+void smooth_set_off_row(int row) { g_off_row = (row >= 0 && row <= 3) ? row : 0; }
 
 static bool focused() {
     HWND fg = GetForegroundWindow();

@@ -27,6 +27,7 @@ bool smooth_live(int row = 0);           // runtime toggle (F7; Ctrl+F7 turns SM
 void smooth_poll_hotkey();
 bool smooth_get_live();                  // the F7 switch (X2-CFG-MENU)
 void smooth_set_live(bool on);
+void smooth_set_off_row(int row);        // the F6 switch: 0 = none, else X2-SMOOTH-00<row> alone off (X2-DEV-BISECT-AUTO)
                // F7 edge; called from each SMOOTH row's pre()
 
 // Interpolation: out = a..b at t for a world transform (row-vector, translation in
