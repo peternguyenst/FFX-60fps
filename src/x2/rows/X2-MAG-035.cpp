@@ -8,7 +8,9 @@
 // walker draw; ARENA-VS.md). So a template DLL is passed only when it is seen to blink: X2-DIAG-BLINK reports each
 // render-only frame vs the logic frames on both sides (mag035_pair: +1 below both, -1 above both); after
 // X2-MAG-035-PAIRS (default 12) pairs with (below - above) at least half of them, the DLL is passed for the rest of its run (mag008_pass_late: listed profile, no chain).
-// X2-MAG-035-EXCLUDE (default "449") is never passed. Needs X2-DIAG-BLINK on. The first ~0.2 s of a blinking effect
+// X2-MAG-035-EXCLUDE (default "449 946") is never passed. magic_0946 crashed 7.6 s after its late pass (D 24/10/2026
+// 01:50, dump: its 64-slot particle program table filled up and the DLL freed slot 64, past the end; CRASH-0946.md).
+// Needs X2-DIAG-BLINK on. The first ~0.2 s of a blinking effect
 // still blinks.
 #include "../x2.h"
 #include <stdlib.h>
@@ -100,7 +102,7 @@ static bool install() {
     if (g_need < 4) g_need = 4;
     if (g_need > MAXWIN) g_need = MAXWIN;
     char buf[96];
-    config_str("rows", "X2-MAG-035-EXCLUDE", buf, sizeof(buf), "449");
+    config_str("rows", "X2-MAG-035-EXCLUDE", buf, sizeof(buf), "449 946");
     for (char* q = buf; *q && g_nexcl < 16;) {
         char* e = nullptr; long v = strtol(q, &e, 10);
         if (e == q) { q++; continue; }
