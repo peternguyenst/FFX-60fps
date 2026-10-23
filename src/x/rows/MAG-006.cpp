@@ -56,7 +56,13 @@ static void note_exe_caller(uint8_t* ret) {
     }
 }
 
+// One EXE call site a row counts per invocation kind, paused or not (MAG-029 diagnostic).
+static uint8_t*       g_watch_ret = nullptr;
+static volatile LONG* g_watch_counts = nullptr;
+void mag006_watch_caller(uint8_t* ret, volatile LONG* counts) { g_watch_counts = counts; g_watch_ret = ret; }
+
 static int __cdecl h_ppp_step(void* prog, uint32_t flags) {
+    if (g_watch_ret && (uint8_t*)_ReturnAddress() == g_watch_ret) InterlockedIncrement(&g_watch_counts[pacing_kind() & 3]);
     if (row_MAG006.on && !g_disabled && pacing_kind() == INV_BUILD) {
         uint8_t* ret = (uint8_t*)_ReturnAddress();
         uint8_t* base = exe_base();

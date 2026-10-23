@@ -168,6 +168,7 @@ extern Row row_MAG025;                           // rows/MAG-025.cpp (DLL-called
 extern Row row_MAG026;                          // rows/MAG-026.cpp (family-X record draws held on render-only)
 extern Row row_MAG027;                           // rows/MAG-027.cpp (event timeline walker, 22 DLLs: starts on logic only)
 extern Row row_MAG028;                           // rows/MAG-028.cpp (particle pause flag back to the game's value)
+extern Row row_MAG029;                           // rows/MAG-029.cpp (effect-unit particle programs paused on render-only)
 extern Row row_DIAGFRAMETIME;                    // rows/DIAG-FRAMETIME.cpp (frame time histogram, VRR check)
 extern Row row_RATE001;                          // rows/RATE-001.cpp (host frame limiter retargeted to N * 29.97 Hz)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 draw-only walk -> MAG-026
