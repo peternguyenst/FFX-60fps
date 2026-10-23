@@ -3,7 +3,9 @@
 // for FMVs. For effects whose 60 Hz blink is not mapped yet. U 17/10/2026: Full Throttle (magic_0681) sword and fire blink
 // at 60 Hz only, and with every effect row off (F7, F8, F11, ini tests A/B/C); the cause sits in the core 60 Hz cadence
 // (re/ledger/CRASH-0681.md). The effect then plays exactly as at stock; 60 Hz returns at its unload.
-// U 17/10/2026: Full Throttle fixed at 60 Hz (swords X2-CHR-001, flash X2-FX-012), so the default list is empty now.
+// U 17/10/2026: Full Throttle fixed at 60 Hz (swords X2-CHR-001, flash X2-FX-012), so the default list was emptied.
+// U 22/10/2026: Ultima (enemy, magic_0106) blinks at 60 Hz; the pass list did not help, X2-MAG-STOCK-LIST=106 did (D
+// 22:17:21 / 22:22:48, outer repo re/ledger/ARENA-VS.md test 6); fixed at 60 Hz by X2-HD-001, so the list is empty.
 // ini [rows]: X2-MAG-STOCK=1, X2-MAG-STOCK-LIST=<magic numbers, any separator> (default ""; empty = none).
 #include "../x2.h"
 #include <stdio.h>

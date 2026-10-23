@@ -130,6 +130,7 @@
     <ClCompile Include="src\x2\rows\X2-DIAG-HIT.cpp" />
     <ClCompile Include="src\x2\rows\X2-CHR-001.cpp" />
     <ClCompile Include="src\x2\rows\X2-TASK-001.cpp" />
+    <ClCompile Include="src\x2\rows\X2-HD-001.cpp" />
     <ClCompile Include="src\x2\rows\X2-SR-003.cpp" />
     <ClCompile Include="src\x2\rows\X2-FX-010-DRAWOPS.cpp" />
     <ClCompile Include="src\x2\rows\X2-FX-012.cpp" />
