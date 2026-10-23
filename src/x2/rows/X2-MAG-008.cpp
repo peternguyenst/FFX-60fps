@@ -11,10 +11,14 @@
 // (+0x400) is non-zero (S, magic_0646 FUN_10002b90 / FUN_10003fb0). Ledger: re/ledger/XFADE-BLINK.md.
 // X2-MAG-008-PASS-LIST (ini): magic numbers passed as well, by name (U 18/10/2026: Rikku -> Warrior
 // 0885 -> 0937 -> 0906 still alternates dark / lit frames after the body fixes; none of the three is string-matched,
-// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones. Default "885 937 906 212 330" (Rikku ->
+// and PASS=2 crashes magic_0888). Listed DLLs start a chain like string-matched ones. Default "885 937 906 212 330 386 283" (Rikku ->
 // Warrior; U 18/10 fixed at 60 fps with X2-MAG-025's list profile; 212 = arena "VS." intro wave overlay, blinked every
-// second frame, U 21/10 fixed by the list; 330 = arena result "LOSER..." banner, same, U 21/10; ARENA-VS.md). While a listed DLL, or one chained from it, is
+// second frame, U 21/10 fixed by the list; 330 = arena result "LOSER..." banner, same, U 21/10; ARENA-VS.md; 386 = Seymour's Requiem, same template, U 22/10 fixed with no chain;
+// 283 = Big Bang, same template and same neighbours (0840 before, 0106 after), U 22/10 blink). While a listed DLL, or one chained from it, is
 // loaded, mag008_list_active() is true (X2-MAG-025 uses its list profile then).
+// X2-MAG-008-PASS-NOCHAIN (ini, default "386 283"): listed numbers that do not start a chain. U/D 22/10/2026: a chain from a
+// listed DLL passed the next battle effect magic_0449, which then crashed at FFX-2.exe 0x864C50 (ARENA-VS.md); the
+// reverse dressphere change needs the chain from 937 (0888 chained, XFADE-BLINK.md), so it stays per number.
 #include "../x2.h"
 #include <string.h>
 #include <stdlib.h>
@@ -63,12 +67,24 @@ bool mag008_list_active() { return g_list_loaded > 0; }
 // Chain: a DLL loaded within 500 ms of a passed DLL's unload is passed too (the dressphere change runs magic_0646 ->
 // magic_0938 -> magic_0931 back to back, 2-3 ms apart; 0938 has neither string; U 16/10/2026 20:45 still blinked).
 static volatile DWORD g_chain_until = 0;
-static int g_plist[32], g_nplist = 0;
-static bool in_plist(const char* name) {
+static int g_plist[32], g_nplist = 0, g_nochain[32], g_nnochain = 0;
+static int magic_no(const char* name) {
     const char* p = strstr(name, "magic_");
-    int n = p ? atoi(p + 6) : -1;
-    for (int i = 0; i < g_nplist; i++) if (g_plist[i] == n) return true;
+    return p ? atoi(p + 6) : -1;
+}
+static bool in_list(const int* l, int cnt, int n) {
+    for (int i = 0; i < cnt; i++) if (l[i] == n) return true;
     return false;
+}
+static bool in_plist(const char* name) { return in_list(g_plist, g_nplist, magic_no(name)); }
+static void parse_list(const char* key, const char* def, int* l, int* cnt) {
+    char buf[160];
+    config_str("rows", key, buf, sizeof(buf), def);
+    for (char* q = buf; *q && *cnt < 32;) {
+        char* e = nullptr; long v = strtol(q, &e, 10);
+        if (e == q) { q++; continue; }
+        l[(*cnt)++] = (int)v; q = e;
+    }
 }
 static void on_load(uint8_t* base, uint32_t size, const char* name) {
     bool chained = g_chain_until && (LONG)(GetTickCount() - g_chain_until) < 0;
@@ -82,12 +98,28 @@ static void on_load(uint8_t* base, uint32_t size, const char* name) {
     bool prof = listed || (!own && chained && g_chain_list);
     for (int i = 0; i < 8; i++)
         if (!g_xbase[i]) {
-            g_xbase[i] = base; g_xown[i] = own; g_xlist[i] = prof;
+            g_xbase[i] = base; g_xlist[i] = prof;
+            g_xown[i] = own && !(listed && in_list(g_nochain, g_nnochain, magic_no(name)));   // starts a chain
             InterlockedIncrement(&g_pass_loaded);
             if (prof) InterlockedIncrement(&g_list_loaded);
             break;
         }
     log_line("X2-MAG-008-PASS: %s is a cross-fade / ky model DLL - exec==0 dispatch runs on render-only invocations while loaded", name);
+}
+// X2-MAG-035: pass a DLL that is already loaded, as a listed DLL that starts no chain (game thread). False if the
+// pass is off, the DLL is already passed, or no slot is free.
+bool mag008_pass_late(uint8_t* base, const char* name) {
+    if (!row_MAG008.on || !g_pass_on || !base) return false;
+    for (int i = 0; i < 8; i++) if (g_xbase[i] == base) return false;
+    for (int i = 0; i < 8; i++)
+        if (InterlockedCompareExchangePointer((void* volatile*)&g_xbase[i], base, nullptr) == nullptr) {
+            g_xown[i] = false; g_xlist[i] = true;
+            InterlockedIncrement(&g_pass_loaded);
+            InterlockedIncrement(&g_list_loaded);
+            log_line("X2-MAG-008-PASS: %s passed late (X2-MAG-035), no chain", name);
+            return true;
+        }
+    return false;
 }
 static void on_unload(uint8_t* base) {
     for (int i = 0; i < 8; i++)
@@ -126,14 +158,10 @@ static bool install() {
     }
     g_dispatch = (dispatch_t)target;
     g_pass_on = config_row("X2-MAG-008-PASS", 1);
-    char buf[160];
-    config_str("rows", "X2-MAG-008-PASS-LIST", buf, sizeof(buf), "885 937 906 212 330");
-    for (char* q = buf; *q && g_nplist < 32;) {
-        char* e = nullptr; long v = strtol(q, &e, 10);
-        if (e == q) { q++; continue; }
-        g_plist[g_nplist++] = (int)v; q = e;
-    }
-    if (g_nplist) log_line("  X2-MAG-008-PASS-LIST: %d magic DLL(s) passed by number", g_nplist);
+    parse_list("X2-MAG-008-PASS-LIST", "885 937 906 212 330 386 283", g_plist, &g_nplist);
+    parse_list("X2-MAG-008-PASS-NOCHAIN", "386 283", g_nochain, &g_nnochain);
+    if (g_nplist) log_line("  X2-MAG-008-PASS-LIST: %d magic DLL(s) passed by number, %d of them start no chain", g_nplist,
+                           g_nnochain);
     if (g_pass_on && !magic_mods_subscribe("X2-MAG-008", on_load, on_unload)) g_pass_on = 0;
     if (!patch_call_rel32(site, target, (void*)&h_fallback_dispatch)) {
         log_line("  X2-MAG-008: patch failed");
