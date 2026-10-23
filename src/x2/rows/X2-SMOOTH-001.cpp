@@ -242,6 +242,11 @@ static void restore() {
     g_committed = false;
 }
 
+// Dev hot reload: the camera matrix written for a render-only frame goes back (pre would restore it next).
+static void stop() {
+    __try { restore(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void pre() {
     smooth_poll_hotkey();
     bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
@@ -406,7 +411,7 @@ static bool install() {
 Row row_SMOOTH001 = {
     "X2-SMOOTH-001",
     "60 Hz camera: logic frames draw the view half-way between the last two ticks (needs X2-SMOOTH=1)",
-    1, install, pre, post, 0
+    1, install, pre, post, 0, 0, stop
 };
 
 } // namespace x2

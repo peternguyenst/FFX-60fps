@@ -249,6 +249,11 @@ static void restore() {
     g_w_n = 0;
 }
 
+// Dev hot reload: actor roots written for a render-only frame go back (pre would restore them next).
+static void stop() {
+    __try { restore(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void pre() {
     smooth_poll_hotkey();
     g_traced_inv = false;
@@ -369,7 +374,7 @@ static bool install() {
 Row row_SMOOTH002 = {
     "X2-SMOOTH-002",
     "60 Hz actor roots: logic frames draw each root half-way between the last two ticks (needs X2-SMOOTH=1)",
-    1, install, pre, post, 0
+    1, install, pre, post, 0, 0, stop
 };
 
 } // namespace x2

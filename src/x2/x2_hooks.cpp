@@ -35,6 +35,10 @@ extern "C" void __cdecl x2_post() {
         if (perf_on()) perf_inv_end();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("post", GetExceptionCode()); }
+#ifdef FPS60_DEV
+    __try { reload_poll(); }                     // between invocations, on the game thread
+    __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("reload", GetExceptionCode()); }
+#endif
 }
 
 static void* g_mainloop_target = nullptr;      // read by the naked wrapper
@@ -51,16 +55,44 @@ __declspec(naked) static void sg_mainloop_wrapper() {
     }
 }
 
-bool patch_u32(void* at_, uint32_t v) {
-    uint8_t* at = (uint8_t*)at_;
-    int32_t rel = (int32_t)v;
+// Every patch_u32 write is journaled (address, old and new value) so a dev hot reload can undo it.
+struct Patch { uint8_t* at; uint32_t orig, now; };
+static Patch g_patch[512];
+static int   g_npatch = 0;
+
+static bool write_u32(uint8_t* at, uint32_t v) {
     DWORD old;
     if (!VirtualProtect(at, 4, PAGE_EXECUTE_READWRITE, &old)) return false;
-    if ((((uintptr_t)at) & 3) == 0) InterlockedExchange((volatile LONG*)at, rel);
-    else *(int32_t*)at = rel;
+    if ((((uintptr_t)at) & 3) == 0) InterlockedExchange((volatile LONG*)at, (LONG)v);
+    else *(uint32_t*)at = v;
     VirtualProtect(at, 4, old, &old);
     FlushInstructionCache(GetCurrentProcess(), at, 4);
     return true;
+}
+
+bool patch_u32(void* at_, uint32_t v) {
+    uint8_t* at = (uint8_t*)at_;
+    uint32_t orig = 0;
+    if (!safe_read_u32(at, &orig)) return false;
+    if (!write_u32(at, v)) return false;
+    if (g_npatch < (int)(sizeof(g_patch) / sizeof(g_patch[0]))) g_patch[g_npatch++] = { at, orig, v };
+    return true;
+}
+
+// Newest first, so chained patches unwind in order. A site whose bytes are no longer ours (module unloaded and
+// reused, or patched again by someone else) is left alone.
+void patch_revert_all() {
+    int done = 0, skipped = 0;
+    for (int i = g_npatch - 1; i >= 0; i--) {
+        uint32_t cur = 0;
+        if (!safe_read_u32(g_patch[i].at, &cur) || cur != g_patch[i].now || !write_u32(g_patch[i].at, g_patch[i].orig)) {
+            skipped++;
+            continue;
+        }
+        done++;
+    }
+    log_line("patches: %d reverted, %d skipped", done, skipped);
+    g_npatch = 0;
 }
 
 bool hooks_install_mainloop() {
@@ -113,6 +145,12 @@ void hook_remove(void* target) {
     if (!mh_ready()) return;
     MH_DisableHook(target);
     MH_RemoveHook(target);
+}
+
+void hook_disable_all() {
+    if (!mh_ready()) return;
+    MH_STATUS s = MH_DisableHook(MH_ALL_HOOKS);
+    log_line("hooks: all entry hooks disabled (%s)", MH_StatusToString(s));
 }
 
 static set_divider_t g_divider_tramp = nullptr;

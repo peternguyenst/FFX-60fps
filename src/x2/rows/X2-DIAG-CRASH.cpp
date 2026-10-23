@@ -437,11 +437,18 @@ static bool install() {
     return true;
 }
 
+// Dev hot reload: the vectored handler and the dump filter go (the next copy installs its own; both would dump).
+static void stop() {
+    if (g_veh) { RemoveVectoredExceptionHandler(g_veh); g_veh = nullptr; }
+    if (g_setuef_tramp) g_setuef_tramp(g_game_uef);
+    else if (g_dump > 0) SetUnhandledExceptionFilter(g_game_uef);
+}
+
 Row row_DIAGCRASH = {
     "X2-DIAG-CRASH",
     "diagnostic: log faults (module+offset, registers, stack), who calls ExitProcess / TerminateProcess, and a "
     "minidump on a fatal crash (X2-DIAG-CRASH-DUMP)",
-    1, install, nullptr, post, 0
+    1, install, nullptr, post, 0, 0, stop
 };
 
 } // namespace x2

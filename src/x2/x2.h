@@ -19,6 +19,9 @@ namespace x2 {
 void log_open();                                 // fps60x2.log next to FFX-2.exe (keeps 3 old sessions)
 void log_line(const char* fmt, ...);
 void game_dir(wchar_t* out, size_t cap);         // with trailing '\'
+bool hot_copy();                                 // this copy was loaded by a dev hot reload (fps60x2_live_*.dll)
+void log_close();                                // dev hot reload: hand the log to the next copy
+void log_reopen();                               // dev hot reload failed: take it back
 
 // ---------------------------------------------------------------- x2_config.cpp
 struct Config {
@@ -69,6 +72,11 @@ bool patch_call_rel32(uint8_t* site, void* old_target, void* new_target);   // v
 bool patch_u32(void* at, uint32_t v);            // 4-byte write through VirtualProtect (atomic if aligned)
 bool hook_entry(const char* name, void* target, void* detour, void** orig); // MinHook entry hook
 void hook_remove(void* target);                  // undo hook_entry (rows that install several hooks as one)
+void hook_disable_all();                         // dev hot reload: every MinHook hook off (original prologues back)
+void patch_revert_all();                         // dev hot reload: every patch_u32 write undone, newest first
+#ifdef FPS60_DEV
+void reload_poll();                              // x2_reload.cpp: reload key = load fps60x2_next.dll in place of this copy
+#endif
 void hooks_install_divider_on_game_thread();     // first pre()
 
 // ---------------------------------------------------------------- x2_pacing.cpp
@@ -111,8 +119,10 @@ struct Row {
     void (*post)();              // optional
     int         on;
     int         installed;       // install() ran and succeeded at startup
+    void (*stop)();              // optional: undo state held between invocations (dev hot reload, x2_reload.cpp)
 };
 void rows_install_all();
+void rows_stop_all();                           // dev hot reload: Row::stop of every row that is on
 bool row_on(const char* id);
 bool perf_on();                                 // X2-DIAG-PERF (x2_perf.cpp)
 LONGLONG perf_now();

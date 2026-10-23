@@ -298,10 +298,18 @@ fail:
     row_CFGMENU.on = 0;
 }
 
+// Dev hot reload: the game's Config row array must not point into this copy; the stock rows go back (a copy of them
+// in this copy's memory, which stays mapped; the next copy's enter hook takes it as the stock array).
+static void stop() {
+    __try {
+        if (g_arr && *g_arr == (void*)g_ours && g_stock_n > 0) { *g_arr = g_stock; *g_cnt = (int8_t)g_stock_n; }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 Row row_CFGMENU = {
     "X2-CFG-MENU",
     "the mod's options (60 FPS, Smooth Motion, 60 FPS Menu, Soft Reset, Turbo, Idle Motion, V-Sync) on the main-menu Config page",
-    1, install, pre, nullptr, 0
+    1, install, pre, nullptr, 0, 0, stop
 };
 
 } // namespace x2

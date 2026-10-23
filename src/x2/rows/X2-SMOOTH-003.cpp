@@ -1221,10 +1221,16 @@ static bool install() {
     return true;
 }
 
+// Dev hot reload: held poses back (pre would restore them next) and the engine's half-rate switch off.
+static void stop() {
+    __try { hold_restore(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (g_half_on) { *g_half = 0; g_half_on = false; }
+}
+
 Row row_SMOOTH003 = {
     "X2-SMOOTH-003",
     "60 Hz limbs: engine half-rate motion + a half step on render-only frames (needs X2-SMOOTH=1)",
-    1, install, pre, post, 0
+    1, install, pre, post, 0, 0, stop
 };
 
 } // namespace x2

@@ -3,6 +3,7 @@
 // Steam DRM to unpack .text, resolves every signature (fail-safe: one required miss = nothing installed), then
 // hooks the runner's CALL Sg_MainLoop. The divider hook installs on the game thread at the first invocation.
 #include "x2.h"
+#include <stdio.h>
 
 namespace x2 {
 
@@ -14,6 +15,19 @@ static bool probe_ready() {
 static DWORD WINAPI init_thread(LPVOID) {
     config_load();
     log_open();
+    if (!hot_copy()) {   // fresh start: copies left by dev hot reloads of an earlier session are deleted
+        wchar_t dir[MAX_PATH], pat[MAX_PATH], f[MAX_PATH];
+        game_dir(dir, MAX_PATH);
+        _snwprintf_s(pat, MAX_PATH, _TRUNCATE, L"%sfps60x2_live_*.dll", dir);
+        WIN32_FIND_DATAW fd;
+        HANDLE h = dir[0] ? FindFirstFileW(pat, &fd) : INVALID_HANDLE_VALUE;
+        if (h != INVALID_HANDLE_VALUE) {
+            do { _snwprintf_s(f, MAX_PATH, _TRUNCATE, L"%s%s", dir, fd.cFileName); DeleteFileW(f); } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    } else {
+        log_line("x2: hot reload - this copy installs in place of the previous one");
+    }
     if (!g_cfg.enabled) { log_line("x2 disabled in fps60x2.ini - nothing installed."); return 0; }
     log_line("x2 init: FFX-2.exe base=%p, pacing=%d exec_method=%d", exe_base(), g_cfg.pacing, g_cfg.exec_method);
 

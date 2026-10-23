@@ -160,6 +160,7 @@
     <ClCompile Include="src\x2\rows\X2-CHR-002.cpp" />
     <ClCompile Include="src\x2\rows\X2-CFG-MENU.cpp" />
     <ClCompile Include="src\x2\x2_text.cpp" />
+    <ClCompile Include="src\x2\x2_reload.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-CRASH.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-PPPSLOT.cpp" />
     <ClCompile Include="src\x2\x2_magic_mods.cpp" />

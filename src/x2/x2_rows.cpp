@@ -131,6 +131,15 @@ void rows_post() {
     for (Row** p = g_rows; *p; p++) if ((*p)->on && (*p)->post) (*p)->post();
 }
 
+// Dev hot reload: each installed row undoes the state it holds between invocations or outside its hooks.
+void rows_stop_all() {
+    for (Row** p = g_rows; *p; p++)
+        if ((*p)->installed && (*p)->stop) {
+            __try { (*p)->stop(); }
+            __except (EXCEPTION_EXECUTE_HANDLER) { log_line("rows: %s stop faulted", (*p)->id); }
+        }
+}
+
 // ---------------------------------------------------------------- rollback
 struct Span {
     const char*     row_id;
