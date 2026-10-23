@@ -31,7 +31,11 @@ static const uint8_t TM[] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(TB) == sizeof(TM), "template mask");
 
-struct Slot { uint8_t* base; char name[24]; uint32_t pairs, shorts, longs; bool done; };
+// Rolling window (U/D 23/10/2026 21:21: magic_0938, a dressphere change, blinked on 94% of 120 pairs and was never
+// passed: the first 12 pairs were judged once, before the blink began, and the DLL was marked done): the last
+// X2-MAG-035-PAIRS deltas are kept and the DLL is passed the first time the window holds a blink.
+enum { MAXWIN = 64 };
+struct Slot { uint8_t* base; char name[24]; uint32_t pairs; int8_t win[MAXWIN]; bool done; };
 static Slot g_s[8];
 static int g_need = 12;
 static int g_excl[16], g_nexcl = 0;
@@ -75,15 +79,17 @@ void mag035_pair(uint8_t* base, int delta) {
     if (!row_MAG035.on || g_disabled) return;
     for (Slot& s : g_s) {
         if (s.base != base || s.done) continue;
+        s.win[s.pairs % g_need] = (int8_t)(delta > 0 ? 1 : delta < 0 ? -1 : 0);
         s.pairs++;
-        if (delta > 0) s.shorts++;
-        if (delta < 0) s.longs++;
-        if (s.pairs >= (uint32_t)g_need) {
+        if (s.pairs < (uint32_t)g_need) continue;
+        int shorts = 0, longs = 0;
+        for (int i = 0; i < g_need; i++) { if (s.win[i] > 0) shorts++; if (s.win[i] < 0) longs++; }
+        if ((shorts - longs) * 2 >= g_need) {
             s.done = true;
-            if ((int)(s.shorts - s.longs) * 2 >= (int)s.pairs && mag008_pass_late(base, s.name)) {
+            if (mag008_pass_late(base, s.name)) {
                 InterlockedIncrement(&g_auto);
-                log_line("X2-MAG-035: %s blinks (%u of %u render-only frames below both neighbours, %u above) - passed (%ld so far)", s.name,
-                         s.shorts, s.pairs, s.longs, g_auto);
+                log_line("X2-MAG-035: %s blinks (%d of the last %d render-only frames below both neighbours, %d above; pair %u)"
+                         " - passed (%ld so far)", s.name, shorts, g_need, longs, s.pairs, g_auto);
             }
         }
     }
@@ -91,6 +97,8 @@ void mag035_pair(uint8_t* base, int delta) {
 
 static bool install() {
     g_need = config_row("X2-MAG-035-PAIRS", 12);
+    if (g_need < 4) g_need = 4;
+    if (g_need > MAXWIN) g_need = MAXWIN;
     char buf[96];
     config_str("rows", "X2-MAG-035-EXCLUDE", buf, sizeof(buf), "449");
     for (char* q = buf; *q && g_nexcl < 16;) {
