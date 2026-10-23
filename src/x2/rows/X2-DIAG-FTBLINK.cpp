@@ -4,7 +4,8 @@
 // list +0xE9D4) only through Ch_DrawMain loop 3 (FUN_00449f20 at 0x6DCD98), which runs once per tick; the list is cleared
 // in FUN_00464e80 (0x46500D, every invocation) when the state block [0xDCED88] has [0] != 1 or byte +0x338 / +0x33C set.
 // While a listed magic DLL is loaded (X2-DIAG-FTBLINK-DLL, default "681 80": Full Throttle and a plain attack for
-// comparison) every invocation logs, at its end: kind, the list count, state [0], +0x338, +0x33C (max 240 lines per load).
+// comparison) every invocation logs, at its end: kind, the list count, state [0], +0x338, +0x33C and the BG / light colours
+// (max 1200 lines per load).
 // H1 holds if, for 0681 only, the state clears the list each invocation and RENDER counts drop below LOGIC counts.
 // X2-DIAG-FTBLINK-ALT=1 (dressphere outer-model blink, re/ledger/XFADE-BLINK.md; U 18/10: two consecutive frames draw the
 // new outfit faint, then opaque): per invocation snapshot every actor record (table 0x01CC9604, stride 0x910, up to 48)
@@ -12,8 +13,11 @@
 // alternation (value == value two invocations back, != the previous one). Every 120 invocations of a watched DLL, log
 // the dwords that alternated on >= 80% of them, with the last LOGIC and RENDER values (hex and float).
 // Also (U 18/10: the sword close-up frames alternate near-black / lit; tint, fade, MAG-025 ruled out) the HD state:
-// hdframe [0xDCDA04] 0xEA00 bytes, PostProcessManager [0xDD10F4] 0x12400 bytes and the MotionBlur object [0xDDC74C]
+// hdframe [0xDCDA04] 0xFC40 bytes, PostProcessManager [0xDD10F4] 0x12400 bytes and the MotionBlur object [0xDDC74C]
 // 0x100 bytes (pointers from X2-DIAG-FLASH, which must be on).
+// Ultima (magic_0106, U 23/10/2026: background grey / black on consecutive frames): hdframe now reaches the colour at
+// +0xFC24..+0xFC2C (FUN_00453be0, set through service +0x554 by EgoBgVal), and the light globals 0x1725080..0x1725520
+// (flags 0x172508C, colour 0x1725390, RGBA 0x1725500; FUN_007bb1e0 / 007bb410 / 007baf80) are snapshotted as "light".
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +36,10 @@ static volatile LONG g_active = 0;
 static int   g_lines = 0;
 extern Row row_DIAGFTBLINK;
 
-enum { ALT_ACT = 48, ALT_MDL = 4, ALT_MDLB = 0x400, ALT_HF = 0xEA00, ALT_PPM = 0x12400, ALT_MB = 0x100,
+enum { ALT_ACT = 48, ALT_MDL = 4, ALT_MDLB = 0x400, ALT_HF = 0xFC40, ALT_PPM = 0x12400, ALT_MB = 0x100, ALT_GL = 0x4A0,
        ALT_O_MDL = ALT_ACT * 0x910, ALT_O_HF = ALT_O_MDL + ALT_MDL * ALT_MDLB, ALT_O_PPM = ALT_O_HF + ALT_HF,
-       ALT_O_MB = ALT_O_PPM + ALT_PPM, ALT_BYTES = ALT_O_MB + ALT_MB, ALT_DW = ALT_BYTES / 4 };
+       ALT_O_MB = ALT_O_PPM + ALT_PPM, ALT_O_GL = ALT_O_MB + ALT_MB, ALT_BYTES = ALT_O_GL + ALT_GL, ALT_DW = ALT_BYTES / 4 };
+static uint8_t* g_light = nullptr;               // 0x1725080 = RGBA 0x1725500 (FUN_007bb1e0 operand) - 0x480
 extern uint8_t** g_ctx_ptr;                      // X2-DIAG-FLASH
 extern uint8_t** g_obj_ptr;
 static int      g_alt_on = 0;
@@ -70,6 +75,8 @@ static void alt_snapshot() {
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     __try { uint8_t* p = g_obj_ptr ? *g_obj_ptr : nullptr; if (p) memcpy((uint8_t*)cur + ALT_O_MB, p, ALT_MB); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { if (g_light) memcpy((uint8_t*)cur + ALT_O_GL, g_light, ALT_GL); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
     memcpy(render_only() ? g_lastR : g_lastL, cur, sizeof(g_snap[0]));
     if (g_nsnap >= 2) {
         const uint32_t* p1 = g_snap[(g_si + 2) % 3];
@@ -95,8 +102,9 @@ static void alt_snapshot() {
                      (b - ALT_O_MDL) % ALT_MDLB, L, fl, R, fr, g_alt[o]);
         else
             log_line("  %s +0x%05X: LOGIC %08X (%g) RENDER %08X (%g) alt %d",
-                     b < ALT_O_PPM ? "hdframe" : b < ALT_O_MB ? "ppm" : "motionblur",
-                     b - (b < ALT_O_PPM ? ALT_O_HF : b < ALT_O_MB ? ALT_O_PPM : ALT_O_MB), L, fl, R, fr, g_alt[o]);
+                     b < ALT_O_PPM ? "hdframe" : b < ALT_O_MB ? "ppm" : b < ALT_O_GL ? "motionblur" : "light 0x1725080",
+                     b - (b < ALT_O_PPM ? ALT_O_HF : b < ALT_O_MB ? ALT_O_PPM : b < ALT_O_GL ? ALT_O_MB : ALT_O_GL), L, fl, R, fr,
+                     g_alt[o]);
         shown++;
     }
     log_line("FTBLINK-ALT %s: %d dwords shown", g_name, shown);
@@ -121,9 +129,14 @@ static void on_unload(uint8_t* base) {
     if (base == g_watch) { InterlockedExchange(&g_active, 0); g_watch = nullptr; }
 }
 
+// X2-DIAG-FLASH logs only while a watched DLL is loaded when this row is on (battle bloom is never 0).
+bool ftblink_gate() { return !row_DIAGFTBLINK.on || g_active != 0; }
+bool ftblink_watching() { return row_DIAGFTBLINK.on && g_active != 0; }
+uint8_t* ftblink_base() { return g_active ? g_watch : nullptr; }
+
 static void post() {
     if (g_active && g_alt_on) alt_snapshot();
-    if (!g_active || g_lines >= 600) return;
+    if (!g_active || g_lines >= 1200) return;
     int32_t cnt = -1, st = -1, b338 = -1, b33c = -1;
     __try {
         uint8_t* hf = *g_hdframe;
@@ -143,8 +156,24 @@ static void post() {
             shown++;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    // Ultima background (U 23/10/2026): BG colour hdframe +0xFC24..2C (FUN_00453be0), RGBA 0x1725500 (svc +0x554) and
+    // 0x17254C4 (+0xA5C), light flags 0x172508C, colour 0x1725390 (+0x5A8)
+    char col[200]; col[0] = 0;
+    __try {
+        uint8_t* hf = *g_hdframe;
+        if (hf && g_light) {
+            const float* bg = (const float*)(hf + 0xFC24);
+            const uint8_t* a = g_light + 0x480;
+            const uint8_t* b = g_light + 0x444;
+            const float* lc = (const float*)(g_light + 0x310);
+            _snprintf_s(col, sizeof(col), _TRUNCATE, " bg=%.3f,%.3f,%.3f rgba500=%u,%u,%u,%u rgba4C4=%u,%u,%u,%u fl=%X lc=%.3f,%.3f,%.3f",
+                        bg[0], bg[1], bg[2], a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], *(uint32_t*)(g_light + 0xC),
+                        lc[0], lc[1], lc[2]);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
     static const char* K[] = {"LOGIC", "RENDER", "BACKLOG", "STOCK"};
-    log_line("FTBLINK %s #%d %s list=%d state=%d b338=%d b33c=%d%s", g_name, g_lines, K[pacing_kind() & 3], cnt, st, b338, b33c, act);
+    log_line("FTBLINK %s #%d %s list=%d state=%d b338=%d b33c=%d%s%s", g_name, g_lines, K[pacing_kind() & 3], cnt, st, b338, b33c,
+             act, col);
     g_lines++;
 }
 
@@ -176,6 +205,14 @@ static bool install() {
         g_list[g_nlist++] = (int)v; p = e;
     }
     g_alt_on = config_row("X2-DIAG-FTBLINK-ALT", 0);
+    if (g_alt_on) {
+        // FUN_007bb1e0: PUSH EBP; MOV EBP,ESP; MOV ECX,[EBP+8]; SUB ESP,0x10; MOVZX EAX,byte [ECX]; MOV [0x01725500],AL; ...
+        uint8_t* c = sig_find("X2-DIAG-FTBLINK colour setter FUN_007bb1e0",
+            "55 8B EC 8B 4D 08 83 EC 10 0F B6 01 A2 ?? ?? ?? ?? 0F B6 41 04 A2 ?? ?? ?? ?? 0F B6 41 08 A2", 0x7BB1E0);
+        uint8_t* rgba = c ? abs_operand("light RGBA", c + 13) : nullptr;
+        if (rgba) g_light = rgba - 0x480;
+        log_line("  X2-DIAG-FTBLINK: light globals gva=0x%08X (expected 0x01725080)", g_light ? rt_to_gva(g_light) : 0);
+    }
     if (!magic_mods_subscribe("X2-DIAG-FTBLINK", on_load, on_unload)) return false;
     log_line("  X2-DIAG-FTBLINK: state ptr gva=0x%08X (expected 0x00DCED88), hdframe ptr gva=0x%08X (expected 0x00DCDA04)",
              rt_to_gva(g_state), rt_to_gva(g_hdframe));

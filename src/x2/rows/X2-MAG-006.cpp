@@ -243,9 +243,29 @@ static bool unpause_listed(const void* ret) {
             return true;
     return false;
 }
+// X2-MAG-006-UNPAUSE-AB (default 0 = off; user 23/10/2026: Ultima cannot be cast on demand, one cast must answer):
+// magic DLL number whose own render-only particle steps run unpaused in alternate seconds (odd GetTickCount seconds
+// on), each switch logged, so X2-DIAG-LUMA compares both halves of one cast (ULTIMA-0106.md).
+static int      g_ab_num = 0;
+static uint8_t* g_ab_base = nullptr;
+static uint32_t g_ab_size = 0;
+static int      g_ab_seg = -1;
+static bool ab_unpaused(const void* ret) {
+    if (!g_ab_base || (const uint8_t*)ret < g_ab_base || (const uint8_t*)ret >= g_ab_base + g_ab_size) return false;
+    int seg = (int)((GetTickCount() / 1000) & 1);
+    if (seg != g_ab_seg) {
+        g_ab_seg = seg;
+        log_line("X2-MAG-006-UNPAUSE-AB: magic_%04d render-only steps %s", g_ab_num, seg ? "UNPAUSED" : "paused");
+    }
+    return seg != 0;
+}
 static void ul_load(uint8_t* base, uint32_t size, const char* name) {
     const char* p = strstr(name, "magic_");
     int n = p ? atoi(p + 6) : -1;
+    if (g_ab_num && n == g_ab_num) {
+        g_ab_base = base; g_ab_size = size; g_ab_seg = -1;
+        log_line("X2-MAG-006-UNPAUSE-AB: %s loaded - unpaused in alternate seconds", name);
+    }
     for (int i = 0; i < g_ul_n; i++)
         if (g_ul_num[i] == n)
             for (int k = 0; k < MAXULD; k++)
@@ -256,6 +276,7 @@ static void ul_load(uint8_t* base, uint32_t size, const char* name) {
                 }
 }
 static void ul_unload(uint8_t* base) {
+    if (base == g_ab_base) g_ab_base = nullptr;
     for (int k = 0; k < MAXULD; k++) if (g_ul_mod[k].base == base) g_ul_mod[k].base = nullptr;
 }
 
@@ -294,7 +315,7 @@ static int ppp_step_body(void* prog, uint32_t flags, void* ret) {
         if (exe && render_only()) InterlockedIncrement(&g_exe_calls);
         return step_deferred(prog, flags, *g_pause != 0);
     }
-    if (g_unpause_test || unpause_listed(ret) || pppops_prog_marked(prog)) {
+    if (g_unpause_test || unpause_listed(ret) || pppops_prog_marked(prog) || ab_unpaused(ret)) {
         InterlockedIncrement(&g_unpaused_calls);
         int32_t saved = *g_pause;
         *g_pause = 0;
@@ -356,7 +377,9 @@ static bool install() {
             if (e == t) { t++; continue; }
             g_ul_num[g_ul_n++] = (int)v; t = e;
         }
-        if (g_ul_n && !magic_mods_subscribe("X2-MAG-006-UNPAUSE-LIST", ul_load, ul_unload)) g_ul_n = 0;
+        g_ab_num = config_row("X2-MAG-006-UNPAUSE-AB", 0);
+        if ((g_ul_n || g_ab_num) && !magic_mods_subscribe("X2-MAG-006-UNPAUSE-LIST", ul_load, ul_unload)) g_ul_n = g_ab_num = 0;
+        if (g_ab_num) log_line("  X2-MAG-006-UNPAUSE-AB: magic_%04d render-only steps unpaused in alternate seconds", g_ab_num);
     }
     g_loopdefer = config_row("X2-FX-010-LOOPDEFER", 1);
     if (g_loopdefer) {

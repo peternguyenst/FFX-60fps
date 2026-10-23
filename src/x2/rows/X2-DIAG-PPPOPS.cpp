@@ -333,11 +333,16 @@ static void dump_call(int i, uint8_t* part, uint8_t* key, uint8_t* opd) {
     log_line("PPPDUMP #%ld %s f%d %s+0x%X %s part %p age %X key %X | data %s | prog50 %s", g_inv, render_only() ? "R" : "L",
              *g_pause != 0, mod, off, g_name[i] + 3, part, age, kt, d, pr);
 }
+// X2-DIAG-PPPOPS-HIDE (test, default ""): these draw ops are not called when the running step's program lies in the
+// X2-DIAG-PPPOPS-DUMP-MOD module (user 23/10/2026: Ultima flare halos brighter on logic frames, frame dump 03:40; hide
+// the lens ops and dump again to see whether the halos are theirs).
+static bool g_hide_op[MAXOPS];
 template <int I> static void __cdecl h_op(void* a, void* b, void* c) {
     if (g_dump_op[I]) dump_call(I, (uint8_t*)a, (uint8_t*)b, (uint8_t*)c);
     InterlockedIncrement(*g_pause ? &g_paused[I] : &g_live[I]);
     note_pp(I);
     if (g_trace[I]) note_chain(I);
+    if (g_hide_op[I] && in_dump_prog()) return;
     g_orig[I](a, b, c);
     if (g_dump_op[I] && g_dump_mode == 1) sum_after(I, (uint8_t*)a, (uint8_t*)c);
 }
@@ -420,6 +425,14 @@ static bool install() {
             size_t L = strlen(g_name[i]);
             while (hit && ((hit > tq && hit[-1] != ' ' && hit[-1] != ',') || (hit[L] && hit[L] != ' ' && hit[L] != ','))) hit = strstr(hit + 1, g_name[i]);
             g_dump_op[i] = hit != nullptr;
+        }
+        config_str("rows", "X2-DIAG-PPPOPS-HIDE", tq, sizeof(tq), "");
+        for (int i = 0; i < g_n; i++) {
+            const char* hit = strstr(tq, g_name[i]);
+            size_t L = strlen(g_name[i]);
+            while (hit && ((hit > tq && hit[-1] != ' ' && hit[-1] != ',') || (hit[L] && hit[L] != ' ' && hit[L] != ','))) hit = strstr(hit + 1, g_name[i]);
+            g_hide_op[i] = hit != nullptr;
+            if (hit) log_line("  X2-DIAG-PPPOPS-HIDE: %s not drawn for %s programs", g_name[i], g_dump_mod);
         }
         config_str("rows", "X2-MAG-006-UNPAUSE-OPS", tq, sizeof(tq), "");
         for (int i = 0; i < g_n; i++) {
