@@ -137,7 +137,8 @@ bool     pppops_prog_marked(void* prog);          // X2-MAG-006-UNPAUSE-OPS test
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb);   // X2-MAG-020 draw-only walk -> X2-MAG-026
 bool     mag008_list_active();                 // X2-MAG-008: a PASS-LIST DLL (or its chain) is loaded
 bool     mag008_pass_late(uint8_t* base, const char* name);   // X2-MAG-008: pass an already loaded DLL, no chain
-void     mag035_pair(uint8_t* base, int delta);                // X2-MAG-035: +1 render-only frame below both logic neighbours, -1 above
+void     mag035_pair(uint8_t* base, int delta);
+int      mag025_walk_info();                     // X2-MAG-025: held mode (bits 0-7) | (1 + walk pass) << 8, 0 = no walk                // X2-MAG-035: +1 render-only frame below both logic neighbours, -1 above
 
 // Rollback: a span is snapshotted at the start of every render-only invocation and written back at its end.
 typedef bool (*span_resolver_t)(void* ctx, uint8_t** base, uint32_t* len);

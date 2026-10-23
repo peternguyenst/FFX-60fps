@@ -353,9 +353,21 @@ static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
     g_loop_walk_n = saved_n;
 }
 
+static void h_walk_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret);
+
+// Walk running now, for diagnostics (X2-DIAG-PPPSLOT): 1 + pass, 0 = none; nested walks restore it.
+static volatile int g_walk_pass = 0;
+int mag025_walk_info() { return g_hold | (g_walk_pass << 8); }
+
 static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
+    int saved = g_walk_pass;
+    g_walk_pass = (uint8_t)pass + 1;
+    h_walk_body(unit_ctx, pass, (uint8_t*)_ReturnAddress());
+    g_walk_pass = saved;
+}
+
+static void h_walk_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
     if (g_slow > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
-        uint8_t* ret = (uint8_t*)_ReturnAddress();
         int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe0_ret && ret == g_exe0_ret) ? 0 : -1;
         if (k >= 0 && (g_slow_n[k]++ % (uint32_t)g_slow) != 0 && (g_slow_src >> k & 1)) {
             held_walk(1, k ? 1 : 0, unit_ctx, pass);
@@ -363,7 +375,6 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
         }
     }
     if (row_MAG025.on && !g_disabled && render_only()) {
-        uint8_t* ret = (uint8_t*)_ReturnAddress();
         uint8_t p = (uint8_t)pass;
         if (!in_image(ret)) {
             bool prof = g_mode_list && mag008_list_active();

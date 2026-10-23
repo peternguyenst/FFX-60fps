@@ -161,6 +161,7 @@
     <ClCompile Include="src\x2\rows\X2-CFG-MENU.cpp" />
     <ClCompile Include="src\x2\x2_text.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-CRASH.cpp" />
+    <ClCompile Include="src\x2\rows\X2-DIAG-PPPSLOT.cpp" />
     <ClCompile Include="src\x2\x2_magic_mods.cpp" />
     <ClCompile Include="third_party\minhook\src\buffer.c"><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
     <ClCompile Include="third_party\minhook\src\hook.c"><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
