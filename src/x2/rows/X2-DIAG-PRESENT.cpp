@@ -35,11 +35,13 @@ extern Row row_DIAGPRESENT, row_VSYNC;
 static bool g_hooked = false, g_stats_ready = false;
 void (*volatile g_present_tap)(IDXGISwapChain* sc) = nullptr;   // X2-DIAG-LUMA: called before every Present
 void (*volatile g_present_tap2)(IDXGISwapChain* sc) = nullptr;  // X2-DIAG-CAPTURE: called before every Present
+void (*volatile g_present_tap3)(IDXGISwapChain* sc) = nullptr;  // X2-DIAG-AUTOBLINK: called before every Present
 
 static HRESULT STDMETHODCALLTYPE h_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
     UINT out = row_VSYNC.on ? 1 : g_force_sync ? g_force_sync : sync;
     if (g_present_tap) g_present_tap(sc);
     if (g_present_tap2) g_present_tap2(sc);
+    if (g_present_tap3) g_present_tap3(sc);
     if (!row_DIAGPRESENT.on || !g_stats_ready) return g_present_orig(sc, out, flags);
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
