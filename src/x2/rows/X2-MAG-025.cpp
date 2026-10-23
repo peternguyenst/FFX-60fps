@@ -38,13 +38,14 @@
 // X2-MAG-025-SLOWTEST=N (test, default 0): while the list profile is active, the walks picked by X2-MAG-025-SLOWSRC
 // (bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1; default 1) step on 1 logic invocation in N (mode-1 hold on the
 // others), so what they drive plays N times slower: tells which walk drives an effect (U 20/10: Rikku's light balls).
-// X2-MAG-025-ATTACHDENY (default 1; CRASH-0946, D 24/10/2026): opcode 0xDC sub-ops 0 and 6 (word >> 12; handler
+// X2-MAG-025-ATTACHDENY (default 0, option; CRASH-0946, D 24/10/2026): opcode 0xDC sub-ops 0 and 6 (word >> 12; handler
 // FUN_006ba160 0xD4FD20[0xDC], S) attach a particle program to the unit: DLL callbacks [ctx+0x350]+0x40 / +0x44 (CALLs
 // 0x6BA270 / 0x6BA283), then unit+0xBB = 3. They are held (the stream yields, the next logic walk runs them) on held
 // walks in modes 2/3. X2-DIAG-PPPSLOT, magic_0946 passed late (list profile, mode 2): starts went from ~5/s on logic
 // walks to ~60/s on render-only held walks (spawn loops at WAIT 0), finishes stayed at the logic rate, and the DLL's
 // 64-slot table overflowed in 1.1 s (crash in Ppp_ParticleFree). Unpassed, no start ran on a held walk. The other 0xDC
-// sub-ops (scale, colour, ...) are not held.
+// sub-ops (scale, colour, ...) are not held. Not the crash cause (still crashed with it; LOOP1F below was): off by default,
+// the shipped fix was user-tested without it.
 // X2-MAG-025-DLL0DENY=hex,hex (default empty): opcodes also held (stream yields at them) on held DLL pass-0 walks only.
 // X2-MAG-025-OPDIAG counts EXE, DLL pass 1 and DLL pass 0 separately.
 // X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
@@ -107,7 +108,7 @@ static uint8_t g_hold_pos = 1;                   // X2-MAG-025-POS
 static bool g_deny[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
 static int  g_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
 static int  g_loop1f = 1;                        // X2-MAG-025-LOOP1F
-static int  g_attach_deny = 1;                   // X2-MAG-025-ATTACHDENY
+static int  g_attach_deny = 0;                   // X2-MAG-025-ATTACHDENY
 static volatile LONG g_attach_held = 0;
 static volatile LONG g_optrace = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
 static bool g_trace_on = false;
@@ -513,7 +514,7 @@ static bool install() {
     g_hold_pos = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
     g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
     g_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
-    g_attach_deny = config_row("X2-MAG-025-ATTACHDENY", 1);
+    g_attach_deny = config_row("X2-MAG-025-ATTACHDENY", 0);
     g_optrace = config_row("X2-MAG-025-OPTRACE", 0);
     g_slow = config_row("X2-MAG-025-SLOWTEST", 0);
     g_slow_src = config_row("X2-MAG-025-SLOWSRC", 1);
