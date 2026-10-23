@@ -175,6 +175,7 @@ void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 dr
 extern Row row_UI001;                            // rows/UI-001.cpp
 extern Row row_UI017;                           // rows/UI-017.cpp (pad latch per logic tick, K4)
 extern Row row_UISPH001;                        // rows/UI-SPH-001.cpp (Sphere Grid update per logic tick)
+extern Row row_UI020;                           // rows/UI-020.cpp (save/load list held repeat per logic tick)
 extern Row row_DEVSTOCK;                        // rows/DEV-STOCK.cpp (test tool: Ctrl+F5 toggles stock pacing)
 extern Row row_DEVTURBO;                        // rows/DEV-TURBO.cpp (test tool: hold a key to fast-forward)
 extern Row row_DEVDMG;                           // rows/DEV-DMG.cpp (test tool: fixed party hit damage)
