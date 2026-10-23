@@ -17,6 +17,9 @@
 // XFADE-BLINK.md): denied, the stream yielded at 0x1F and mode 3 then skipped it every second frame; undenied, the
 // count ran 2x (Warrior sword blink). Once per loop per held walk: a 0x1F reached again by the same unit in the same
 // walk (body without a yield) stays denied, else the walk never ends (U 19/10/2026 Power Break hang, magic_0021).
+// Pass-1 (draw) walks only: on a held DLL pass-0 (update) walk the 0x1F yields (D 24/10/2026, CRASH-0946: magic_0946
+// passed late; its update stream's spawn loop `02 05 09 32 90 FF 1F` ran once per render-only frame uncounted, 78+ units
+// instead of the 48 a cast spawns unpassed, and its 64-slot particle table overflowed; X2-MAG-025-OPDIAG).
 // X2-MAG-025-EXEPASS0 (default 1): the EXE pass-0 walk (Fx_OpuUpdate 0x6A5CD0, walker call 0x6A5D08, reached only
 // through the effect dispatch 0x616660(0)) is held the same way (mode X2-MAG-025-MODE) on render-only invocations. It
 // runs there only when X2-MAG-008 passes the dispatch (cross-fade DLLs, X2-MAG-008-PASS-LIST): U 18/10/2026 with
@@ -199,7 +202,7 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
                      g_src ? "DLL" : "EXE", *(uint8_t**)(scr + 0x220), n);
     }
     g_loop_now = 0;
-    if (op == 0x1F && g_deny_now && g_loop1f) {
+    if (op == 0x1F && g_deny_now && g_loop1f && g_dsrc != 2) {   // not on DLL pass-0 (update) walks: CRASH-0946
         uint8_t* unit = *(uint8_t**)(scr + 0x220);
         uint8_t* ctr = unit ? unit + 0xB4 + ((word & 0x200) ? 0 : (uint8_t)(word >> 12)) : nullptr;
         if (ctr && (uint8_t)(*ctr - 1) != 0) {
