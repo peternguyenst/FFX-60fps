@@ -189,11 +189,11 @@ static void verdict() {
         if (d.base) {
             any = true;
             d.windows++;
-            if (whole || cell) {
-                d.blinks++;
-                if (fabs(mw) * 10 > d.max_whole) d.max_whole = (float)(fabs(mw) * 10);
-                if (fabs(best) * 10 > d.max_cell) d.max_cell = (float)(fabs(best) * 10);
-            }
+            if (whole || cell) d.blinks++;
+            // maxima over every window, flagged or not (U 23/10 21:25: a dressphere-change blink stayed below the
+            // thresholds; the unload line shows how close each DLL came)
+            if (fabs(mw) * 10 > d.max_whole) d.max_whole = (float)(fabs(mw) * 10);
+            if (fabs(best) * 10 > d.max_cell) d.max_cell = (float)(fabs(best) * 10);
             if (dn < (int)sizeof(dlls) - 30) dn += _snprintf_s(dlls + dn, sizeof(dlls) - dn, _TRUNCATE, "%s ", d.name);
         }
     bool first_dump = false;
