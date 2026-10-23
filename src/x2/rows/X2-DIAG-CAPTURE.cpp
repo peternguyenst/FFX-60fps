@@ -798,7 +798,11 @@ static void present_tap(IDXGISwapChain* sc) {
     sub_flush();
     g_last_luma = -1;
     save_frame(sc, kind);
-    if (g_toggles) toggles_step(g_last_luma);
+    // X2-DIAG-CAPTURE-TOGGLES=2 (U 23/10/2026 21:3x: Paine's dressphere card, magic_0673, alternates between two states
+    // on every game tick, render-only frames repeat the logic frame: a 15 Hz flicker at 60 fps, 30 Hz at stock): the
+    // scan samples on logic frames only, so a per-tick toggle shows as the same alternation, "agree" against the luma
+    // change between consecutive logic frames.
+    if (g_toggles == 1 || (g_toggles == 2 && kind == INV_LOGIC)) toggles_step(g_last_luma);
     uint32_t hd[5] = {};
     __try {
         uint8_t* h = g_hdframe ? *g_hdframe : nullptr;
