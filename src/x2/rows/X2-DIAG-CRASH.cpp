@@ -18,6 +18,12 @@
 //   referenced heap, .data/.bss of every module (FFX-2.exe .data is 17 MB), handles, memory map; 2 = full memory
 //   (hundreds of MB); 0 = off. Heap corruption (0xC0000374) skips the filters, so the vectored handler writes it.
 //   The dump is written by a helper thread (the faulting thread may be out of stack).
+// - X2-DIAG-CRASH-SPELL (default 1, 24/10/2026, user: "i want to be able to know what spell cause crash"): every effect
+//   start logs its magic DLL and the battle command's name, and the FATAL report (and the dump's comment stream) lists
+//   the last ones. S: the only call of the effect start FUN_00616ba0(.., entry, action, kind) is 0x631FAA (cdecl, 5
+//   args, plain RET 0x616C97); command id = word [action+0xA4] (MOVZX 0x616BE8); FUN_00625130(id, &name) returns the
+//   command record and its name text (the start calls it at 0x616C47 with null; kind 0xF has no command); the entry's
+//   overlay table [entry+0x18] lies in the magic DLL. The call is retargeted, the start runs unchanged.
 // Observe only: the handler always returns EXCEPTION_CONTINUE_SEARCH and the exit hooks call the originals.
 #include "../x2.h"
 #include <stdio.h>
@@ -46,6 +52,14 @@ static setuef_t g_setuef_tramp = nullptr;
 static void* g_setuef_fn = nullptr;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_game_uef = nullptr;   // the filter the game (or anyone else) asked for
 static volatile LONG g_dumped = 0;
+
+typedef void (__cdecl* effstart_t)(uint32_t, uint8_t*, uint8_t*, uint8_t*, int);
+typedef uint8_t* (__cdecl* cmdget_t)(uint32_t, uint8_t**);
+static effstart_t g_effstart = nullptr;            // FUN_00616ba0
+static cmdget_t g_cmdget = nullptr;                // FUN_00625130
+struct Spell { uint8_t* base; char dll[20]; uint32_t cmd; char name[40]; ULONGLONG tick; };
+static Spell g_sp[8];                              // last effect start per DLL base (game thread writes)
+static char g_comment[1024];                       // dump comment stream (filled by the FATAL report)
 
 // "FFX-2.exe+0x123 (gva 0x00523)" / "magic_0760.dll+0x1A2B" / "?"
 static void where(const void* p, char* out, size_t cap) {
@@ -87,6 +101,91 @@ static void log_stack(const char* tag, const uint32_t* sp) {
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     log_line("%s", line);
+}
+
+// Game text -> ASCII for the log: single-byte glyphs 0x30 + index through the start of the us table
+// (ffx2sjistbl_us.bin: digits, space, ASCII punctuation, A-Z, a-z), two-byte glyphs and the rest as '?', control
+// bytes (< 0x2B) skipped, 0 ends.
+static void decode_name(const uint8_t* p, char* out, size_t cap) {
+    static const char G[] = "0123456789 !\"#$%&'()*+,-./:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    size_t n = 0;
+    for (int k = 0; k < 64 && n + 1 < cap && p[k]; ) {
+        uint8_t b = p[k];
+        if (b >= 0x30) { out[n++] = (size_t)(b - 0x30) < sizeof(G) - 1 ? G[b - 0x30] : '?'; k++; }
+        else if (b >= 0x2B) { out[n++] = '?'; k += 2; }
+        else k++;
+    }
+    out[n] = 0;
+}
+
+static void dll_name(const void* p, char* out, size_t cap) {
+    HMODULE m = nullptr;
+    wchar_t w[MAX_PATH];
+    out[0] = 0;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)p, &m) || !m) return;
+    DWORD n = GetModuleFileNameW(m, w, MAX_PATH);
+    const wchar_t* b = w;
+    for (DWORD i = 0; i < n; i++) if (w[i] == L'\\' || w[i] == L'/') b = w + i + 1;
+    _snprintf_s(out, cap, _TRUNCATE, "%S", b);
+}
+
+static void __cdecl h_effstart(uint32_t a, uint8_t* scene, uint8_t* entry, uint8_t* action, int kind) {
+    uint32_t cmd = 0xFFFF;
+    char nm[40] = "";
+    __try {
+        cmd = *(uint16_t*)(action + 0xA4);
+        uint8_t* name = nullptr;
+        if (kind != 0xF && g_cmdget) {
+            g_cmdget(cmd, &name);
+            if (name) decode_name(name, nm, sizeof(nm));
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    g_effstart(a, scene, entry, action, kind);
+    uint32_t tbl = 0;
+    safe_read_u32(entry + 0x18, &tbl);
+    char dll[20];
+    dll_name((const void*)(uintptr_t)tbl, dll, sizeof(dll));
+    HMODULE base = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)(uintptr_t)tbl, &base);
+    Spell* s = &g_sp[0];
+    for (Spell& e : g_sp) {
+        if (e.base == (uint8_t*)base) { s = &e; break; }
+        if (e.tick < s->tick) s = &e;
+    }
+    s->base = (uint8_t*)base;
+    strncpy_s(s->dll, dll, _TRUNCATE);
+    s->cmd = cmd;
+    strncpy_s(s->name, nm, _TRUNCATE);
+    s->tick = GetTickCount64();
+    log_line("X2-DIAG-CRASH: effect %s: command 0x%04X \"%s\"%s", dll[0] ? dll : "?", cmd, nm,
+             kind == 0xF ? " (kind 0xF, no command)" : "");
+}
+
+// FATAL report: the last effect start of every magic DLL still loaded, newest first (also the dump comment).
+static void log_spells() {
+    ULONGLONG now = GetTickCount64();
+    int k = _snprintf_s(g_comment, sizeof(g_comment), _TRUNCATE, "fps60x2 crash; effects loaded:");
+    bool any = false;
+    bool used[8] = {};
+    for (;;) {
+        int best = -1;
+        for (int i = 0; i < 8; i++)
+            if (!used[i] && g_sp[i].base && (best < 0 || g_sp[i].tick > g_sp[best].tick)) best = i;
+        if (best < 0) break;
+        used[best] = true;
+        const Spell& s = g_sp[best];
+        char now_dll[20];
+        dll_name(s.base, now_dll, sizeof(now_dll));
+        if (_stricmp(now_dll, s.dll) != 0) continue;              // unloaded (or another DLL at that base)
+        log_line("X2-DIAG-CRASH:   spell: %s = command 0x%04X \"%s\" (started %.1f s ago)", s.dll, s.cmd, s.name,
+                 (now - s.tick) / 1000.0);
+        int r = _snprintf_s(g_comment + k, sizeof(g_comment) - k, _TRUNCATE, " %s 0x%04X \"%s\";", s.dll, s.cmd, s.name);
+        if (r > 0) k += r;
+        any = true;
+    }
+    if (!any) log_line("X2-DIAG-CRASH:   spell: no effect DLL loaded");
 }
 
 // Loaded modules outside the Windows folder (game, magic DLLs, mod, overlays), several per line.
@@ -145,6 +244,7 @@ struct DumpJob { EXCEPTION_POINTERS* ep; DWORD tid; };
 
 static DWORD WINAPI dump_thread(void* arg) {
     DumpJob* j = (DumpJob*)arg;
+    if (g_effstart) log_spells();
     log_modules();
     if (!g_minidump) { log_line("X2-DIAG-CRASH: no dump (System32 MiniDumpWriteDump not resolved)"); return 0; }
     wchar_t dir[MAX_PATH], path[MAX_PATH];
@@ -164,9 +264,11 @@ static DWORD WINAPI dump_thread(void* arg) {
                MiniDumpWithThreadInfo;
     if (g_dump >= 2) type |= MiniDumpWithFullMemory;
     MINIDUMP_EXCEPTION_INFORMATION mei = { j->tid, j->ep, FALSE };
+    MINIDUMP_USER_STREAM us = { CommentStreamA, (ULONG)strlen(g_comment) + 1, g_comment };
+    MINIDUMP_USER_STREAM_INFORMATION usi = { 1, &us };
     ULONGLONG t0 = GetTickCount64();
     BOOL ok = g_minidump(GetCurrentProcess(), GetCurrentProcessId(), h, (MINIDUMP_TYPE)type, j->ep ? &mei : nullptr,
-                         nullptr, nullptr);
+                         g_comment[0] ? &usi : nullptr, nullptr);
     DWORD err = ok ? 0 : GetLastError();
     LARGE_INTEGER sz = {};
     GetFileSizeEx(h, &sz);
@@ -179,12 +281,16 @@ static DWORD WINAPI dump_thread(void* arg) {
 
 // Once per process; the faulting thread waits for the helper thread (up to 60 s).
 static void write_dump(EXCEPTION_POINTERS* ep, const char* why) {
-    if (g_dump <= 0 || InterlockedExchange(&g_dumped, 1)) return;
+    if (InterlockedExchange(&g_dumped, 1)) return;
     DWORD c = ep ? ep->ExceptionRecord->ExceptionCode : 0;
     char w[160] = "?";
     if (ep) where(ep->ExceptionRecord->ExceptionAddress, w, sizeof(w));
-    log_line("X2-DIAG-CRASH: FATAL (%s) exception 0x%08lX at %s, thread %lu - writing dump", why, c, w,
-             GetCurrentThreadId());
+    log_line("X2-DIAG-CRASH: FATAL (%s) exception 0x%08lX at %s, thread %lu%s", why, c, w, GetCurrentThreadId(),
+             g_dump > 0 ? " - writing dump" : "");
+    if (g_dump <= 0) {
+        if (g_effstart) log_spells();
+        return;
+    }
     DumpJob j = { ep, GetCurrentThreadId() };
     HANDLE th = CreateThread(nullptr, 1 << 20, dump_thread, &j, 0, nullptr);
     if (th) { WaitForSingleObject(th, 60000); CloseHandle(th); }
@@ -286,6 +392,25 @@ static bool install() {
     bool t = g_term_fn && hook_entry("X2-DIAG-CRASH TerminateProcess", g_term_fn, (void*)&h_term, (void**)&g_term_tramp);
     log_line("  X2-DIAG-CRASH: vectored handler on; exit hooks: ExitProcess %s, TerminateProcess %s", e ? "ok" : "FAILED",
              t ? "ok" : "FAILED");
+
+    if (config_row("X2-DIAG-CRASH-SPELL", 1)) {
+        uint8_t* site = sig_find("X2-DIAG-CRASH effect start call 0x631FAA",
+            "FF 75 F4 56 53 FF 75 FC 57 E8 ?? ?? ?? ?? 83 C4 1C BB 05 00 00 00", 0x631FA1);
+        uint8_t* start = site ? call_target(site + 9) : nullptr;
+        // FUN_00616ba0: PUSH EBP; MOV EBP,ESP; PUSH ECX; MOV AL,[..]; PUSH EBX; MOV EBX,[EBP+8]; PUSH ESI; MOV ESI,[EBP+0x10]
+        if (start && !sig_match(start, "55 8B EC 51 A0 ?? ?? ?? ?? 53 8B 5D 08 56 8B 75 10")) start = nullptr;
+        uint8_t* get = sig_find("X2-DIAG-CRASH command getter call 0x616C47",
+            "6A 00 FF 75 10 E8 ?? ?? ?? ?? 83 C4 08 F7 40 14 00 00 80 00", 0x616C42);
+        get = get ? call_target(get + 5) : nullptr;
+        // FUN_00625130: PUSH EBP; MOV EBP,ESP; PUSH EBX; PUSH ESI; MOV ESI,[EBP+0xC]; PUSH EDI; MOV EDI,[EBP+8]
+        if (get && !sig_match(get, "55 8B EC 53 56 8B 75 0C 57 8B 7D 08")) get = nullptr;
+        if (start && get) {
+            g_effstart = (effstart_t)start;
+            g_cmdget = (cmdget_t)get;
+            if (!patch_call_rel32(site + 9, start, (void*)&h_effstart)) g_effstart = nullptr;
+        }
+        log_line("  X2-DIAG-CRASH-SPELL: effect start names %s", g_effstart ? "logged" : "OFF (signature or patch failed)");
+    }
 
     g_dump = config_row("X2-DIAG-CRASH-DUMP", 1);
     if (g_dump > 0) {
