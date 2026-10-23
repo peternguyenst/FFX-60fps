@@ -11,7 +11,7 @@ typedef struct { ULONG Flags; const MM_UNICODE_STRING* FullDllName; const MM_UNI
 typedef VOID(CALLBACK* MM_LDR_NOTIF_FN)(ULONG, const MM_LDR_NOTIF_DATA*, PVOID);
 typedef LONG(NTAPI* MM_LdrRegisterDllNotification_t)(ULONG, MM_LDR_NOTIF_FN, PVOID, PVOID*);
 
-enum { MAX_SUBS = 16 };
+enum { MAX_SUBS = 32 };
 struct Sub { const char* row; magic_load_fn on_load; magic_unload_fn on_unload; };
 static Sub  g_subs[MAX_SUBS];
 static volatile LONG g_nsubs = 0;

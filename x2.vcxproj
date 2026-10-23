@@ -150,6 +150,7 @@
     <ClCompile Include="src\x2\rows\X2-DEV-TURBO.cpp" />
     <ClCompile Include="src\x2\rows\X2-DEV-IMMORTAL.cpp" />
     <ClCompile Include="src\x2\rows\X2-DEV-TOPMOST.cpp" />
+    <ClCompile Include="src\x2\rows\X2-DEV-EFFTEST.cpp" />
     <ClCompile Include="src\x2\rows\X2-DIAG-BLINK.cpp" />
     <ClCompile Include="src\x2\rows\X2-PACE-TURBO.cpp" />
     <ClCompile Include="src\x2\rows\X2-CHR-002.cpp" />
