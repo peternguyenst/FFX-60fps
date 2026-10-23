@@ -49,6 +49,16 @@ void pacing_leave_now(const char* why) {
 static bool g_turbo = false;
 void pacing_turbo(bool on) { g_turbo = on; }
 
+// X2-DIAG-CAPTURE-PHASEFLIP: one repeated kind (two logic or two render-only invocations in a row) moves the logic /
+// render-only alternation against the presented-frame count, to tell which one a blink follows.
+static volatile LONG g_flip = 0;
+void pacing_flip_phase() { InterlockedExchange(&g_flip, 1); }
+// X2-DIAG-CAPTURE-BACKLOG: one no-draw logic invocation (backlog count 2, as the game's own catch-up) without moving
+// the logic / render-only alternation (capture 19:10: the blink's sign changed at a hitch with a BACKLOG invocation,
+// never at a forced repeat). A magic DLL that runs its effect from Mag_Draw does not step on it.
+static volatile LONG g_inject = 0;
+void pacing_inject_backlog() { InterlockedExchange(&g_inject, 1); }
+
 void pacing_set(bool on) {
     if ((g_cfg.pacing != 0) == on) return;
     g_cfg.pacing = on ? 1 : 0;
@@ -127,6 +137,7 @@ void pacing_pre() {
     }
 
     int target;
+    if (InterlockedExchange(&g_inject, 0) && *g_backlog_count == 0) *g_backlog_count = 2;
     if (*g_backlog_count > 1) {
         target = 1;
         g_kind = INV_BACKLOG;
@@ -135,6 +146,7 @@ void pacing_pre() {
         g_phase = 1;
         g_kind = INV_LOGIC;
     } else {
+        if (InterlockedExchange(&g_flip, 0)) g_phase ^= 1;
         target = g_phase;
         g_phase ^= 1;
         g_kind = target ? INV_LOGIC : INV_BUILD;

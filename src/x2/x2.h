@@ -82,6 +82,8 @@ void pacing_hold_stock(const char* who, bool hold); // a row asks for stock paci
 void pacing_set(bool on);                         // runtime 60 Hz on/off ([x2] pacing; X2-CFG-MENU)
 void pacing_leave_now(const char* why);
 void pacing_turbo(bool on);                       // X2-PACE-TURBO: booster engaged -> logic on every invocation
+void pacing_flip_phase();                         // diagnostic: next invocation repeats the last kind (X2-DIAG-CAPTURE-PHASEFLIP)
+void pacing_inject_backlog();                     // diagnostic: one no-draw logic invocation (X2-DIAG-CAPTURE-BACKLOG)
 bool devturbo_held();                             // X2-DEV-TURBO key held
 int  pacing_menudiv2_default();                   // X2-PACE-MENUDIV2 (Config "Fast Results"): 1 under Wine / Proton
 bool pacing_menudiv2_get();
