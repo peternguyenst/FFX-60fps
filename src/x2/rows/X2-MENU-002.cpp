@@ -91,8 +91,12 @@ static void add_var(uint8_t* p, int size, bool sgn, int* toggle) {
 }
 
 struct Hotkey { int vk; int* flag; const char* name; bool prev; };
+// Num 9 toggles the row in release builds only: dev builds use Num 9 for the hot reload (x2_reload.cpp, as in the FFX
+// mod; user 24/10/2026); there the row is switched on the Config page.
 static Hotkey g_keys[] = {
+#ifndef FPS60_DEV
     { VK_NUMPAD9, &g_user_on,    "X2-MENU-002 (60 fps main menu)", false },
+#endif
     { VK_NUMPAD1, &g_t_tween,    "X2-MENU-002-TWEEN (slides)", false },
     { VK_NUMPAD2, &g_drawreplay, "X2-MENU-002-DRAWREPLAY (shadows)", false },
     { VK_NUMPAD3, &g_t_point,    "X2-MENU-002-POINT (screen point)", false },
