@@ -131,6 +131,7 @@
     <ClCompile Include="src\x\rows\MAG-027.cpp" />
     <ClCompile Include="src\x\rows\MAG-028.cpp" />
     <ClCompile Include="src\x\rows\MAG-029.cpp" />
+    <ClCompile Include="src\x\rows\MAG-030.cpp" />
     <ClCompile Include="src\x\rows\UI-020.cpp" />
     <ClCompile Include="src\x\rows\DIAG-FRAMETIME.cpp" />
     <ClCompile Include="src\x\rows\UI-001.cpp" />
