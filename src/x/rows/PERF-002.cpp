@@ -77,6 +77,9 @@ static void window_done() {
     }
     double mean = g_n ? g_sum / g_n : 0;
     double lim = limit_ms();
+    // A retry must reach the full rate (97%, frame jitter only): with the 55/60 limit, 150 "held" at 142.9 fps
+    // under a 141 cap and the game ran ~5% slow (D fps60.log 02:28:33).
+    if (g_retry && g_jump) lim = 1000.0 / (rate_mult() * 30.0 * 0.97);
     bool slow = mean > lim;
     reset_window();
     if (!slow) {
