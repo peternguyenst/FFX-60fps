@@ -9,7 +9,7 @@
 namespace x2 {
 
 // ---------------------------------------------------------------- registry
-extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT;
+extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT, row_SAVE001;
 
 static Row* g_rows[] = {
     &row_MAG008,                                 // rows/X2-MAG-008.cpp
@@ -45,6 +45,7 @@ static Row* g_rows[] = {
     &row_MENU002,                                // rows/X2-MENU-002.cpp (field main menu at 60 Hz)
     &row_MENU001,                                // rows/X2-MENU-001.cpp
     &row_TITLE001,                               // rows/X2-TITLE-001.cpp
+    &row_SAVE001,                                // rows/X2-SAVE-001.cpp (completion decimal on the save / load list)
     &row_SMOOTH001,                              // rows/X2-SMOOTH-001.cpp (60 Hz promotion)
     &row_SMOOTH002,                              // rows/X2-SMOOTH-002.cpp (60 Hz promotion)
     &row_SMOOTH003,                              // rows/X2-SMOOTH-003.cpp (60 Hz promotion, limbs)

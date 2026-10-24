@@ -83,6 +83,7 @@
     <ClCompile Include="tests\x2\test_dll_scanner.cpp" />
     <ClCompile Include="tests\x2\test_dll_census.cpp" />
     <ClCompile Include="tests\x2\test_rollback.cpp" />
+    <ClCompile Include="tests\x2\test_save001.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tests\x2\test.h" />

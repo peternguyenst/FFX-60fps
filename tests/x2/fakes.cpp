@@ -73,6 +73,7 @@ bool safe_copy(void* dst, const void* src, size_t n) {
     __try { memcpy(dst, src, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+bool safe_read_u32(const void* p, uint32_t* out) { return safe_copy(out, p, sizeof *out); }
 
 // --- x2_rows.cpp: every row counts as on, except the ones a test switches off ---
 bool row_on(const char* id) {
