@@ -74,6 +74,13 @@ bool patch_u32(void*, uint32_t) { return false; }
 bool hook_entry(const char*, void*, void*, void**) { return false; }
 void hook_remove(void*) {}
 
+// --- MinHook (only the calls rows make at DLL unload) ---
+} // namespace x2
+#include "../../third_party/minhook/include/MinHook.h"
+extern "C" MH_STATUS WINAPI MH_RemoveHook(LPVOID) { return MH_OK; }
+extern "C" const char* WINAPI MH_StatusToString(MH_STATUS) { return "MH_OK"; }
+namespace x2 {
+
 // --- x2_perf.cpp ---
 bool perf_on() { return false; }
 LONGLONG perf_now() { return 0; }

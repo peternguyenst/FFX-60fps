@@ -78,6 +78,7 @@
     <ClCompile Include="tests\x2\test_sr003.cpp" />
     <ClCompile Include="tests\x2\test_smooth003.cpp" />
     <ClCompile Include="tests\x2\test_smooth_math.cpp" />
+    <ClCompile Include="tests\x2\test_dll_scanner.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tests\x2\test.h" />
