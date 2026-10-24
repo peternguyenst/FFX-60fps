@@ -31,6 +31,7 @@
 //   KEYHOLD     a bone whose two animation keys are far apart (cutscene data can store one rotation two ways) keeps
 //               its pose: the half-way blend between them is a wrong pose
 //   CLOTHHOLD   hair and cloth (mode 4: drawn half a tick behind from the last two results; 2: 30 Hz; 3: extrapolated)
+//               (MIXED: render-only frames never step the cloth simulation, also when a batch holds unwalked actors)
 //   PEEL        during a dressphere change everything runs as stock, or the outfit's two models come apart
 //               (PEEL-SKEL: still rebuild the skeletons on render-only frames, with the held pose)
 //   STOCK-ID    bisect switch: actor ids in a range take whole stock steps (find which actor causes a glitch)
@@ -998,6 +999,11 @@ static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
 
 static volatile LONG g_cloth_job_calls[MAX_ACTORS];         // FREEZEDIAG: cloth job entries per slot (worker threads)
 static bool g_freezediag_running = false;
+// CLOTHHOLD-MIXED (default on): a render-only cloth job whose batch holds an actor that was not walked used to run the
+// game's job for the whole batch: a second simulation step in the same tick, drawn without the blend. With this on,
+// render-only frames never run the job: walked actors are drawn from the snaps, the others keep their last shape.
+static int g_opt_cloth_mixed = 1;
+static volatile LONG g_cloth_mixed = 0, g_cloth_mixed_lines = 0;
 
 // Replaces the entry of the game's cloth job Ch_ClothJob(actors, count) (worker threads). Render-only frame where every
 // actor in the batch was walked: draw the cloth from the snaps (modes 3/4) or skip it (mode 2). Logic frame: run the
@@ -1010,6 +1016,34 @@ static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
             if (i >= 0 && i < MAX_ACTORS) InterlockedIncrement(&g_cloth_job_calls[i]);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    bool render_only_frame = g_inv_kind == INV_RENDER_ONLY;
+    if (g_opt_cloth >= 3 && g_opt_cloth_mixed && live && render_only_frame) {
+        // Render-only: draw walked actors from the snaps, leave the others as they are; never step the simulation.
+        int walked = 0, others = 0;
+        uint16_t other_id = 0;
+        __try {
+            for (int k = 0; k < *count; k++) {
+                int i = slot_of(list[k], *g_actor_table, *g_actor_count);
+                if (i >= 0 && g_walked_now[i]) {
+                    walked++;
+                    if (cloth_extrap(list[k], 0.0f, false)) {
+                        if (InterlockedIncrement(&g_extrap_n) == 1)
+                            log_line("X2-SMOOTH-003-CLOTHHOLD: first cloth mesh drawn from the job results on a render-only invocation (mode %d, id 0x%04X)",
+                                     g_opt_cloth, *(uint16_t*)list[k]);
+                    } else InterlockedIncrement(&g_extrap_miss);
+                } else { others++; other_id = *(uint16_t*)list[k]; }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { fault("cloth render-only", GetExceptionCode()); }
+        if (others) {
+            InterlockedIncrement(&g_cloth_mixed);
+            if (g_cloth_mixed_lines < 8) {
+                InterlockedIncrement(&g_cloth_mixed_lines);
+                log_line("X2-SMOOTH-003-CLOTHHOLD-MIXED: render-only cloth job with %d walked and %d not walked actor(s) "
+                         "(e.g. id 0x%04X, walk %s) - not stepped", walked, others, other_id, g_walk_ran ? "ran" : "did not run");
+            }
+        }
+        return;
+    }
     if (g_opt_cloth >= 2 && g_walk_ran && live) {
         bool all = true;
         __try {
@@ -1451,9 +1485,9 @@ static void post() {
     if (g_walks - last >= 1800) {
         last = g_walks;
         log_line("X2-SMOOTH-003: walks=%ld stepped=%ld batches=%ld pays=%ld gated(seq=%ld motev=%ld) "
-                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld faults=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
+                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld faults=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld cloth_mixed=%ld half=%d live=%d",
                  g_walks, g_stepped, g_batches, g_pays, g_gated_seq, g_gated_motev, g_guard_wrap, g_guard_clamp,
-                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], (LONG)g_dc_faults, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
+                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], (LONG)g_dc_faults, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, (LONG)g_cloth_mixed, *g_half_rate_switch, smooth_live(3));
     }
     static LONG reported_s = 0;
     if (!reported_s && g_stock_steps > 0) {
@@ -1597,6 +1631,7 @@ static bool install() {
     }
     g_opt_cloth = config_row("X2-SMOOTH-003-CLOTHHOLD", 4);
     g_opt_cloth_extrap_pct = config_row("X2-SMOOTH-003-CLOTHEXTRAP-PCT", 50);
+    g_opt_cloth_mixed = config_row("X2-SMOOTH-003-CLOTHHOLD-MIXED", 1);
     if (g_opt_cloth != 0 && (g_opt_cloth < 2 || g_opt_cloth > 4)) {
         log_line("  X2-SMOOTH-003-CLOTHHOLD: mode %d not available - using mode 4", g_opt_cloth);
         g_opt_cloth = 4;
@@ -1624,8 +1659,8 @@ static bool install() {
             g_opt_cloth = 2;
             log_line("  X2-SMOOTH-003-CLOTHHOLD: deform call not at job +0x31 - modes 3/4 unavailable, mode 2");
         } else {
-            log_line("  X2-SMOOTH-003-CLOTHHOLD: mode %d, deform gva=0x%08X (expected 0x006DAE00), gate gva=0x%08X (0x00DF6440)",
-                     g_opt_cloth, rt_to_gva((void*)g_cloth_deform), rt_to_gva((const void*)g_cloth_deform_gate));
+            log_line("  X2-SMOOTH-003-CLOTHHOLD: mode %d, mixed batches %s, deform gva=0x%08X (expected 0x006DAE00), gate gva=0x%08X (0x00DF6440)",
+                     g_opt_cloth, g_opt_cloth_mixed ? "not stepped on render-only frames (MIXED)" : "run by the game", rt_to_gva((void*)g_cloth_deform), rt_to_gva((const void*)g_cloth_deform_gate));
         }
     }
     g_held_bytes = (uint8_t*)calloc(MAX_ACTORS, HOLD_BYTES);
