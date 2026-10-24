@@ -34,6 +34,8 @@
 //               (MIXED: render-only frames never step the cloth simulation, also when a batch holds unwalked actors)
 //   DAMPHOLD    bones the game smooths (hair) get their angles back after the render-only step, so the next logic
 //               step starts from the stock filter state
+//   PHASE       logic frames keep sampling whole animation frames (as stock) when a motion restarts after the logic
+//               step: that actor takes no half step on the next render-only frame
 //   PEEL        during a dressphere change everything runs as stock, or the outfit's two models come apart
 //               (PEEL-SKEL: still rebuild the skeletons on render-only frames, with the held pose)
 //   STOCK-ID    bisect switch: actor ids in a range take whole stock steps (find which actor causes a glitch)
@@ -80,6 +82,7 @@ static const uint32_t OFF_MOTION_END      = 0x72C;
 static const uint32_t OFF_MOTION_LOOP_LEN = 0x730;
 static const uint32_t OFF_MOTION_LOOPS    = 0x734;      // s16: 1 = play once, 0 = loop forever, n = loop n times
 static const uint32_t OFF_MOTION_CLOCK    = 0x750;      // FFX 0x740
+static const uint32_t OFF_STEP_VALUE      = 0x766;      // u16, the clock step per call (FFX 0x756)
 // The game rebuilds skeletons in batches on worker threads, one batch per 150 bones (FFX: 200).
 static const int      SKELETON_BATCH_BONES = 0x96;
 // Flag bits: FLAG_SCRIPTED = motion driven by the actor's script, not by keyframes; FLAG_STEP_MOTION = "step this
@@ -505,6 +508,28 @@ static bool short_loop(const uint8_t* a) {
     return *(const int16_t*)(a + OFF_MOTION_LOOPS) != 1 && *(const int32_t*)(a + OFF_MOTION_LOOP_LEN) <= 0x100;
 }
 
+// --- PHASE: logic frames sample whole animation frames, as stock ------------------------------------------------------
+// With the half step, logic frames sample a motion at whole frames (clock % 256 == 0, where stock samples) and
+// render-only frames half way. When the actor's script starts a new motion after the logic step (clock reset to a
+// whole frame), the render-only step would sample its whole frame and every later logic frame would land half way
+// between keys: logic frames then drew the half-frame blends KEYHOLD/SANITY only guard on render-only frames (U/D
+// 24/10/2026: Rikku's fringe pulled up for a tick, only in runs where logic samples were at clock % 256 == 128).
+// So the clock is noted after each logic step; an actor whose clock changed by the render-only walk takes no half
+// step that frame (it keeps its pose; the next logic step samples the new motion's first frame, as stock).
+static int g_opt_phase = 1;
+static int32_t g_clock_after_step[MAX_ACTORS];
+static volatile LONG g_phase_skips = 0, g_half_logic_samples = 0;
+
+// Logic step about to sample half way between frames (diagnostic: the phase got flipped somewhere).
+static void phase_check_logic(int i, const uint8_t* a) {
+    int32_t clock = *(const int32_t*)(a + OFF_MOTION_CLOCK);
+    if ((clock & 0xFF) != 0x80) return;
+    LONG c = InterlockedIncrement(&g_half_logic_samples);
+    if (c <= 8)
+        log_line("X2-SMOOTH-003-PHASE: logic step of slot=%d id=0x%04X samples half way (clock %d, step value %u)", i,
+                 *(const uint16_t*)a, clock, *(const uint16_t*)(a + OFF_STEP_VALUE));
+}
+
 // --- The logic frame's step ---------------------------------------------------------------------------------------------
 // Replaces the game's call of Ch_StepMotion in its actor update (CALL at gva 0x6E1394 -> 0x6E78F0). With the half-rate
 // switch on, the game's own step moves the actor half a frame; the actor then owes the other half to the render-only
@@ -539,9 +564,13 @@ static void __cdecl hook_step_motion(uint8_t* a, int full) {
         if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
         return;
     }
+    if (i >= 0 && g_inv_kind == INV_LOGIC && *g_half_rate_switch != 0) phase_check_logic(i, a);
     g_step_motion(a, full);
     if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    if (i >= 0 && *g_half_rate_switch != 0) { g_owes_half_step[i] = 1; g_owed_actor_id[i] = *(uint16_t*)a; }
+    if (i >= 0 && *g_half_rate_switch != 0) {
+        g_owes_half_step[i] = 1; g_owed_actor_id[i] = *(uint16_t*)a;
+        g_clock_after_step[i] = *(int32_t*)(a + OFF_MOTION_CLOCK);
+    }
 }
 
 // --- GATES: things that must run once per tick -----------------------------------------------------------------------
@@ -749,6 +778,13 @@ static void render_only_walk() {
             if (g_owed_actor_id[i] != *(uint16_t*)a) goto next;                     // slot reused: drop the stale debt
             if (g_opt_shortloop && short_loop(a)) { g_owes_half_step[i] = 1; goto next; }  // stock from the next logic step
             if (stock_id(a)) { g_owes_half_step[i] = 1; goto next; }                    // bisect switch, stock from the next logic step
+            if (g_opt_phase && *(int32_t*)(a + OFF_MOTION_CLOCK) != g_clock_after_step[i]) {      // motion restarted after the step
+                LONG c = InterlockedIncrement(&g_phase_skips);
+                if (c <= 8)
+                    log_line("X2-SMOOTH-003-PHASE: slot=%d id=0x%04X clock %d -> %d after its logic step (new motion) - no half step this frame",
+                             i, *(uint16_t*)a, g_clock_after_step[i], *(int32_t*)(a + OFF_MOTION_CLOCK));
+                goto next;
+            }
             *(uint32_t*)(a + OFF_FLAGS) = fl | FLAG_STEP_MOTION;
             if (!render_only_step(i, a, fl)) return;
             g_walked_now[i] = 1;
@@ -1814,9 +1850,9 @@ static void post() {
     if (g_walks - last >= 1800) {
         last = g_walks;
         log_line("X2-SMOOTH-003: walks=%ld stepped=%ld batches=%ld pays=%ld gated(seq=%ld motev=%ld) "
-                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld faults=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld cloth_mixed=%ld half=%d live=%d",
+                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld faults=%ld) stock_steps=%ld phase(skips=%ld half_logic=%ld) cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld cloth_mixed=%ld half=%d live=%d",
                  g_walks, g_stepped, g_batches, g_pays, g_gated_seq, g_gated_motev, g_guard_wrap, g_guard_clamp,
-                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], (LONG)g_dc_faults, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, (LONG)g_cloth_mixed, *g_half_rate_switch, smooth_live(3));
+                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], (LONG)g_dc_faults, g_stock_steps, (LONG)g_phase_skips, (LONG)g_half_logic_samples, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, (LONG)g_cloth_mixed, *g_half_rate_switch, smooth_live(3));
     }
     static LONG reported_s = 0;
     if (!reported_s && g_stock_steps > 0) {
@@ -1897,6 +1933,7 @@ static bool install() {
     g_opt_gates = config_row("X2-SMOOTH-003-GATES", 1);
     g_opt_hold = config_row("X2-SMOOTH-003-HOLD", 1);
     g_opt_damphold = config_row("X2-SMOOTH-003-DAMPHOLD", 1);
+    g_opt_phase = config_row("X2-SMOOTH-003-PHASE", 1);
     g_poselog_id = config_row("X2-SMOOTH-003-POSELOG-ID", 0);
     g_poselog_from = config_row("X2-SMOOTH-003-POSELOG-FROM", 0);
     g_poselog_to = config_row("X2-SMOOTH-003-POSELOG-TO", 0);
