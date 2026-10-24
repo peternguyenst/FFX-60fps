@@ -7,7 +7,12 @@
 // unpassed without a fault, no blink reported) crashed once while passed (22/10 22:14:18, FFX-2.exe 0x864C50 under its
 // walker draw; ARENA-VS.md). So a template DLL is passed only when it is seen to blink: X2-DIAG-BLINK reports each
 // render-only frame vs the logic frames on both sides (mag035_pair: +1 below both, -1 above both); after
-// X2-MAG-035-PAIRS (default 12) pairs with (below - above) at least half of them, the DLL is passed for the rest of its run (mag008_pass_late: listed profile, no chain).
+// X2-MAG-035-PAIRS (default 24) pairs with (below - above) at least X2-MAG-035-NEED (default 20), the DLL is passed for
+// the rest of its run (mag008_pass_late: listed profile, no chain). The old bar (half of 12) was noise level: with no
+// magic DLL the detector itself sees 31-36% "below both" (D 24/10/2026 02:34-02:36), so 0946 (33%, image detector 0
+// blinks) was passed on 31 of 31 casts and 0903 (12%) twice, at exactly 6 of 12 (D fps60x2.1-3.log 24/10); a real
+// blink is 94% (0938, D 23/10 21:21). Simulated on the D rates: 20 of 24 passes a 94% blink at pair 24 (~0.4 s) and
+// 33-40% noise in about 0.1% of 300-pair casts (6 of 12: 87-97%).
 // X2-MAG-035-EXCLUDE (default "449") is never passed. magic_0946 (excluded 24/10 after a crash under its late pass)
 // is passable again since X2-MAG-025-LOOP1F stopped running uncounted spawn loops on update walks (CRASH-0946.md, U).
 // Needs X2-DIAG-BLINK on. The first ~0.2 s of a blinking effect
@@ -39,7 +44,8 @@ static_assert(sizeof(TB) == sizeof(TM), "template mask");
 enum { MAXWIN = 64 };
 struct Slot { uint8_t* base; char name[24]; uint32_t pairs; int8_t win[MAXWIN]; bool done; };
 static Slot g_s[8];
-static int g_need = 12;
+static int g_need = 24;
+static int g_min = 20;                            // X2-MAG-035-NEED: (below - above) in the window
 static int g_excl[16], g_nexcl = 0;
 static volatile LONG g_auto = 0;
 
@@ -86,7 +92,7 @@ void mag035_pair(uint8_t* base, int delta) {
         if (s.pairs < (uint32_t)g_need) continue;
         int shorts = 0, longs = 0;
         for (int i = 0; i < g_need; i++) { if (s.win[i] > 0) shorts++; if (s.win[i] < 0) longs++; }
-        if ((shorts - longs) * 2 >= g_need) {
+        if (shorts - longs >= g_min) {
             s.done = true;
             if (mag008_pass_late(base, s.name)) {
                 InterlockedIncrement(&g_auto);
@@ -98,9 +104,12 @@ void mag035_pair(uint8_t* base, int delta) {
 }
 
 static bool install() {
-    g_need = config_row("X2-MAG-035-PAIRS", 12);
+    g_need = config_row("X2-MAG-035-PAIRS", 24);
     if (g_need < 4) g_need = 4;
     if (g_need > MAXWIN) g_need = MAXWIN;
+    g_min = config_row("X2-MAG-035-NEED", 20);
+    if (g_min < 1) g_min = 1;
+    if (g_min > g_need) g_min = g_need;
     char buf[96];
     config_str("rows", "X2-MAG-035-EXCLUDE", buf, sizeof(buf), "449");
     for (char* q = buf; *q && g_nexcl < 16;) {
@@ -109,8 +118,8 @@ static bool install() {
         g_excl[g_nexcl++] = (int)v; q = e;
     }
     if (!magic_mods_subscribe("X2-MAG-035", on_load, on_unload)) return false;
-    log_line("  X2-MAG-035: walker-template DLLs passed once %d render-only frames show a blink (%d excluded)", g_need,
-             g_nexcl);
+    log_line("  X2-MAG-035: walker-template DLLs passed once %d of the last %d render-only frames show a blink (%d excluded)",
+             g_min, g_need, g_nexcl);
     return true;
 }
 
