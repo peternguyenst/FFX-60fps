@@ -3,6 +3,7 @@
 // when the host is FFX-2.exe. Its own project and code path: it links nothing from the FFX mod (fps60.h).
 // Files: fps60x2.ini (optional settings) / fps60x2.log next to FFX-2.exe.
 // Addresses: gva = Ghidra VA (base 0x400000), rt = runtime; every address comes from x2_sigs.cpp.
+// Words used throughout the code (invocation, render-only, hold, pass, ...): GLOSSARY.md next to this file.
 // Details (outer repo G:\Work\ffx2-fps60): docs/PLAN.md, re/MAINLOOP.md
 #pragma once
 
