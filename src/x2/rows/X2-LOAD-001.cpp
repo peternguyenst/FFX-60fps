@@ -1,36 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-LOAD-001 (FFX-2 only): stock pacing while the game is loading. re/ledger/LOAD-DECK.md (S + D).
-// Mechanism (D 18/10/2026, Steam Deck / Proton): during a load the game logic only polls (Sg_MainLoop ~0.03 ms) while
-// its data arrives in the background, and the main thread spends most of each frame waiting in PApplication::frame's
-// command-buffer reservation FUN_008823f0 (0xAB76EE, waits for the render side when its ring is full: 10.3 s of a 15 s
-// save load). The background work needs main-thread idle time between frames; at our 60 Hz the frame loop leaves
-// almost none (save load 14 s; stock 2 s; fast with pacing=0; every other row ruled out by a bisect). The PC has the
-// headroom and is unaffected. Skipping renders or presents at 60 Hz did not help; only the frame-loop rate does.
-// 1) Load mode (default on): while App_Animate / Sg_AppRender (0x42F4C0 / 0x42F7F0) see app+0x3AD = FUN_0044cd70()
-//    ([0x00DD10D0] != 0 and (byte +0x70 != 0 or int +0xE0 >= 0)), Sg_MainLoop does not run, so pacing_pre never sees
-//    those frames; post() of an invocation that leaves the game in load mode puts the stock divider and exec 1 back
-//    (pacing_leave_now). Logs each load and its length.
-// 2) X2-LOAD-001-IDLEHOLD (default on under Wine / Proton, off on Windows): 20 logic invocations in a row under 0.1 ms
-//    (the poll-wait; normal frames are 1-3 ms on the Deck) start a stock-pacing hold, released after 30 invocations in a
-//    row >= 0.3 ms (frame work again), cap 20 s; after a cap it re-arms only once a busy frame was seen (a paused screen
-//    also polls). U 18/10: save load 15.5 -> 1.5 s.
-// 3) X2-LOAD-001-BATTLEHOLD (default on under Wine / Proton): stock pacing from the battle setup to the running battle,
-//    i.e. while the battle state [0x00DF68A0] (X2-SR-003's site 0x61E5E2) is in 13..25 after a battle start, until it
-//    reaches 1; cap 15 s. D 19/10 Deck trace: states 0 -> 4 -> 6 -> 7 -> 9 -> 39 (encounter transition, 5.3 s, kept at
-//    60 Hz) -> 13 (13 ms load spike) -> 15 .. 24 -> 25 (1.7 s; the party appears ~2 s after the enemies, U) -> 1;
-//    the main thread waits 7.6 ms per frame in the command ring as during the save load.
-// Diagnostics (default 0): X2-LOAD-001-TRACE=N logs N invocations after a map-id change ([0x00D61748], X2-TITLE-001's
-// site 0x466FCD) or a stock invocation at the game's own divider 1 (kind, ms, gap, backlog, divider, exec, HD state block
-// [0x00DCED88] [0]/+0x338/+0x33C, PS2-menu flags [0x016BC55C]/[0x016BC560]); X2-LOAD-001-WAITS=1 hooks ntdll
-// NtWaitForSingleObject / NtWaitForMultipleObjects / NtDelayExecution and sums the game thread's waits during the trace
-// per three FFX-2.exe return addresses. The trace also starts on a battle-state change ([0x00DF68A0], X2-SR-003's site
-// 0x61E5E2; U 19/10 Deck: at battle start the party appears ~2 s after the enemies, PC fine) and logs that state.
+// X2-LOAD-001: loads run at stock pacing, so they are not slow (mainly on the Steam Deck).
+//
+// Why: while the game loads, its logic only polls while data arrives in the background, and that background work
+// needs idle time on the main thread between frames. At 60 Hz the frame loop leaves almost none on the Deck (Proton):
+// a save load took 15 s instead of 2. The PC has enough headroom. Only the frame-loop rate helps; skipping draws or
+// presents did not. Evidence: re/ledger/LOAD-DECK.md.
+// Three parts:
+//   1. Load mode (always): while the game's load-mode test (FUN_0044cd70) is true, the main loop does not run at all,
+//      so pacing never sees those frames. post() of an invocation that leaves the game in load mode puts the stock
+//      divider and exec back at once (pacing_leave_now). Each load and its length is logged.
+//   2. IDLEHOLD (on under Wine / Proton, off on Windows): 20 logic invocations in a row under 0.1 ms (the game is only
+//      polling) start a stock-pacing hold; 30 invocations in a row >= 0.3 ms (real frame work again) end it; at most
+//      20 s, after which it re-arms only once a busy frame was seen (a paused screen polls too).
+//   3. BATTLEHOLD (on under Wine / Proton): stock pacing from the battle setup until the battle runs (battle state
+//      13..25 until it reaches 1; at most 15 s): otherwise the party appeared ~2 s after the enemies on the Deck.
+// Both holds can be switched on the Config page (dev builds). Diagnostics (off): TRACE=N logs N invocations after a
+// map change, a battle-state change or a stock invocation at divider 1; WAITS=1 also sums the game thread's waits per
+// caller during the trace.
 #include "../x2.h"
 #include <winternl.h>
 
 namespace x2 {
 
 typedef int (__cdecl* load_mode_test_fn)();
+// --- State ---------------------------------------------------------------------------------------------------------
 static load_mode_test_fn g_load_mode_test = nullptr;            // FUN_0044cd70 (cdecl, no args, plain RET)
 static bool  g_in_load_mode = false;
 static DWORD g_load_start_ms = 0;
@@ -53,6 +46,7 @@ static DWORD g_idle_hold_start_ms = 0;
 static int   g_opt_idlehold = 1;
 static int   g_opt_waits = 0;
 static DWORD g_game_thread_id = 0;
+// --- WAITS diagnostic: game-thread waits during a trace, summed per caller ------------------------------------------
 struct WaitSite { uint32_t gva, gva2, gva3; int kind; LONG n; double ms; int64_t last_to; };
 static WaitSite g_wait_sites[48];
 static int g_wait_site_count = 0;
@@ -63,7 +57,7 @@ static nt_wait_single_fn g_nt_wait_single = nullptr;
 static nt_wait_multi_fn g_nt_wait_multi = nullptr;
 static nt_delay_fn g_nt_delay = nullptr;
 static bool waits_live() { return g_opt_waits && g_trace_left > 0 && GetCurrentThreadId() == g_game_thread_id; }
-// first three FFX-2.exe return addresses on the stack (D 19:56: the top one is the wait wrapper FUN_0088d3d0)
+// The first three FFX-2.exe return addresses on the stack (the top one is the game's wait wrapper).
 static void exe_callers(uint32_t* g) {
     void* fr[32];
     g[0] = g[1] = g[2] = 0;
@@ -115,6 +109,7 @@ static const char* g_hold_why = "";
 
 static bool  g_rearm_block = false;              // after a cap release: wait for a busy frame
 
+// --- The holds ---------------------------------------------------------------------------------------------------------
 // Config page switches (X2-CFG-MENU): turning a hold off releases it now.
 static void idle_release();
 static void battle_release();
@@ -146,6 +141,7 @@ static void battle_release() {
     log_line("X2-LOAD-001-BATTLEHOLD: released (option turned off)");
 }
 
+// After every invocation: IDLEHOLD start / end, the trace line, and the load-mode check (part 1).
 static void post() {
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
     double inv_ms = (now.QuadPart - g_inv_start.QuadPart) * 1000.0 / g_qpc_freq.QuadPart;
@@ -190,6 +186,7 @@ static void post() {
     }
 }
 
+// Before every invocation: BATTLEHOLD start / end, trace triggers, and the end of a load.
 static void pre() {
     g_game_thread_id = GetCurrentThreadId();
     if (g_opt_trace) {
@@ -237,6 +234,7 @@ static void pre() {
     if (g_loads_seen <= 50) log_line("X2-LOAD-001: load over after %lu ms", GetTickCount() - g_load_start_ms);
 }
 
+// --- Install ------------------------------------------------------------------------------------------------------------
 static bool install() {
     // FUN_0044cd70: MOV EAX,[0x00dd10d0]; TEST EAX,EAX; JZ; CMP byte [EAX+0x70],0; JNZ; CMP dword [EAX+0xE0],0; JGE
     uint8_t* fn = sig_find("X2-LOAD-001 load-mode test FUN_0044cd70",
