@@ -1232,7 +1232,8 @@ static float*   g_dc_ang = nullptr;                        // [3 frames][DC_ACTO
 static uint16_t g_dc_id[3][DC_ACTORS];
 static int      g_dc_kind[3];
 static int      g_dc_head = 0, g_dc_frames = 0;
-static volatile LONG g_dc_odd[4] = {}, g_dc_lines = 0;
+static volatile LONG g_dc_odd[4] = {}, g_dc_lines = 0, g_dc_faults = 0;
+static const int   DC_MAX_FAULTS = 600;                    // faults in a row (~10 s of frames) before giving up
 
 static void drawcheck_post() {
     if (!g_opt_drawcheck || !g_dc_ang) return;
@@ -1294,15 +1295,25 @@ static void drawcheck_post() {
 
 // After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
 static void post() {
-    if (g_opt_drawcheck && g_dc_ang && smooth_live(3)) __try { drawcheck_post(); } __except (EXCEPTION_EXECUTE_HANDLER) { g_opt_drawcheck = 0; log_line("X2-SMOOTH-003-DRAWCHECK: fault - off"); }
+    // A map load frees bone arrays while actor slots still point at them: a fault drops the frames kept so far and the
+    // check carries on; only DC_MAX_FAULTS in a row turn it off.
+    if (g_opt_drawcheck && g_dc_ang && smooth_live(3)) {
+        static int faults_in_a_row = 0;
+        __try { drawcheck_post(); faults_in_a_row = 0; }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_dc_frames = 0;
+            InterlockedIncrement(&g_dc_faults);
+            if (++faults_in_a_row >= DC_MAX_FAULTS) { g_opt_drawcheck = 0; log_line("X2-SMOOTH-003-DRAWCHECK: %d faults in a row - off", faults_in_a_row); }
+        }
+    }
     if (g_freeze_state) __try { freeze_diag(); } __except (EXCEPTION_EXECUTE_HANDLER) { g_freeze_state = nullptr; log_line("X2-SMOOTH-003-FREEZEDIAG: fault - off"); }
     static LONG last = 0;
     if (g_walks - last >= 1800) {
         last = g_walks;
         log_line("X2-SMOOTH-003: walks=%ld stepped=%ld batches=%ld pays=%ld gated(seq=%ld motev=%ld) "
-                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
+                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld faults=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
                  g_walks, g_stepped, g_batches, g_pays, g_gated_seq, g_gated_motev, g_guard_wrap, g_guard_clamp,
-                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
+                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], (LONG)g_dc_faults, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
     }
     static LONG reported_s = 0;
     if (!reported_s && g_stock_steps > 0) {
