@@ -45,12 +45,15 @@ static void* up_of(uint8_t* ebp) {
     return ebp && safe_read_u32(ebp + 4, &v) ? (void*)(uintptr_t)v : nullptr;
 }
 
+static void chain_once(uint8_t* ebp, void* up);
+
 // cdecl(pool, size) -> block or 0, plain RET (0x72C459 / 0x72C46E).
 static void* __cdecl h_alloc(void* pool, int size) {
     void* p = g_alloc_tramp(pool, size);
     int k = pacing_kind() & 3;
     void* up = up_of(g_alloc_ebp);
     count(g_asite, _ReturnAddress(), up, k);
+    if (k == INV_BUILD) chain_once(g_alloc_ebp, up);
     if (p) { if (++g_net > g_net_max) g_net_max = g_net; }
     else if (g_fail[k]++ == 0)
         log_line("FX-012: PPP pool allocation failed (size %d, caller gva=0x%08X <- 0x%08X, inv kind %d, %ld blocks live)",
@@ -63,6 +66,38 @@ static void __cdecl h_free(void* pool, void* p) {
     count(g_fsite, _ReturnAddress(), up_of(g_free_ebp), pacing_kind() & 3);
     g_net--;
     g_free_tramp(pool, p);
+}
+
+// First allocation on a render-only invocation per creating code: the EBP chain above the pool's caller (who made the
+// game create something on a render-only frame: a magic DLL path, a row's replay, ...). At most 16 chains.
+static void chain_once(uint8_t* ebp, void* up) {
+    static void* seen[16];
+    static int nseen = 0;
+    for (int i = 0; i < nseen; i++) if (seen[i] == up) return;
+    if (nseen >= 16) return;
+    seen[nseen++] = up;
+    char b[400];
+    int m = 0;
+    uint32_t bp = (uint32_t)(uintptr_t)ebp;
+    for (int i = 0; i < 8 && bp >= 0x10000; i++) {
+        uint32_t next = 0, ret = 0;
+        if (!safe_read_u32((void*)(uintptr_t)bp, &next) || !safe_read_u32((void*)(uintptr_t)(bp + 4), &ret)) break;
+        HMODULE mod = nullptr;
+        char name[64] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)(uintptr_t)ret, &mod) && mod) {
+            char full[MAX_PATH];
+            GetModuleFileNameA(mod, full, MAX_PATH);
+            const char* q = full;
+            for (const char* c = full; *c; c++) if (*c == '\\' || *c == '/') q = c + 1;
+            _snprintf_s(name, sizeof(name), _TRUNCATE, "%s", q);
+        }
+        uint32_t base = mod == (HMODULE)exe_base() ? 0x400000u : 0x10000000u;
+        m += _snprintf_s(b + m, sizeof(b) - m, _TRUNCATE, " <- %s 0x%08X", name, base + (ret - (uint32_t)(uintptr_t)mod));
+        if (next <= bp) break;
+        bp = next;
+    }
+    log_line("FX-012: first render-only pool allocation from 0x%08X, chain:%s", rt_to_gva_exe(up), b);
 }
 
 __declspec(naked) static void h_alloc_entry() { __asm { mov g_alloc_ebp, ebp
