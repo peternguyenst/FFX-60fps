@@ -55,8 +55,10 @@ static void* __cdecl h_alloc(void* pool, int size) {
     count(g_asite, _ReturnAddress(), up, k);
     if (k == INV_BUILD) chain_once(g_alloc_ebp, up);
     // A main pool whose second pool is set ([5] = its memory, FX-013) is followed by a try there: not a drop yet.
-    uint32_t second = 0;
-    bool retried = !p && safe_read_u32((uint8_t*)pool + 0x14, &second) && second;
+    // (Only a main descriptor has it above its own end, pool[2]; at a second descriptor +0x14 is another field.)
+    uint32_t second = 0, end = 0;
+    bool retried = !p && safe_read_u32((uint8_t*)pool + 0x14, &second) && second &&
+                   safe_read_u32((uint8_t*)pool + 8, &end) && second > end;
     if (p) { if (++g_net > g_net_max) g_net_max = g_net; }
     else if (retried) g_overflow++;
     else if (g_fail[k]++ == 0)
