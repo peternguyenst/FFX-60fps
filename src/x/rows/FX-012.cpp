@@ -56,8 +56,8 @@ static void* __cdecl h_alloc(void* pool, int size) {
     if (k == INV_BUILD) chain_once(g_alloc_ebp, up);
     if (p) { if (++g_net > g_net_max) g_net_max = g_net; }
     else if (g_fail[k]++ == 0)
-        log_line("FX-012: PPP pool allocation failed (size %d, caller gva=0x%08X <- 0x%08X, inv kind %d, %ld blocks live)",
-                 size, rt_to_gva_exe(_ReturnAddress()), rt_to_gva_exe(up), k, g_net);
+        log_line("FX-012: PPP pool allocation failed (pool %p, size %d, caller gva=0x%08X <- 0x%08X, inv kind %d, %ld blocks live)",
+                 pool, size, rt_to_gva_exe(_ReturnAddress()), rt_to_gva_exe(up), k, g_net);
     return p;
 }
 
