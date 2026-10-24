@@ -15,6 +15,7 @@
 #include "../fps60.h"
 
 typedef void(__cdecl* pinit_t)(uint32_t* desc, void* mem, int size);
+typedef void(__cdecl* pmain_t)(uint32_t* desc, void* scene, void* mem, int size);
 
 enum { POOLS = 6, STOCK_PACKETS = 0x156, PACKET = 0x214 };
 
@@ -22,6 +23,8 @@ static uint8_t*  g_alloc = nullptr;              // FUN_00728660
 static uint8_t** g_bases = nullptr;              // DAT_00cec1a8[6]
 static uint8_t*  g_pinit = nullptr;              // FUN_0072c480
 static pinit_t   g_pinit_tramp = nullptr;
+static uint8_t*  g_pmain = nullptr;              // FUN_007169d0: current-pool setup (sets up the main pool, then main[5] = 0)
+static pmain_t   g_pmain_tramp = nullptr;
 static uint32_t* g_main = nullptr;               // DAT_00cec22c
 static uint32_t* g_second = nullptr;             // DAT_00cec23c
 static uint8_t*  g_ppp_buf = nullptr;
@@ -32,16 +35,23 @@ static int       g_cap = STOCK_PACKETS;
 
 int draw_packet_cap() { return g_cap; }          // FX-011's log
 
-// cdecl(desc, mem, size), plain RET (0x72C4C3 area; void).
+// FUN_0072c480 cdecl(desc, mem, size), plain RET 0x72C4CE: the game's own second-pool setup gets our buffer.
 static void __cdecl h_pinit(uint32_t* desc, void* mem, int size) {
-    bool on = row_FX013.on && !g_disabled && g_ppp_buf;
-    if (on && desc == g_second) { g_pinit_tramp(desc, g_ppp_buf, g_ppp_size); return; }   // the game's own second pool
+    if (row_FX013.on && !g_disabled && g_ppp_buf && desc == g_second) { g_pinit_tramp(desc, g_ppp_buf, g_ppp_size); return; }
     g_pinit_tramp(desc, mem, size);
-    if (!on || desc != g_main) return;
+}
+
+// FUN_007169d0 cdecl(desc, scene, mem, size), plain RET 0x716A23. It ends with desc[5] = 0, which for the main pool
+// is the second pool's memory pointer (DAT_00cec240): the second pool has to be set up after it returns.
+static void __cdecl h_pmain(uint32_t* desc, void* scene, void* mem, int size) {
+    g_pmain_tramp(desc, scene, mem, size);
+    if (!row_FX013.on || g_disabled || !g_ppp_buf || desc != g_main) return;
     if ((uintptr_t)g_ppp_buf <= (uintptr_t)desc[2]) return;   // must lie above the main pool's end
     g_pinit_tramp(g_second, g_ppp_buf, g_ppp_size);
-    if (InterlockedIncrement(&g_setups) == 1)
-        log_line("FX-013: particle second pool set up (%d KB at %p, main pool %d KB)", g_ppp_size / 1024, g_ppp_buf, size / 1024);
+    LONG n = InterlockedIncrement(&g_setups);
+    if (n == 1 || n % 20 == 0)
+        log_line("FX-013: particle second pool set up (%d KB at %p, main pool %d KB; setup %ld)", g_ppp_size / 1024, g_ppp_buf,
+                 size / 1024, n);
 }
 
 static bool install() {
@@ -72,6 +82,9 @@ static bool install() {
         "83 3D ?? ?? ?? ?? 00 75 2C A1 ?? ?? ?? ?? 8A 40 01 84 C0 74 20 0F B6 F0 C1 E6 0D 56 E8 ?? ?? ?? ?? 56 50 68 ?? ?? ?? ?? A3 ?? ?? ?? ?? E8",
         0x72A831);
     g_pinit = sig_find_unique("FX-013 pool setup FUN_0072c480", "55 8B EC 8B 55 08 8B 4D 0C 8B 45 10 89 4A 04", 0x72C480);
+    // FUN_007169d0: PUSH EBP; MOV EBP,ESP; MOV EAX,[PTR_DAT_00c3a4cc]; PUSH ESI; MOV ESI,[EBP+8]; PUSH EDI; MOV EDI,[EBP+0xC]; MOV [EAX],ESI
+    g_pmain = sig_find_unique("FX-013 current-pool setup FUN_007169d0", "55 8B EC A1 ?? ?? ?? ?? 56 8B 75 08 57 8B 7D 0C 89 30 85 FF", 0x7169D0);
+    if (!g_pmain) g_pinit = nullptr;
     if (site && g_pinit) {
         g_second = (uint32_t*)read_abs(site + 0x24);
         g_main = g_second ? g_second - 4 : nullptr;   // DAT_00cec22c = DAT_00cec23c - 0x10
@@ -111,7 +124,8 @@ static void pre() {
             log_line("FX-013: draw packet buffers or patch failed - stock limit");
         }
     }
-    if (g_ppp_buf && !hook_entry("FX-013 pool setup", g_pinit, (void*)&h_pinit, (void**)&g_pinit_tramp)) {
+    if (g_ppp_buf && (!hook_entry("FX-013 pool setup", g_pinit, (void*)&h_pinit, (void**)&g_pinit_tramp) ||
+                      !hook_entry("FX-013 current-pool setup", g_pmain, (void*)&h_pmain, (void**)&g_pmain_tramp))) {
         log_line("FX-013: pool setup hook failed - particle pool left at stock");
         g_ppp_buf = nullptr;
     }
