@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // X2-DIAG-CAPTURE (diagnostic, off, observe only): records everything about one spell's frames in one go.
 //
-// While an X2-DIAG-FTBLINK-DLL spell DLL is loaded (its first load only), for up to X2-DIAG-CAPTURE-FRAMES presents
-// (900), it writes:
+// While an X2-DIAG-FTBLINK-DLL spell DLL is loaded (its first load only), or from a press of X2-DIAG-CAPTURE-KEY
+// (virtual-key code, 0 = off) to the next press, for up to X2-DIAG-CAPTURE-FRAMES presents (900), it writes:
 //   <game>\fps60x2-capture-draws.csv  one "F" line per present (frame, invocation kind, frame counter) and one "D" line
 //     per D3D11 draw: call and arguments, topology, shaders, blend / depth state, render target, texture 0, blend
 //     factor, and the first values of the vertex and pixel constant buffers 0-1
@@ -42,6 +42,25 @@ static FILE* g_csv = nullptr;
 static FILE* g_bin = nullptr;
 static volatile bool g_on = false;              // capturing now
 static bool g_was = false, g_done = false;
+static int  g_capture_key = 0;                  // X2-DIAG-CAPTURE-KEY: a press starts / stops a capture by hand
+static bool g_key_capturing = false, g_key_was_down = false;
+
+// Toggled by each press of the capture key while the game window is in front.
+static bool key_capturing() {
+    if (!g_capture_key) return false;
+    bool down = (GetAsyncKeyState(g_capture_key) & 0x8000) != 0;
+    if (down && !g_key_was_down) {
+        HWND fg = GetForegroundWindow();
+        DWORD pid = 0;
+        if (fg) GetWindowThreadProcessId(fg, &pid);
+        if (pid == GetCurrentProcessId()) {
+            g_key_capturing = !g_key_capturing;
+            log_line("X2-DIAG-CAPTURE: key %s", g_key_capturing ? "pressed - capture on" : "pressed - capture off");
+        }
+    }
+    g_key_was_down = down;
+    return g_key_capturing;
+}
 static int g_max = 900, g_min = 300, g_frame = 0, g_draw = 0;
 // X2-DIAG-CAPTURE-DRAWS=0: no per-draw D lines (frames and F / S / C / K / Q lines only). X2-DIAG-CAPTURE-LOADS=<n>
 // (default 1): n watched loads appended to the same files (frame numbers continue), for X2-DEV-BISECT-AUTO runs over
@@ -744,7 +763,7 @@ static void toggles_report() {                   // under g_cs, files open
 
 static void present_tap(IDXGISwapChain* sc) {
     if (!row_DIAGCAPTURE.on || g_disabled || g_done) return;
-    bool w = ftblink_watching();
+    bool w = ftblink_watching() || key_capturing();
     if (w && !g_was && !g_on && g_csv && g_bin) {          // next load of a multi-load capture
         g_on = true;
         if (g_toggles) toggles_start();
@@ -872,6 +891,8 @@ static bool install() {
     }
     log_line("  X2-DIAG-CAPTURE: HD frame pointer %s", g_hdframe ? "gva=0x00DCDA04" : "not found - hd fields 0");
     g_loads = config_row("X2-DIAG-CAPTURE-LOADS", 1);
+    g_capture_key = config_row("X2-DIAG-CAPTURE-KEY", 0);
+    if (g_capture_key) log_line("  X2-DIAG-CAPTURE: key VK 0x%02X starts / stops a capture", g_capture_key);
     ID3D11Device* dev = nullptr; ID3D11DeviceContext* ctx = nullptr;
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
     void* fm = nullptr; void* fu = nullptr; void* fs = nullptr;

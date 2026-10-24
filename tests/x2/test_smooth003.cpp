@@ -182,3 +182,21 @@ TEST(smooth003_end_extrapolate_needs_two_ticks_of_the_same_actor) {
     end_extrapolate(6, a.p());
     CHECK(close_to(a.angle(0, 0), 0.20f));
 }
+
+// MIDCHECK: a render-only sample is bad when it is far from the half-way angle between the two logic ticks.
+TEST(smooth003_midcheck_quarter_turn_is_bad) {
+    float err = 0;
+    CHECK(midcheck_bad(0.25f, 0.0f, 0.25f, &err));                  // the log's bone 130: keys agree, sample 0
+    CHECK(err > 0.24f && err < 0.26f);
+}
+
+TEST(smooth003_midcheck_half_way_is_good) {
+    CHECK(!midcheck_bad(0.10f, 0.15f, 0.20f, nullptr));
+    CHECK(!midcheck_bad(0.10f, 0.11f, 0.10f, nullptr));             // within MIDCHECK_MIN_ERR
+    CHECK(!midcheck_bad(0.0f, 0.15f, 0.40f, nullptr));              // fast bone: within half its own movement
+}
+
+TEST(smooth003_midcheck_wraps_around_a_turn) {
+    CHECK(!midcheck_bad(0.48f, -0.49f, -0.46f, nullptr));           // 0.48 -> 0.54 (= -0.46); mid 0.51 = -0.49
+    CHECK(midcheck_bad(0.48f, 0.0f, -0.46f, nullptr));
+}

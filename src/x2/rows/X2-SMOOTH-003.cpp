@@ -24,6 +24,8 @@
 //               play-once animations, e.g. each stride of a run)
 //   SHORTLOOP   animations one frame long (hold poses) run exactly as stock: a half-frame sample twists them
 //   SANITY      a bone that jumps much further on the render-only frame than it moved over the last tick is put back
+//   MIDCHECK    every render-only pose is checked one tick later against the true half-way point between the two
+//               logic ticks around it; a bone drawn far from it is logged and drawn at its tick pose for a while
 //   KEYHOLD     a bone whose two animation keys are far apart (cutscene data can store one rotation two ways) keeps
 //               its pose: the half-way blend between them is a wrong pose
 //   CLOTHHOLD   hair and cloth (mode 4: drawn half a tick behind from the last two results; 2: 30 Hz; 3: extrapolated)
@@ -239,6 +241,8 @@ static int bone_count(const uint8_t* a) {
     int n = *(const uint16_t*)(hdr + MODEL_HEADER_BONE_COUNT);
     return (n > 0 && n <= MAX_BONES) ? n : 0;
 }
+
+static void midcheck_judge(int i, const uint8_t* a);    // MIDCHECK, below
 
 // After a logic step: tick k-1 <- tick k <- this pose.
 static void record_angles(int i, const uint8_t* a) {
@@ -459,11 +463,11 @@ static void __cdecl hook_step_motion(uint8_t* a, int full) {
         g_step_motion(a, full);
         *g_half_rate_switch = 1;
         InterlockedIncrement(&g_stock_steps);
-        if (full && (g_opt_endextrap || g_opt_sanity)) __try { record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
         return;
     }
     g_step_motion(a, full);
-    if (full && (g_opt_endextrap || g_opt_sanity)) __try { record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     if (i >= 0 && *g_half_rate_switch != 0) { g_owes_half_step[i] = 1; g_owed_actor_id[i] = *(uint16_t*)a; }
 }
 
@@ -512,6 +516,89 @@ static int32_t guard_clock(const uint8_t* a, int32_t c, int* kind) {
     return c;
 }
 
+// --- MIDCHECK: learn which bones the half step draws wrong, and hold them ------------------------------------------
+// The render-only frame shows a pose half way between logic ticks k and k+1, but it is drawn before tick k+1 exists, so
+// a bad half-frame sample can only be recognised afterwards. Each render-only step keeps the angles it produced
+// ("sampled"); the next logic step compares them with the true half-way angle mid = k + (k+1 - k) / 2. A channel that
+// was off by more than max(MIDCHECK_MIN_ERR, half the tick's own movement) marks its bone, and a marked bone is drawn
+// at its tick-k pose on render-only frames for MIDCHECK_HOLD_TICKS logic ticks (renewed while its samples stay bad;
+// they are still taken and checked while it is held). Catches what KEYHOLD and SANITY miss, e.g. a bone whose two
+// keys agree but whose half sample is a quarter turn off (seen on Rikku's braids, map 0xB5).
+static const float MIDCHECK_MIN_ERR = 0.04f;               // turns (about 14 degrees)
+static const uint16_t MIDCHECK_HOLD_TICKS = 90;            // 3 s at 30 ticks/s
+static int       g_opt_midcheck = 1;
+static float*    g_sampled_ang = nullptr;                  // MAX_ACTORS * MAX_BONES * 3: last render-only sample, turns
+static uint16_t* g_mid_hold = nullptr;                     // MAX_ACTORS * MAX_BONES: logic ticks the bone stays held
+static uint16_t  g_sampled_id[MAX_ACTORS];                 // actor id of the sample (0xFFFF = none waiting)
+static int       g_sampled_bones[MAX_ACTORS];
+static volatile LONG g_mid_bad = 0, g_mid_held = 0, g_mid_lines = 0;
+
+// The judgement, in turns: was `sampled` too far from the half-way angle between ticks k and k1?
+static bool midcheck_bad(float k, float sampled, float k1, float* err_out) {
+    float d = k1 - k;
+    d -= (float)(int)d;
+    if (d > 0.5f) d -= 1.0f;
+    if (d < -0.5f) d += 1.0f;
+    float mid = k + 0.5f * d, err = turn_diff(sampled, mid), move = d < 0 ? -d : d;
+    if (err_out) *err_out = err;
+    return !(err <= MIDCHECK_MIN_ERR || err <= 0.5f * move);       // NaN counts as bad
+}
+
+// Render-only step done (after KEYHOLD and SANITY): keep the sampled angles, then put held bones back to tick k
+// (g_sanity_bone_save holds the pre-step bones).
+static void midcheck_after_step(int i, uint8_t* a, int nb) {
+    if (!g_opt_midcheck || !g_sampled_ang || i < 0 || i >= MAX_ACTORS) return;
+    uint8_t* bones = *(uint8_t**)(a + OFF_BONES);
+    if (!bones) return;
+    float* sampled = g_sampled_ang + (size_t)i * MAX_BONES * 3;
+    uint16_t* hold = g_mid_hold + (size_t)i * MAX_BONES;
+    for (int b = 0; b < nb; b++) {
+        uint8_t* hb = bones + b * BONE_SIZE;
+        for (int c = 0; c < 3; c++) sampled[b * 3 + c] = *(const float*)(hb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
+        if (!hold[b]) continue;
+        const uint8_t* kb = g_sanity_bone_save + b * BONE_SIZE;
+        for (int c = 0; c < 3; c++) {
+            *(float*)(hb + BONE_ANGLE[c]) = *(const float*)(kb + BONE_ANGLE[c]);
+            *(float*)(hb + BONE_ANGLE[c] + 0x30) = *(const float*)(kb + BONE_ANGLE[c] + 0x30);
+        }
+        InterlockedIncrement(&g_mid_held);
+    }
+    g_sampled_id[i] = *(const uint16_t*)a;
+    g_sampled_bones[i] = nb;
+}
+
+// Logic step done, before record_angles moves tick k to k-1: judge the last render-only sample against k and k+1.
+static void midcheck_judge(int i, const uint8_t* a) {
+    if (!g_opt_midcheck || !g_sampled_ang || i < 0 || i >= MAX_ACTORS) return;
+    uint16_t id = *(const uint16_t*)a;
+    uint16_t* hold = g_mid_hold + (size_t)i * MAX_BONES;
+    if (g_angles_actor_id[i] != id) { memset(hold, 0, sizeof(uint16_t) * MAX_BONES); g_sampled_id[i] = 0xFFFF; return; }
+    for (int b = 0; b < MAX_BONES; b++) if (hold[b]) hold[b]--;
+    int nb = bone_count(a);
+    const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+    bool judge = g_sampled_id[i] == id && g_angles_ticks[i] >= 1 && nb && bones && g_sampled_bones[i] == nb;
+    g_sampled_id[i] = 0xFFFF;
+    if (!judge) return;
+    const float* cur = g_cur_ang + (size_t)i * MAX_BONES * 3;            // tick k
+    const float* sampled = g_sampled_ang + (size_t)i * MAX_BONES * 3;
+    for (int b = 0; b < nb; b++)
+        for (int c = 0; c < 3; c++) {
+            float k1 = *(const float*)(bones + b * BONE_SIZE + BONE_ANGLE[c]) * TURNS_PER_RADIAN, err = 0;
+            if (!midcheck_bad(cur[b * 3 + c], sampled[b * 3 + c], k1, &err)) continue;
+            bool was_held = hold[b] != 0;
+            hold[b] = MIDCHECK_HOLD_TICKS;
+            InterlockedIncrement(&g_mid_bad);
+            if (!was_held && g_mid_lines < 60) {
+                InterlockedIncrement(&g_mid_lines);
+                log_line("X2-SMOOTH-003-MIDCHECK: slot=%d id=0x%04X bone %d ch %d: k %.4f sampled %.4f k+1 %.4f (off %.4f turn) "
+                         "res 0x%X clock %d - bone held on render-only frames",
+                         i, id, b, c, cur[b * 3 + c], sampled[b * 3 + c], k1, err, *(const int32_t*)(a + OFF_KEY_RES),
+                         *(const int32_t*)(a + OFF_MOTION_CLOCK));
+            }
+            break;
+        }
+}
+
 // --- The render-only frame's step -------------------------------------------------------------------------------------
 // The owed half step of one actor (FLAG_STEP_MOTION already set), with every safety net around it. "Clock only" below
 // = Ch_StepMotion(actor, 0): the clock advances but the pose stays at tick k. Returns false on a crash (walk stops).
@@ -542,6 +629,7 @@ static bool render_only_step(int i, uint8_t* a, uint32_t fl) {
     bool ok = safe_step(a, 1);
     if (ok && kh) __try { keyhold_apply(i, a, kh); } __except (EXCEPTION_EXECUTE_HANDLER) { fault("keyhold", GetExceptionCode()); }
     if (ok && nb) __try { sanity_check(i, a, nb, c0); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (ok && nb) __try { midcheck_after_step(i, a, nb); } __except (EXCEPTION_EXECUTE_HANDLER) { fault("midcheck", GetExceptionCode()); }
     // ENDEXTRAP-ONCE: a play-once motion clamped at its last frame (kind 2) would repeat that pose on the render-only
     // frame. Walks and runs are chains of play-once strides, so every stride end hitched; extrapolate instead, but only
     // when the logic tick already showed the last frame. (The FFX mod has this off: one hit motion's end overshot.
@@ -1104,9 +1192,9 @@ static void post() {
     if (g_walks - last >= 1800) {
         last = g_walks;
         log_line("X2-SMOOTH-003: walks=%ld stepped=%ld batches=%ld pays=%ld gated(seq=%ld motev=%ld) "
-                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
+                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
                  g_walks, g_stepped, g_batches, g_pays, g_gated_seq, g_gated_motev, g_guard_wrap, g_guard_clamp,
-                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
+                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
     }
     static LONG reported_s = 0;
     if (!reported_s && g_stock_steps > 0) {
@@ -1191,6 +1279,7 @@ static bool install() {
     g_opt_endextrap = config_row("X2-SMOOTH-003-ENDEXTRAP", 1);
     g_opt_endextrap_once = config_row("X2-SMOOTH-003-ENDEXTRAP-ONCE", 1);
     g_opt_sanity = config_row("X2-SMOOTH-003-SANITY", 1);
+    g_opt_midcheck = config_row("X2-SMOOTH-003-MIDCHECK", 1);
     g_opt_keyhold = config_row("X2-SMOOTH-003-KEYHOLD", 1);
     g_opt_keyhold_limit = config_row("X2-SMOOTH-003-KEYHOLD-D", 0x300);
     if (g_opt_keyhold_limit < 0x80 || g_opt_keyhold_limit > 0x800) g_opt_keyhold_limit = 0x300;
@@ -1217,6 +1306,12 @@ static bool install() {
         g_prev_ang = (float*)calloc((size_t)MAX_ACTORS * MAX_BONES * 3, sizeof(float));
         g_cur_ang = (float*)calloc((size_t)MAX_ACTORS * MAX_BONES * 3, sizeof(float));
         if (!g_prev_ang || !g_cur_ang) { g_opt_endextrap = 0; g_opt_sanity = 0; log_line("  X2-SMOOTH-003: ENDEXTRAP/SANITY off (out of memory)"); }
+        if (g_opt_midcheck && g_opt_sanity) {
+            g_sampled_ang = (float*)calloc((size_t)MAX_ACTORS * MAX_BONES * 3, sizeof(float));
+            g_mid_hold = (uint16_t*)calloc((size_t)MAX_ACTORS * MAX_BONES, sizeof(uint16_t));
+            memset(g_sampled_id, 0xFF, sizeof g_sampled_id);
+            if (!g_sampled_ang || !g_mid_hold) { g_opt_midcheck = 0; log_line("  X2-SMOOTH-003-MIDCHECK: off (out of memory)"); }
+        } else g_opt_midcheck = 0;
     }
     if (g_stock_id)
         log_line("  X2-SMOOTH-003-STOCK-ID: actors %d..%d (0x%04X..0x%04X) take whole stock steps", g_stock_id,
