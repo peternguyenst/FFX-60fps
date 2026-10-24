@@ -286,3 +286,30 @@ TEST(smooth003_meshcheck_finds_a_vertex_off_on_the_middle_frame) {
     CHECK_EQ(mesh_odd(v0, v1, v2, n, &worst), 1);
     CHECK(worst > 0.2f && worst < 0.4f);
 }
+
+// DAMPHOLD: damped bones (bone byte +0x144) get their angles and target back after the render-only step; other bones
+// keep what the step wrote.
+TEST(smooth003_damphold_puts_back_damped_bones_only) {
+    const int nb = 2, slot = 4;
+    std::vector<uint8_t> actor(ACTOR_SIZE, 0), header(0x40, 0), bones(nb * BONE_SIZE, 0);
+    *(uint16_t*)&actor[0] = 0x001A;
+    *(uint8_t**)&actor[OFF_MODEL_HEADER] = header.data();
+    *(uint16_t*)&header[MODEL_HEADER_BONE_COUNT] = nb;
+    *(uint8_t**)&actor[OFF_BONES] = bones.data();
+    bones[1 * BONE_SIZE + BONE_DAMPED] = 1;                      // bone 1 is damped
+    float* ang0 = (float*)&bones[BONE_ANGLE[0]];
+    float* ang1 = (float*)&bones[BONE_SIZE + BONE_ANGLE[0]];
+    float* tgt1 = (float*)&bones[BONE_SIZE + BONE_TARGET];
+    ang0[0] = 0.1f; ang1[0] = 0.2f; tgt1[0] = 0.3f;
+    std::vector<DampSave> save((size_t)MAX_ACTORS * DAMP_MAX_BONES);
+    DampSave* old = g_damp_save; g_damp_save = save.data();
+    damp_save(slot, actor.data());
+    CHECK_EQ((int)g_damp_n[slot], 1);
+    ang0[0] = 0.5f; ang1[0] = 0.6f; tgt1[0] = 0.7f;               // what the render-only step wrote
+    damp_restore(slot, actor.data());
+    CHECK(close_to(ang0[0], 0.5f));                                // not damped: the step's value stays
+    CHECK(close_to(ang1[0], 0.2f));
+    CHECK(close_to(tgt1[0], 0.3f));
+    CHECK_EQ((int)g_damp_n[slot], 0);
+    g_damp_save = old;
+}

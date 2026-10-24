@@ -32,6 +32,8 @@
 //               its pose: the half-way blend between them is a wrong pose
 //   CLOTHHOLD   hair and cloth (mode 4: drawn half a tick behind from the last two results; 2: 30 Hz; 3: extrapolated)
 //               (MIXED: render-only frames never step the cloth simulation, also when a batch holds unwalked actors)
+//   DAMPHOLD    bones the game smooths (hair) get their angles back after the render-only step, so the next logic
+//               step starts from the stock filter state
 //   PEEL        during a dressphere change everything runs as stock, or the outfit's two models come apart
 //               (PEEL-SKEL: still rebuild the skeletons on render-only frames, with the held pose)
 //   STOCK-ID    bisect switch: actor ids in a range take whole stock steps (find which actor causes a glitch)
@@ -171,6 +173,10 @@ static int slot_of(const uint8_t* a, uint8_t* base, int n) {
     return (i < n && i < MAX_ACTORS) ? i : -1;
 }
 
+static void damp_save(int i, const uint8_t* a);           // DAMPHOLD, below
+static void damp_restore(int i, uint8_t* a);
+static uint16_t g_damp_n[MAX_ACTORS];                      // DAMPHOLD: damped bones saved per actor slot
+
 // --- HOLD: save before the walk, restore at the next pre() ------------------------------------------------------------
 static void hold_save(int i, uint8_t* a, bool face) {
     uint8_t* p = g_held_bytes + i * HOLD_BYTES;
@@ -192,8 +198,10 @@ static void hold_restore() {
             for (const Region& r : HOLD_ALWAYS) { memcpy(a + r.off, p, r.len); p += r.len; }
             if (g_held_kind[i] == 2) for (const Region& r : HOLD_FACE) { memcpy(a + r.off, p, r.len); p += r.len; }
         }
+        for (int i = 0; i < n; i++) if (g_damp_n[i]) damp_restore(i, g_held_table + i * ACTOR_SIZE);
     }
     memset(g_held_kind, 0, sizeof(g_held_kind));
+    memset(g_damp_n, 0, sizeof(g_damp_n));
     g_held_table = nullptr;
 }
 
@@ -247,6 +255,56 @@ static int bone_count(const uint8_t* a) {
 }
 
 static void midcheck_judge(int i, const uint8_t* a);    // MIDCHECK, below
+
+// --- DAMPHOLD: damped bones start every logic step from their stock state ------------------------------------------
+// Some bones (bone byte +0x144 set, e.g. hair) are smoothed by the game: each pose write sets the target (+0x114..)
+// and moves the drawn angles (+0xE4..) only part of the way toward it (0x6E8ED0, weight on the old angle
+// 0.7 - 10 x change in radians). Our render-only step writes the pose too, so the filter took one extra step per tick
+// and the next logic frame started from a different old angle than stock (U 24/10/2026: Rikku's fringe pulled up for
+// one tick at 60 fps, not at stock). The damped bones' angles and targets are saved before the render-only step and
+// put back at the next pre(), so render-only frames draw the half step and logic frames match stock.
+static int g_opt_damphold = 1;
+struct DampSave { uint16_t bone; float angle[3]; float target[3]; };
+static const int  DAMP_MAX_BONES = 128;                    // damped bones kept per actor
+static const uint32_t BONE_DAMPED = 0x144, BONE_TARGET = 0x114;
+static DampSave*  g_damp_save = nullptr;                   // MAX_ACTORS * DAMP_MAX_BONES
+static uint8_t*   g_damp_bones[MAX_ACTORS];                // bone array the saved values belong to
+static volatile LONG g_damp_restored = 0;
+
+static void damp_save(int i, const uint8_t* a) {
+    g_damp_n[i] = 0;
+    uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+    int nb = bone_count(a);
+    if (!g_damp_save || !bones || !nb) return;
+    DampSave* out = g_damp_save + (size_t)i * DAMP_MAX_BONES;
+    int k = 0;
+    for (int b = 0; b < nb && k < DAMP_MAX_BONES; b++) {
+        const uint8_t* hb = bones + b * BONE_SIZE;
+        if (!hb[BONE_DAMPED]) continue;
+        out[k].bone = (uint16_t)b;
+        memcpy(out[k].angle, hb + BONE_ANGLE[0], 12);
+        memcpy(out[k].target, hb + BONE_TARGET, 12);
+        k++;
+    }
+    g_damp_bones[i] = bones;
+    g_damp_n[i] = (uint16_t)k;
+}
+
+static void damp_restore(int i, uint8_t* a) {
+    int k = g_damp_n[i];
+    g_damp_n[i] = 0;
+    uint8_t* bones = *(uint8_t**)(a + OFF_BONES);
+    if (!k || bones != g_damp_bones[i]) return;
+    const DampSave* in = g_damp_save + (size_t)i * DAMP_MAX_BONES;
+    for (int j = 0; j < k; j++) {
+        uint8_t* hb = bones + in[j].bone * BONE_SIZE;
+        memcpy(hb + BONE_ANGLE[0], in[j].angle, 12);
+        memcpy(hb + BONE_TARGET, in[j].target, 12);
+    }
+    if (InterlockedIncrement(&g_damp_restored) == 1)
+        log_line("X2-SMOOTH-003-DAMPHOLD: first damped bones put back before a logic step (id 0x%04X, %d bones)", *(uint16_t*)a, k);
+}
+
 
 // After a logic step: tick k-1 <- tick k <- this pose.
 static void record_angles(int i, const uint8_t* a) {
@@ -676,6 +734,7 @@ static void render_only_walk() {
             bool child = *(uint32_t*)(a + OFF_PARENT) != 0;
             if (!child) hold_save(i, a, true);                  // the skeleton jobs touch every root actor in range
             else if (g_owes_half_step[i]) hold_save(i, a, false);         // attached actors: only what the step writes
+            if (g_opt_damphold && g_owes_half_step[i]) damp_save(i, a);
         }
     }
     uint8_t* cursor = base;
@@ -1760,6 +1819,7 @@ static bool install() {
     g_skeleton_dispatch = (dispatch_fn)disp;
     g_opt_gates = config_row("X2-SMOOTH-003-GATES", 1);
     g_opt_hold = config_row("X2-SMOOTH-003-HOLD", 1);
+    g_opt_damphold = config_row("X2-SMOOTH-003-DAMPHOLD", 1);
     g_opt_loopguard = config_row("X2-SMOOTH-003-LOOPGUARD", 1);
     g_opt_loopend = config_row("X2-SMOOTH-003-LOOPEND", 1);
     g_opt_endextrap = config_row("X2-SMOOTH-003-ENDEXTRAP", 1);
@@ -1857,6 +1917,7 @@ static bool install() {
         }
     }
     g_held_bytes = (uint8_t*)calloc(MAX_ACTORS, HOLD_BYTES);
+    if (g_opt_damphold) g_damp_save = (DampSave*)calloc((size_t)MAX_ACTORS * DAMP_MAX_BONES, sizeof(DampSave));
     if (!g_held_bytes) { log_line("  X2-SMOOTH-003: out of memory - refused"); return false; }
     install_peel();
 
