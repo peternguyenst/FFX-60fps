@@ -31,6 +31,21 @@ static HRESULT STDMETHODCALLTYPE h_present(IDXGISwapChain* sc, UINT sync, UINT f
         if (InterlockedIncrement(&g_forced) == 1) log_line("VSYNC: first Present with SyncInterval 1 (the game passed %u)", sync);
         use = 1;
     }
+    static IDXGISwapChain* s_logged = nullptr;
+    if (sc != s_logged) {
+        s_logged = sc;
+        DXGI_SWAP_CHAIN_DESC d = {};
+        BOOL fs = FALSE;
+        if (SUCCEEDED(sc->GetDesc(&d))) {
+            sc->GetFullscreenState(&fs, nullptr);
+            log_line("VSYNC/diag: swap chain %p: %ux%u refresh %u/%u, buffers %u, SwapEffect %u (0 DISCARD, 1 SEQUENTIAL, "
+                     "3 FLIP_SEQUENTIAL, 4 FLIP_DISCARD), Windowed %d, exclusive fullscreen %d, flags 0x%X "
+                     "(0x800 = ALLOW_TEARING); game passes SyncInterval %u, Present flags 0x%X",
+                     (void*)sc, d.BufferDesc.Width, d.BufferDesc.Height, d.BufferDesc.RefreshRate.Numerator,
+                     d.BufferDesc.RefreshRate.Denominator, d.BufferCount, (unsigned)d.SwapEffect, d.Windowed, fs, d.Flags,
+                     sync, flags);
+        }
+    }
     LARGE_INTEGER a, b;
     QueryPerformanceCounter(&a);
     HRESULT hr = g_present_orig(sc, use, flags);
