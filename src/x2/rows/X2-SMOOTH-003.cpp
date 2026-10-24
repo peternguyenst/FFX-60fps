@@ -1643,6 +1643,23 @@ static void drawcheck_post(int kind) {          // kind: pacing_kind() of the in
     if (++g_dc_window >= DC_REPORT_FRAMES) drawcheck_report();
 }
 
+// For X2-DIAG-CAPTURE-AT: the motion clock (actor +0x750, 1/256 animation frames) of the first active actor with this
+// id; false if there is none.
+bool smooth003_actor_clock(uint16_t id, int32_t* clock) {
+    if (!g_actor_table || !g_actor_count) return false;
+    __try {
+        uint8_t* base = *g_actor_table;
+        int n = *g_actor_count;
+        if (!base || n <= 0) return false;
+        if (n > MAX_ACTORS) n = MAX_ACTORS;
+        for (int i = 0; i < n; i++) {
+            const uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+            if (a[OFF_ACTIVE] && *(const uint16_t*)a == id) { *clock = *(const int32_t*)(a + OFF_MOTION_CLOCK); return true; }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return false;
+}
+
 // After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
 static void post() {
     // Unreadable actors are skipped one by one inside; a fault here (the actor table itself) drops the frames kept so

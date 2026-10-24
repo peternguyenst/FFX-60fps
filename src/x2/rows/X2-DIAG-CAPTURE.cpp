@@ -61,6 +61,21 @@ static bool key_capturing() {
     g_key_was_down = down;
     return g_key_capturing;
 }
+// X2-DIAG-CAPTURE-AT-ID / -AT-CLOCK / -AT-LEAD: start by itself when the actor with that id (first active one) gets
+// within LEAD (default 2560 = 10 animation frames) before that motion clock (actor +0x750, 1/256 frames, as the
+// X2-SMOOTH-003 log lines print it): a cutscene moment caught without pressing a key, at 60 fps or stock pacing.
+bool smooth003_actor_clock(uint16_t id, int32_t* clock);
+static int  g_at_id = 0, g_at_clock = 0, g_at_lead = 2560;
+static bool g_at_started = false;
+static bool clock_capturing() {
+    if (!g_at_id) return false;
+    if (g_at_started) return true;
+    int32_t c = 0;
+    if (!smooth003_actor_clock((uint16_t)g_at_id, &c) || c < g_at_clock - g_at_lead || c > g_at_clock) return false;
+    g_at_started = true;
+    log_line("X2-DIAG-CAPTURE: actor 0x%04X at motion clock %d (target %d) - capture on", g_at_id, c, g_at_clock);
+    return true;
+}
 static int g_max = 900, g_min = 300, g_frame = 0, g_draw = 0;
 // X2-DIAG-CAPTURE-DRAWS=0: no per-draw D lines (frames and F / S / C / K / Q lines only). X2-DIAG-CAPTURE-LOADS=<n>
 // (default 1): n watched loads appended to the same files (frame numbers continue), for X2-DEV-BISECT-AUTO runs over
@@ -763,7 +778,7 @@ static void toggles_report() {                   // under g_cs, files open
 
 static void present_tap(IDXGISwapChain* sc) {
     if (!row_DIAGCAPTURE.on || g_disabled || g_done) return;
-    bool w = ftblink_watching() || key_capturing();
+    bool w = ftblink_watching() || key_capturing() || clock_capturing();
     if (w && !g_was && !g_on && g_csv && g_bin) {          // next load of a multi-load capture
         g_on = true;
         if (g_toggles) toggles_start();
@@ -892,6 +907,10 @@ static bool install() {
     log_line("  X2-DIAG-CAPTURE: HD frame pointer %s", g_hdframe ? "gva=0x00DCDA04" : "not found - hd fields 0");
     g_loads = config_row("X2-DIAG-CAPTURE-LOADS", 1);
     g_capture_key = config_row("X2-DIAG-CAPTURE-KEY", 0);
+    g_at_id = config_row("X2-DIAG-CAPTURE-AT-ID", 0);
+    g_at_clock = config_row("X2-DIAG-CAPTURE-AT-CLOCK", 0);
+    g_at_lead = config_row("X2-DIAG-CAPTURE-AT-LEAD", 2560);
+    if (g_at_id) log_line("  X2-DIAG-CAPTURE: starts when actor 0x%04X reaches motion clock %d - %d", g_at_id, g_at_clock - g_at_lead, g_at_clock);
     if (g_capture_key) log_line("  X2-DIAG-CAPTURE: key VK 0x%02X starts / stops a capture", g_capture_key);
     ID3D11Device* dev = nullptr; ID3D11DeviceContext* ctx = nullptr;
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
