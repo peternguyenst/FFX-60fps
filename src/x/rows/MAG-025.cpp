@@ -121,7 +121,7 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
 // for the logic walk. At 4-8 passes a deny list leaked whatever it did not name (0xDC, 0x2B, ...: allocations, spawns,
 // counters that ran once per pass). No OPU handler draws (the OPP walk does), so holding one only delays a state change.
 static bool g_allow[512];
-static int  g_allow_on = 1;
+static int  g_allow_on = 0;
 
 static void __cdecl on_handler(uint8_t* scr) {
     int op = *(uint16_t*)(scr + 0x21A) & 0x1FF;
@@ -369,7 +369,7 @@ static bool install() {
     if (line[0]) log_line("  MAG-025: opcodes held on render-only invocations (MAG-025-DENY, modes 2/3):%s", line);
     // Allow list above 60 fps: 02 jump, 09 yield (loop shape), 53 transform from target, 61 copy from a unit (both
     // recompute from other state: the same result on every call).
-    g_allow_on = config_row("MAG-025-ALLOW-ON", 1);
+    g_allow_on = config_row("MAG-025-ALLOW-ON", 0);   // off: holding 0xFF etc. blinked effects (U 25/10)
     config_str("rows", "MAG-025-ALLOW", deny, sizeof(deny), "02,09,53,61");
     k = 0; line[0] = 0;
     for (char* t = deny; *t;) {
