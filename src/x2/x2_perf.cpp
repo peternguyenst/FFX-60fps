@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-PERF (diagnostic, default 0): U 18/10/2026: "on Steam Deck it is not able to keep up 60 fps - is our mod too
-// unoptimized?". Every 10 s, on the game thread: invocations per second, the average and worst Sg_MainLoop invocation
-// (from x2_pre to the end of x2_post: game logic + render submission + every row), the time the rows' pre/post take per
-// invocation and the six costliest rows, and X2-SMOOTH-003's render-only motion walk (the extra engine motion steps
-// that 60 fps limbs cost). Off: one flag test per row call.
+// X2-DIAG-PERF (diagnostic, off): is the mod itself slowing the game down? Every 10 s, on the game thread, it logs:
+// invocations per second; the average and worst invocation time (game logic + draw submission + every row); how long
+// the rows' pre / post take per invocation, with the six costliest rows; and X2-SMOOTH-003's render-only animation
+// walk (the extra animation steps 60 fps limbs cost). When off, it costs one flag test per row call.
+// Written to answer whether the Steam Deck's frame drops came from the mod.
 #include "x2.h"
 #include <string.h>
 #include <stdio.h>

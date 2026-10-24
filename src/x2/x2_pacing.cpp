@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// 60 Hz pacing for FFX-2, same policy as the FFX mod (pacing.cpp there): hold the frame divider at 1 and
-// alternate exec 1/0, so every other Sg_MainLoop invocation is render-only. Game requests for 30 Hz are
-// swallowed; requests for every-vsync pass through. Backlog invocations (skip-render catch-up) run logic.
+// 60 Hz pacing: the heart of the mod (same idea as the FFX mod's pacing.cpp).
+//
+// The stock game runs its main loop (Sg_MainLoop) once every second screen refresh: its frame divider is 2. We keep
+// the divider at 1, so the loop runs on every refresh, and tell the game on every other run to skip its logic and only
+// draw (the exec flag: 1 = run logic, 0 = draw only). The game logic still runs 30 times a second and the screen
+// shows 60 frames. Each run is an "invocation"; pacing_pre() picks its kind (logic, render-only, backlog, stock;
+// x2.h) just before it starts.
+// Rules:
+//   - the game asking for divider 2 (30 Hz) is swallowed while 60 Hz is on; asking for 1 passes
+//   - backlog invocations (the game catching up, no draw) always run logic, without moving the alternation
+//   - any row can hold stock pacing for a while (FMV, menu, load: pacing_hold_stock); holds nest
+//   - the game's booster (X2-PACE-TURBO): every invocation runs logic
+//   - X2-PACE-MENUDIV2 (Steam Deck "Fast Results"): see its comment further down
+// Tested by tests/x2/test_pacing.cpp.
 #include "x2.h"
 
 namespace x2 {
