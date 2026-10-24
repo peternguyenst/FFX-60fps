@@ -3,7 +3,8 @@
 // without restarting.
 //
 // Each F8 press moves to the next step and is logged: none -> X2-MAG-006 off -> X2-UI-001 -> X2-LOOP-004 ->
-// X2-LOOP-005 -> X2-MAG-009 -> none. Not in the list: X2-MAG-008 and X2-MAG-025 (switching them off mid-battle made a
+// X2-LOOP-005 -> X2-MAG-009 -> X2-CHR-001 -> X2-HD-001 -> X2-TASK-001 -> X2-TEXANIM-001 -> none (the last four change
+// how characters draw on render-only frames when the SMOOTH rows are off). Not in the list: X2-MAG-008 and X2-MAG-025 (switching them off mid-battle made a
 // spell overflow the effect heap), rows whose patches do not check their on switch (X2-FX-010-DRAWOPS, X2-FX-012) and
 // the crash guards. The switch happens in post() of the last row, after every other row's post(), so a row is never
 // switched between its own pre() and post(). Patches stay in place; a row that is off passes straight through.
@@ -15,9 +16,11 @@
 
 namespace x2 {
 
-extern Row row_MAG006, row_UI001, row_LOOP004, row_LOOP005, row_MAG009;
+extern Row row_MAG006, row_UI001, row_LOOP004, row_LOOP005, row_MAG009, row_CHR001, row_HD001, row_TASK001,
+    row_TEXANIM001;
 bool ftblink_watching();
-static Row* const g_list[] = { &row_MAG006, &row_UI001, &row_LOOP004, &row_LOOP005, &row_MAG009 };
+static Row* const g_list[] = { &row_MAG006, &row_UI001, &row_LOOP004, &row_LOOP005, &row_MAG009,
+                                &row_CHR001, &row_HD001, &row_TASK001, &row_TEXANIM001 };
 static const int N = (int)(sizeof(g_list) / sizeof(g_list[0]));
 static int  g_was_on[N];
 static int  g_step = 0;                          // 0 = all as installed, k = row k-1 off
@@ -30,7 +33,7 @@ static bool g_prev = false;
 static const char* const AUTO_NAME[] = { "baseline", "SMOOTH all off", "SMOOTH-001 off", "SMOOTH-002 off",
                                          "SMOOTH-003 off", "MAG-006 off", "UI-001 off", "LOOP-004 off", "LOOP-005 off",
                                          "MAG-009 off", "FX-010-DRAWOPS off", "FX-012 off", "FX-010 + FX-012 off" };
-enum { NAUTO = 9, NAUTO2 = 3 };
+enum { NAUTO = 9, NAUTO2 = 3, NAUTO_ROWS = 5 };    // AUTO steps 5..9 = the first NAUTO_ROWS rows of g_list
 static int g_auto_ms = 0, g_auto_i = 0;          // position in the cycle 0..2*n-1 (odd = test step)
 static int g_auto_set = 1;
 static ULONGLONG g_auto_t = 0;
@@ -51,7 +54,7 @@ static int auto_step() {
 static void auto_apply(int s) {
     smooth_set_live(s != 1);
     smooth_set_off_row(s >= 2 && s <= 4 ? s - 1 : 0);
-    for (int i = 0; i < N; i++) g_list[i]->on = g_was_on[i] && s != 5 + i;
+    for (int i = 0; i < NAUTO_ROWS; i++) g_list[i]->on = g_was_on[i] && s != 5 + i;
     fx010_set_live(s != 10 && s != 12);
     fx012_set_live(s != 11 && s != 12);
     g_bisect_step = s;
@@ -106,7 +109,7 @@ static void post() {
 
 Row row_DEVBISECT = {
     "X2-DEV-BISECT",
-    "test tool: F8 turns battle rows off one at a time",
+    "test tool: F8 turns battle and character-draw rows off one at a time",
     1, install, nullptr, post, 0
 };
 
