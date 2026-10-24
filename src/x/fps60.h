@@ -170,6 +170,8 @@ extern Row row_MAG027;                           // rows/MAG-027.cpp (event time
 extern Row row_MAG028;                           // rows/MAG-028.cpp (particle pause flag back to the game's value)
 extern Row row_MAG029;                           // rows/MAG-029.cpp (effect-unit particle programs paused on render-only)
 extern Row row_MAG030;                           // rows/MAG-030.cpp (OPP effect units restored after render-only draws)
+extern Row row_FX013;                            // rows/FX-013.cpp (bigger draw packet and particle pools)
+int  draw_packet_cap();                          // FX-013: draw packets per pool now (0x156 stock)
 extern Row row_FX012;                            // rows/FX-012.cpp (PPP pool full: failed-init program ended, pool use logged)
 bool fx012_failed(void* prog);                   // FX-012: a program whose init failed; MAG-006's step detour returns 1
 extern Row row_FX011;                            // rows/FX-011.cpp (draw packet pools full: drop the sprite, no crash)

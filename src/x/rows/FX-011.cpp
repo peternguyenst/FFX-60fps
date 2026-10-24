@@ -46,7 +46,7 @@ static void* __cdecl h_alloc(int count) {
     if (p || g_disabled || !row_FX011.on) return p;
     if (InterlockedIncrement(&g_dropped) == 1) {
         log_line("FX-011: draw packet pools full (%d packets): first packet dropped, caller gva=0x%08X count %d, inv kind %d",
-                 POOLS * POOL_PACKETS, rt_to_gva_exe(_ReturnAddress()), count, pacing_kind());
+                 POOLS * draw_packet_cap(), rt_to_gva_exe(_ReturnAddress()), count, pacing_kind());
     }
     InterlockedIncrement(&g_dropped_inv);
     memset(g_scratch, 0, 0x214);
@@ -104,7 +104,7 @@ static void post() {
     if (++tick % (300 * (uint32_t)rate_mult()) != 0) return;
     if (g_peak[0] || g_peak[1] || g_peak[2] || g_peak[3] || dropped_window)
         log_line("FX-011: peak draw packets per invocation (of %d): logic %d, render-only %d, backlog %d, stock %d; dropped %ld",
-                 POOLS * POOL_PACKETS, g_peak[0], g_peak[1], g_peak[2], g_peak[3], dropped_window);
+                 POOLS * draw_packet_cap(), g_peak[0], g_peak[1], g_peak[2], g_peak[3], dropped_window);
     static const char* kind_name[4] = { "logic", "render-only", "backlog", "stock" };
     for (int k2 = 0; k2 < 4; k2++) {
         if (g_peak[k2] < 600) continue;                  // the breakdown only for heavy invocations
