@@ -1,27 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-CFG-MENU (default on, port of the FFX mod's CFG-MENU): the mod's user options as extra rows of the game's own
-// main-menu Config page. Static RE: outer repo re/ledger/CFG-MENU-X2.md (CFGX2-001..021, S unless tagged). Ghidra VAs.
+// X2-CFG-MENU: the mod's options as extra rows on the game's own Config page (main menu), in all 8 languages.
 //
-// - The page (module slot 8, descriptor 0xD63924) draws the pointer array [0x16D5F40] of 0x20-byte row objects, count
-//   = signed byte [0x16D5F48]; the setup 0x7889C0 resets both to a static array (9 or 10 rows) every time the menu
-//   opens. The page already scrolls (9-row window, scroll bar, page jump), so more rows need no layout change.
-// - The enter 0x788920 (cdecl(desc, arg), plain RET) is detoured: before it runs, the array is pointed at a mod copy
-//   (the stock rows + ours) and the count raised; the original then calls every row's init (+0x10).
-// - Row object: +2 label id, +4 value count, +6/+8/+A value ids, +0xC current value, +0x10 init(row*), +0x14
-//   apply(row*), +0x1C mode (must be 0). Left/right only change +0xC (clamped); the leave 0x788970 calls every apply
-//   once when the page is closed, so the options change and fps60x2.ini is written then (no extra detour).
-// - Text: label/value FUN_00779170(id) and help FUN_00779150(id) (cdecl, plain RET, menu_txt, many callers) are
-//   detoured; ids 0x7E00..0x7E7F are ours (stock ids 0x10B4..0x10D3; the page reads ids sign-extended, so <= 0x7FFF),
-//   every other id passes through. Help is looked up by the current value's id, so each value has its own id. The help
-//   setter keeps the pointer: our text is static (x2_text_strings.h). Both functions are resolved from their unique
-//   call sites 0x789B1E / 0x7891B4 (the 20-byte wrapper pattern has 3 hits).
-// - Glyph map: FFX-2 menu_txt of all 8 languages decodes with the FFX-2 tables (S, data); the strings are generated
-//   with those tables (tools/gen_text_x2.py). ON/OFF are the game's own words per language.
-// - Fast Results (X2-PACE-MENUDIV2, x2_pacing.cpp): battle results screen at 30 fps; default on under Wine / Proton.
-// - Dev build only (FPS60_DEV, msbuild /p:Fps60Dev=1): Load Mode Pacing, Idle-Wait Hold, Battle Setup Hold (X2-LOAD-001),
-//   F8 Bisect Tool, Smooth Camera / Actor Roots / Animation (X2-SMOOTH-001/002/003); English text in every language.
-// - Options whose row was off at startup are shown and saved, and take effect at the next start (row_set never installs
-//   at runtime). Soft Reset is the [x2] soft_reset key: off writes 0, on writes the default chord unless one is set.
+// How the page works (re/ledger/CFG-MENU-X2.md): the Config page draws an array of 0x20-byte row objects (pointer at
+// gva 0x16D5F40, count at 0x16D5F48). Its setup resets that array to the stock rows every time the menu opens, and
+// the page already scrolls, so adding rows needs no layout change. Each row has a label, up to 3 values and the
+// current value; left / right only change the current value, and when the page closes the game calls every row's
+// apply function once.
+// What we do:
+//   - hook the page's enter function (gva 0x788920): point the array at our copy (the stock rows + ours) and raise the
+//     count; the game then calls every row's init, ours included (row_init shows the current state)
+//   - our rows' apply (row_apply) switches the option and writes fps60x2.ini, when the page is closed
+//   - hook the two text lookups (label / value text and help text): ids 0x7E00..0x7E7F are ours and come from
+//     x2_text_strings.h (generated with the game's own glyph tables, tools/gen_text_x2.py); every other id passes on.
+//     Each value has its own id, because the help text is looked up by the current value.
+// Options: 60 FPS, Smooth Motion, 60 FPS Menu, Soft Reset, Turbo, Idle Motion, V-Sync, Fast Results (battle results at
+// 30 fps; default on under Wine / Proton). Dev builds add Load Mode Pacing, Idle-Wait Hold, Battle Setup Hold, F8
+// Bisect Tool and the three Smooth rows, in English only.
+// An option whose row was off at startup is shown and saved, and takes effect at the next start (rows are never
+// installed at runtime). Soft Reset writes the [x2] soft_reset key: off writes 0, on the default button chord.
 #include "../x2.h"
 #include "../x2_text_strings.h"
 #include "x2_smooth.h"
@@ -35,7 +31,7 @@ extern Row row_LOAD001, row_DEVBISECT;
 #endif
 
 #pragma pack(push, 1)
-struct CfgRow {                                    // CFGX2-005
+struct CfgRow {                                    // one row of the Config page (the game's layout)
     uint16_t enabled;                              // +0x00 written by some stock inits, never read
     int16_t  label;                                // +0x02
     int16_t  nvals;                                // +0x04
@@ -64,8 +60,8 @@ static bool g_hooks_installed = false;
 
 enum { ID_LABEL = 0x7E00, ID_VALUE = 0x7E40, MAX_STOCK = 32 };
 
-// ---------------------------------------------------------------- options
-// v = value index as shown: ON (0) / OFF (1), the stock order.
+// --- Our options -----------------------------------------------------------------------------------------------------
+// Values are shown in the stock order: ON (index 0), OFF (index 1).
 struct Option {
     int  label, help_on, help_off;
     int  (*get)();                                 // 1 = on
@@ -187,7 +183,7 @@ static void __cdecl row_apply(CfgRow* r) {
     }
 }
 
-// ---------------------------------------------------------------- detours
+// --- Hooks ---------------------------------------------------------------------------------------------------------------
 static void __cdecl hook_page_enter(void* desc, int arg) {
     __try {
         void* arr = *g_row_array;
@@ -228,7 +224,7 @@ static const uint8_t* __cdecl hook_help_text(int id) {
     return g_help_text_orig(id);
 }
 
-// ---------------------------------------------------------------- row
+// --- Install (find and check); the hooks go in at the first pre() ----------------------------------------------------
 static bool install() {
     // Enter 0x788920: PUSH EBP; MOV EBP,ESP; MOV EAX,[EBP+8]; PUSH ESI; MOV [EAX+0x1C],0; MOV byte [..],1; CALL; CALL;
     // XOR ESI,ESI; CMP byte [count],0; JLE; LEA EBX,[EBX]; MOV EAX,[array]; MOV EAX,[EAX+ESI*4]; PUSH EAX; MOV EAX,[EAX+0x10]; CALL EAX
