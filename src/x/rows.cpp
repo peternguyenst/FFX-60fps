@@ -31,6 +31,7 @@ static Row* g_rows[] = {
     &row_MAG029,                                 // after MAG-006 (its Ppp_ProgramStep entry)
     &row_MAG030,
     &row_FX011,
+    &row_FX012,
     &row_DIAGFRAMETIME,
     &row_UI001,
     &row_UI017,
