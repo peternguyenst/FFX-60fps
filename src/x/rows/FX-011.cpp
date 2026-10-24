@@ -23,13 +23,21 @@ static __declspec(align(16)) uint8_t g_scratch[0x1000];   // packet is 0x214; ma
 static volatile LONG g_dropped = 0, g_dropped_inv = 0;
 static int       g_peak[4];                       // per InvKind, packets in one invocation
 // Packets per call site in the current invocation, and in each kind's peak invocation (the 9 callers, W2A-001).
-enum { SITES = 16 };
+enum { SITES = 32 };
 static void*     g_site[SITES];
 static int       g_cur[SITES], g_peak_by[4][SITES];
+// Calls from the sprite builder FUN_0071b8a0 (0x7EA bytes, EBP frame) are keyed by the builder's own caller
+// ([EBP+4] at the allocator entry): op 1, op 9 and 9 other draw paths share it.
+static uint8_t*  g_builder = nullptr;
+static uint8_t*  g_entry_ebp = nullptr;
 
 // cdecl int(int count), plain RET (0x72873F / 0x728748): the detour keeps the convention.
 static void* __cdecl h_alloc(int count) {
     void* ra = _ReturnAddress();
+    if (g_builder && (uint8_t*)ra >= g_builder && (uint8_t*)ra < g_builder + 0x7EA && g_entry_ebp) {
+        uint32_t up = 0;
+        if (safe_read_u32(g_entry_ebp + 4, &up) && up) ra = (void*)(uintptr_t)up;
+    }
     for (int i = 0; i < SITES; i++) {
         if (g_site[i] == ra) { g_cur[i]++; break; }
         if (!g_site[i]) { g_site[i] = ra; g_cur[i]++; break; }
@@ -45,6 +53,14 @@ static void* __cdecl h_alloc(int count) {
     return g_scratch;
 }
 
+// MinHook detour: keep the caller's EBP (the builder's frame) for h_alloc, then the C detour on the same stack.
+__declspec(naked) static void h_alloc_entry() {
+    __asm {
+        mov  g_entry_ebp, ebp
+        jmp  h_alloc
+    }
+}
+
 static bool install() {
     // FUN_00728660: PUSH EBP; MOV EBP,ESP; OR EDX,-1; CMP [pool0 count],0x156; MOV EAX,100000
     g_entry = sig_find_unique("FX-011 draw packet allocator FUN_00728660",
@@ -52,6 +68,10 @@ static bool install() {
     if (!g_entry) return false;
     g_counts = (volatile int32_t*)read_abs(g_entry + 8);
     if (!g_counts) return false;
+    // Sprite builder FUN_0071b8a0: PUSH EBP; MOV EBP,ESP; SUB ESP,0x8C; cookie; copies args 1/2 to [EBP-0x88]/[EBP-0x8C]
+    g_builder = sig_find_unique("FX-011 sprite builder FUN_0071b8a0",
+        "55 8B EC 81 EC 8C 00 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC 8B 45 08 89 85 78 FF FF FF 8B 45 0C 89 85 74 FF FF FF 0F B7 45 18",
+        0x71B8A0);
     log_line("  FX-011: FUN_00728660 at gva=0x%08X, pool counts gva=0x%08X", rt_to_gva_exe(g_entry),
              rt_to_gva_exe((void*)g_counts));
     return true;
@@ -60,7 +80,7 @@ static bool install() {
 static void pre() {
     if (g_patched) return;
     g_patched = true;
-    if (!hook_entry("FX-011", g_entry, (void*)&h_alloc, (void**)&g_tramp)) {
+    if (!hook_entry("FX-011", g_entry, (void*)&h_alloc_entry, (void**)&g_tramp)) {
         log_line("FX-011: entry hook failed - row off");
         row_FX011.on = 0;
     }
@@ -88,7 +108,7 @@ static void post() {
     static const char* kind_name[4] = { "logic", "render-only", "backlog", "stock" };
     for (int k2 = 0; k2 < 4; k2++) {
         if (g_peak[k2] < 600) continue;                  // the breakdown only for heavy invocations
-        char line[512];
+        char line[1024];
         int n = 0;
         for (int i = 0; i < SITES && g_site[i]; i++)
             if (g_peak_by[k2][i])
