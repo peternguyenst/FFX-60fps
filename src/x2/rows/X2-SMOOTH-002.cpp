@@ -1,9 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-SMOOTH-002 (port of FFX SMOOTH-002): actor roots (position, heading) are rebuilt once per logic tick, so
-// characters move at 30 Hz. Logic invocations draw each root half-way between the last two ticks (needs X2-SMOOTH=1;
-// F7 toggles). Sub-switches as FFX: WARP, RENDERHOLD, CHILDREL (default 1), NOCLOTH (default 0).
-// FFX-2 layout (PORT-SMOOTH.md §4-§6, S): Ch_DrawMain 0x6DBA00 (cdecl void, 2 CALLs), actor table 0x01CC9604 / count
-// 0x01CC9600, stride 0x910, root +0x1DC, flags +0x1A0, parent +0x1A8 (child root = local x parent root, 0x6E0C50).
+// X2-SMOOTH-002: characters and monsters move at 60 fps.
+//
+// Each actor's "root" (its position and heading, a 4x4 matrix at actor +0x1DC) is set once per logic tick, so at
+// 60 fps bodies would still move in 30 Hz steps. Just before the game draws the actors (our hook on its two calls of
+// Ch_DrawMain), a logic invocation writes each root half way between its last two ticks; a render-only invocation
+// draws tick k. The game's roots are put back at the next pre(), so game logic never sees ours. Same timebase as the
+// camera (X2-SMOOTH-001): the drawn sequence is k-0.5, k, k+0.5, ...
+// Not interpolated: an actor without two ticks of history (just appeared, slot reused), one the game moved since its
+// tick (another fix may have), a cut (SMOOTH_CUT_DIST), and a warp (below).
+// Switches ([rows] X2-SMOOTH-002-*, on unless noted):
+//   WARP        a step much bigger than the previous one (> WARP-MIN 30 units and > WARP-RATIO 3x) is a teleport: snap
+//   RENDERHOLD  on a render-only frame, an actor the game moved since tick k is drawn at tick k (a spell DLL's update
+//               can move actors on render-only frames, which made them jump back and forth)
+//   CHILDREL    attached actors (weapons, shields) follow their parent's drawn root, so they stay in the drawn hand
+//   NOCLOTH     (off) leave cloth actors alone
+//   DIAG        counters line every 600 logic draws
+// F9 (with X2-SMOOTH-001): 240 frames of root traces. Needs X2-SMOOTH=1; F7 turns all SMOOTH rows off and on.
+// History, measurements and evidence: re/ledger/PORT-SMOOTH.md §4-§6 (it also keeps this file's earlier comments),
+// SMOOTH2-GHOST.md.
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -14,36 +28,34 @@ namespace x2 {
 
 typedef void(__cdecl* draw_main_fn)(void);
 
+// Actor array layout (re/ledger/PORT-SMOOTH.md §5): 0x910 bytes per actor, root matrix +0x1DC, flags +0x1A0,
+// parent +0x1A8 (0 = not attached; an attached actor's root = its local matrix x the parent's root).
 static const int      MAX_ACTORS = 512;
 static const uint32_t ACTOR_SIZE = 0x910, OFF_ROOT = 0x1DC, OFF_FLAGS = 0x1A0, OFF_PARENT = 0x1A8;
 
-static draw_main_fn g_draw_main = nullptr;
+static draw_main_fn g_draw_main = nullptr;          // Ch_DrawMain: draws every actor
 static uint8_t* volatile* g_actor_table = nullptr;  // pointer to the actor array
 static volatile int32_t*  g_actor_count = nullptr;  // actor count
 static int   g_opt_nocloth = 0, g_opt_diag = 0;
 
+// The last two tick roots of one actor slot, and how far it moved in each of the last two ticks (for WARP).
 struct RootHistory {
     float    m[2][16];   // [0] = tick k-1, [1] = tick k
     int      n;          // valid samples (0..2)
-    uint16_t id;
-    float    step[2];    // translation step [0] = k-2 -> k-1, [1] = k-1 -> k (valid when n == 2; [0] when ns >= 2)
+    uint16_t id;         // actor id the samples belong to
+    float    step[2];    // distance moved: [0] = tick k-2 -> k-1, [1] = tick k-1 -> k
     int      ns;         // valid steps (0..2)
 };
 extern Row row_SMOOTH002;
 static RootHistory* g_history = nullptr;             // MAX_ACTORS entries
-static uint8_t* g_history_table = nullptr;     // actor array the history belongs to
+static uint8_t* g_history_table = nullptr;           // actor array the history belongs to
 static int   g_inv_kind = INV_STOCK;
-static bool  g_applied_now = false;
-static bool  g_recorded_now = false;       // history rotated in this invocation (at the draw)
+static bool  g_applied_now = false;                  // roots already written this invocation (Ch_DrawMain runs twice)
+static bool  g_recorded_now = false;                 // history already moved on this invocation (at the draw)
 static int   g_opt_childrel = 0;
 static int   g_opt_warp = 1, g_warp_lines = 0;
 static float g_opt_warp_min = 30.0f, g_opt_warp_ratio = 3.0f;
 static LONG  g_warps = 0;
-// SMOOTH-002-RENDERHOLD (default 1): on a render-only invocation an actor whose root is no longer its tick-k root was
-// moved outside a logic tick; it is drawn at tick k. U 12/10/2026: Valefor stuttered in Energy Ray (magic_0150, MAG-021
-// family E). D SMOOTH-002-TRACE: render-only draws showed tick k+1 (the MAG-021 window replays the DLL update, which
-// writes the actor root in the EXE actor table; only the DLL .data is restored), the next logic draw k+0.5: back and
-// forth every frame.
 static int   g_opt_renderhold = 1, g_rh_lines = 0;
 static LONG  g_rh_held = 0;
 
@@ -51,11 +63,11 @@ static float translation_distance(const float* a, const float* b) {
     float dx = a[12] - b[12], dy = a[13] - b[13], dz = a[14] - b[14];
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
-// Deferred restore_game_roots
+// The roots we wrote this invocation, so pre() can put the game's back: slot, the game's root and ours.
 static uint8_t* g_written_table = nullptr;
 static int   g_written_count = 0;
 static int*  g_written_slot = nullptr;            // MAX_ACTORS
-static int*  g_slot_write = nullptr;           // MAX_ACTORS: slot -> write index this frame, -1 = not written
+static int*  g_slot_write = nullptr;              // MAX_ACTORS: slot -> write index this frame, -1 = not written
 static float (*g_written_game_root)[16] = nullptr;    // MAX_ACTORS
 static float (*g_written_our_root)[16] = nullptr;     // MAX_ACTORS
 static SmoothStats g_stats;
@@ -64,6 +76,8 @@ static LONG  g_logic_draws = 0, g_children_moved = 0, g_skip_hist = 0, g_skip_mo
 static inline bool is_child(const uint8_t* a) { return *(const uint32_t*)(a + OFF_PARENT) != 0; }
 static inline bool is_cloth_actor(const uint8_t* a) { return (*(const uint32_t*)(a + OFF_FLAGS) & 0x600000) == 0x600000; }
 
+// --- Writing roots -----------------------------------------------------------------------------------------------------
+// Draw slot i with `out` this invocation (the game's root is kept for pre()).
 static void write_root(int i, float* root, const float* out) {
     int w = g_written_count++;
     g_written_slot[w] = i;
@@ -73,6 +87,7 @@ static void write_root(int i, float* root, const float* out) {
     memcpy(root, out, 64);
 }
 
+// Start this invocation's writes; false if there is no history for the current actor array.
 static bool begin_writes(uint8_t** pbase, int* pn) {
     uint8_t* base = *g_actor_table;
     int n = *g_actor_count;
@@ -86,8 +101,8 @@ static bool begin_writes(uint8_t** pbase, int* pn) {
     return true;
 }
 
-// SMOOTH-002-CHILDREL: an attached actor (weapon, shield) follows its parent's drawn root instead of its own
-// history: child' = child . inv(P_tick) . P_drawn, so it stays in the drawn hand.
+// CHILDREL: an attached actor (weapon, shield) follows its parent's drawn root instead of its own history:
+// child' = child . inv(parent at tick) . parent as drawn, so it stays in the drawn hand. Up to 4 passes, for chains.
 static void apply_children(uint8_t* base, int n) {
     if (!g_opt_childrel) return;
     for (int pass = 0; pass < 4; pass++) {
@@ -119,8 +134,7 @@ static void apply_children(uint8_t* base, int n) {
 
 static void record_tick();
 
-// Logic/backlog invocation, lerp(tick k-1, tick k, 0.5). The history is
-// rotated first from the canonical roots (fresh tick k).
+// Logic (or backlog) invocation: record the fresh tick k, then draw every actor half way between k-1 and k.
 static void apply_interp() {
     record_tick();
     g_recorded_now = true;
@@ -158,7 +172,7 @@ static void apply_interp() {
 }
 
 
-// Render-only invocation: roots that left tick k since the last logic draw go back to tick k (deferred restore_game_roots at pre).
+// Render-only invocation (RENDERHOLD): roots that left tick k since the last logic draw are drawn at tick k.
 static void apply_render_hold() {
     uint8_t* base;
     int n;
@@ -182,10 +196,8 @@ static void apply_render_hold() {
     apply_children(base, n);
 }
 
-// F9 trace (with X2-SMOOTH-001's camera trace): for 240 invocations, the first 3 active non-child actors' drawn root
-// position, tick-k root position and whether this row wrote the root. U 13/10/2026: walking left/right shows a ghost
-// character, gone with X2-SMOOTH-002 off (F6); static RE found the body draw reads the root as expected
-// (re/ledger/SMOOTH2-GHOST.md), so the drawn sequence decides.
+// --- F9 trace ------------------------------------------------------------------------------------------------------------
+// For 240 invocations: the first 3 root actors' drawn position, their tick-k position, and whose root was drawn.
 static LONG g_trace_left = 0;
 static bool g_f9_was_down = false;
 static bool g_traced_inv = false;
@@ -212,6 +224,8 @@ static void trace_roots() {
     log_line("%s", line);
 }
 
+// --- Hook and every invocation -------------------------------------------------------------------------------------------
+// Replaces the main loop's two calls of Ch_DrawMain: write the roots once per invocation, then let the game draw.
 static void __cdecl hook_draw_main() {
     bool applied = false;
     if (row_SMOOTH002.on && !g_disabled && !g_applied_now && smooth_live(2) &&
@@ -235,6 +249,7 @@ static void __cdecl hook_draw_main() {
     g_draw_main();
 }
 
+// Put the game's roots back where ours are still in place.
 static void restore_game_roots() {
     if (g_written_count == 0) return;
     if (*g_actor_table == g_written_table) {
@@ -249,11 +264,12 @@ static void restore_game_roots() {
     g_written_count = 0;
 }
 
-// Dev hot reload: actor roots written for a render-only frame go back (pre would restore_game_roots them next).
+// Dev hot reload: put the game's roots back now (pre() would have done it next).
 static void stop() {
     __try { restore_game_roots(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+// Before: F9 trace key, put the game's roots back; while pacing is stock the history is dropped.
 static void pre() {
     smooth_poll_hotkey();
     g_traced_inv = false;
@@ -273,6 +289,7 @@ static void pre() {
     if (g_inv_kind == INV_STOCK) g_history_table = nullptr;   // history restarts after menus / FMV hold
 }
 
+// Shift every slot's history by one tick: tick k becomes k-1, the game's current root becomes tick k.
 static void record_tick() {
     uint8_t* base = *g_actor_table;
     int n = *g_actor_count;
@@ -302,6 +319,7 @@ static void record_tick() {
     for (int i = n; i < MAX_ACTORS; i++) g_history[i].n = 0;
 }
 
+// After a logic invocation whose draw did not run: record the tick anyway, so the history stays continuous.
 static void post() {
     if ((g_inv_kind == INV_LOGIC || g_inv_kind == INV_BACKLOG) && !g_recorded_now) {
         __try { record_tick(); }
@@ -320,6 +338,7 @@ static void post() {
     }
 }
 
+// --- Install: find and check every address, then patch the two CALLs -------------------------------------------------------
 static bool install() {
     if (!smooth_master()) { log_line("  X2-SMOOTH-002: master X2-SMOOTH=0 - off"); return false; }
     // Sg_MainLoop draw: CALL FUN_006d36a0; CALL Ch_DrawMain ... (second pair at +0x2F)
