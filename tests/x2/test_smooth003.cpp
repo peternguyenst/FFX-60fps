@@ -226,3 +226,32 @@ TEST(smooth003_sanity_restores_all_three_angles) {
         CHECK(fabsf(*(float*)&bones[BONE_SIZE + BONE_ANGLE[ch]] - k[ch] / TURNS_PER_RADIAN) < 1e-5f);   // ch 1 too
     g_prev_ang = old_prev; g_cur_ang = old_cur;
 }
+
+// DRAWCHECK: over three drawn frames, a bone far from half way between its neighbours is logged; an actor whose bone
+// array cannot be read is skipped (and logged) while the others are still checked.
+TEST(smooth003_drawcheck_logs_odd_bone_and_skips_unreadable_actor) {
+    fake::reset();
+    const int nb = 2;
+    std::vector<uint8_t> table(2 * ACTOR_SIZE, 0), header(0x40, 0), bones(nb * BONE_SIZE, 0);
+    uint8_t* good = table.data();
+    uint8_t* bad = table.data() + ACTOR_SIZE;
+    *(uint16_t*)good = 0x001A; good[OFF_ACTIVE] = 1;
+    *(uint8_t**)(good + OFF_MODEL_HEADER) = header.data();
+    *(uint16_t*)&header[MODEL_HEADER_BONE_COUNT] = nb;
+    *(uint8_t**)(good + OFF_BONES) = bones.data();
+    *(uint16_t*)bad = 0x00C9; bad[OFF_ACTIVE] = 1;
+    *(uint8_t**)(bad + OFF_MODEL_HEADER) = header.data();
+    *(uintptr_t*)(bad + OFF_BONES) = 0x10;                       // freed / garbage: reading it faults
+    uint8_t* table_ptr = table.data(); int32_t count = 2;
+    uint8_t* volatile* old_table = g_actor_table; volatile int32_t* old_count = g_actor_count; float* old_ang = g_dc_ang;
+    g_actor_table = (uint8_t* volatile*)&table_ptr; g_actor_count = &count;
+    std::vector<float> ang((size_t)3 * DC_ACTORS * DC_BONES * 3, 0);
+    g_dc_ang = ang.data(); g_dc_frames = 0; g_dc_head = 0; g_dc_lines = 0; g_opt_drawcheck = 1;
+    float* bone1_ch0 = (float*)&bones[BONE_SIZE + BONE_ANGLE[0]];
+    const float frames[3] = { 0.10f, 0.40f, 0.12f };              // bone 1 sticks out on the middle frame
+    for (float f : frames) { *bone1_ch0 = f / TURNS_PER_RADIAN; drawcheck_post(); }
+    CHECK(fake::log_contains("id=0x001A bone 1 odd by"));
+    CHECK(!fake::log_contains("id=0x001A bone 0 odd by"));
+    CHECK(fake::log_contains("slot=1 id=0x00C9 unreadable"));
+    g_actor_table = old_table; g_actor_count = old_count; g_dc_ang = old_ang; g_dc_frames = 0;
+}
