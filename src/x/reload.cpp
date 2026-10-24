@@ -18,6 +18,8 @@ void game_dir(wchar_t* out, size_t cap);
 void log_reopen();
 
 static bool g_prev = false;
+static HMODULE g_next_mod = nullptr;             // the copy this one loaded (crash reports are forwarded to it)
+HMODULE reload_next_module() { return g_next_mod; }
 
 void reload_poll() {
     if (g_disabled || !dev_key(VK_NUMPAD9, &g_prev)) return;
@@ -42,10 +44,13 @@ void reload_poll() {
     patch_revert_all();
     log_line("Num9: hot reload: this copy is passive; loading %ls", live);
     log_close();
-    if (!LoadLibraryW(live)) {
+    g_next_mod = LoadLibraryW(live);
+    if (!g_next_mod) {
         DWORD err = GetLastError();
         log_reopen();
         log_line("Num9: hot reload: LoadLibrary failed (%lu) - the game runs stock until restart", err);
     }
 }
+#else
+HMODULE reload_next_module() { return nullptr; }
 #endif

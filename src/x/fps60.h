@@ -276,6 +276,7 @@ void  pacing_shutdown();                          // pacing.cpp: hand the game i
 void  log_close();                                // log.cpp
 void  log_ring(const char* fmt, ...);             // log.cpp: keep a diagnostic line in memory only
 void  log_ring_dump(const char* why);             // log.cpp: write the kept lines to the log
+HMODULE reload_next_module();                    // reload.cpp: the copy a dev hot reload loaded (nullptr if none)
 #ifdef FPS60_DEV
 // Dev build only (FPS60_DEV): edge of a key press while the game window is focused. `prev` keeps the key state.
 bool  dev_key(int vk, bool* prev);

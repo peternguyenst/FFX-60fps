@@ -5,6 +5,8 @@
 // Details: docs/fps60/proxy.md
 #include "fps60.h"
 #include <stdio.h>
+#include <dbghelp.h>
+#include <tlhelp32.h>
 
 typedef BOOL(WINAPI* MiniDumpWriteDump_t)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
 
@@ -69,6 +71,128 @@ static void log_crash(void* exception_param) {
         log_line("CRASH:   [esp+0x%03X] %s", i * 4, where);
         shown++;
     }
+    // EBP frame chain: exact callers wherever the functions keep a frame (the stack scan above also lists stale values).
+    uint32_t bp = c->Ebp;
+    for (int i = 0; i < 16 && bp >= 0x10000; i++) {
+        uint32_t next = 0, ret = 0;
+        if (!safe_read_u32((void*)(uintptr_t)bp, &next) || !safe_read_u32((void*)(uintptr_t)(bp + 4), &ret)) break;
+        describe(ret, where, sizeof(where));
+        log_line("CRASH:   frame %2d ebp=%08X ret %s", i, bp, where);
+        if (next <= bp) break;
+        bp = next;
+    }
+    // 32 bytes at every register that points to readable memory (the record or table a faulting read went through).
+    const struct { const char* n; DWORD v; } regs[] = {
+        { "eax", c->Eax }, { "ebx", c->Ebx }, { "ecx", c->Ecx }, { "edx", c->Edx }, { "esi", c->Esi }, { "edi", c->Edi },
+        { "ebp", c->Ebp } };
+    for (auto& r : regs) {
+        uint8_t b[32];
+        if (r.v < 0x10000 || !safe_copy(b, (void*)(uintptr_t)r.v, sizeof(b))) continue;
+        char hex[3 * 32 + 1];
+        int k = 0;
+        for (int i = 0; i < 32; i++) k += _snprintf_s(hex + k, sizeof(hex) - k, _TRUNCATE, "%02X%s", b[i], (i % 4 == 3) ? " " : "");
+        describe(r.v, where, sizeof(where));
+        log_line("CRASH:   [%s] %s: %s", r.n, where, hex);
+    }
+    // Magic DLLs loaded now (their bases turn runtime addresses into Ghidra VAs, base 0x10000000).
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32W me = { sizeof(me) };
+        for (BOOL ok = Module32FirstW(snap, &me); ok; ok = Module32NextW(snap, &me))
+            if (!_wcsnicmp(me.szModule, L"magic_", 6) || !_wcsnicmp(me.szModule, L"fps60", 5))
+                log_line("CRASH:   module %ls at %p size 0x%X", me.szModule, me.modBaseAddr, me.modBaseSize);
+        CloseHandle(snap);
+    }
+    char w[200];
+    where_text(g_where, w, sizeof(w));
+    log_line("CRASH:   %d fps (%d passes per tick), game thread at %s", rate_fps(), rate_mult(), w);
+}
+
+// The mod's own dump, fps60_crash_<time>.dmp (the game's CoreDump.dmp is overwritten by the next crash): thread
+// stacks, memory the registers and stacks point to, and the data sections of FFX.exe and the magic DLLs (game state
+// and effect records). Other modules' data is left out to keep the file small.
+static BOOL CALLBACK crash_dump_cb(PVOID, const PMINIDUMP_CALLBACK_INPUT in, PMINIDUMP_CALLBACK_OUTPUT out) {
+    switch (in->CallbackType) {
+    case ModuleCallback: {
+        const wchar_t* path = in->Module.FullPath;
+        const wchar_t* b = path;
+        for (const wchar_t* q = path; q && *q; q++) if (*q == L'\\' || *q == L'/') b = q + 1;
+        bool keep = (uintptr_t)in->Module.BaseOfImage == (uintptr_t)exe_base() || (b && !_wcsnicmp(b, L"magic_", 6));
+        if (!keep) out->ModuleWriteFlags &= ~ModuleWriteDataSeg;
+        return TRUE;
+    }
+    case IncludeModuleCallback: case IncludeThreadCallback: case ThreadCallback: case ThreadExCallback:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+// Keep the newest `keep` crash dumps (names sort by time). Same as FFX-2's X2-DIAG-CRASH.
+static void prune_dumps(const wchar_t* dir, int keep) {
+    wchar_t pat[MAX_PATH];
+    _snwprintf_s(pat, MAX_PATH, _TRUNCATE, L"%sfps60_crash_*.dmp", dir);
+    wchar_t names[64][48];
+    int n = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW(pat, &fd);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        if (n < 64 && wcslen(fd.cFileName) < 48) wcscpy_s(names[n++], 48, fd.cFileName);
+    } while (FindNextFileW(f, &fd));
+    FindClose(f);
+    for (int i = 1; i < n; i++)                    // insertion sort, oldest first
+        for (int j = i; j > 0 && wcscmp(names[j - 1], names[j]) > 0; j--) {
+            wchar_t t[48];
+            wcscpy_s(t, 48, names[j]); wcscpy_s(names[j], 48, names[j - 1]); wcscpy_s(names[j - 1], 48, t);
+        }
+    for (int i = 0; i + keep < n; i++) {
+        wchar_t q[MAX_PATH];
+        _snwprintf_s(q, MAX_PATH, _TRUNCATE, L"%s%s", dir, names[i]);
+        DeleteFileW(q);
+    }
+}
+
+struct DumpJob { void* exception_param; HANDLE file; BOOL ok; DWORD err; };
+
+// On a helper thread: the crashed thread may be short of stack.
+static DWORD WINAPI dump_thread(LPVOID p) {
+    typedef BOOL(WINAPI* md_t)(HANDLE, DWORD, HANDLE, int, void*, void*, void*);
+    DumpJob* j = (DumpJob*)p;
+    md_t md = (md_t)resolve_real_minidump();
+    if (!md) { j->err = ERROR_PROC_NOT_FOUND; return 0; }
+    int type = MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpScanMemory | MiniDumpWithUnloadedModules |
+               MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo |
+               MiniDumpWithThreadInfo;
+    MINIDUMP_CALLBACK_INFORMATION cb = { crash_dump_cb, nullptr };
+    j->ok = md(GetCurrentProcess(), GetCurrentProcessId(), j->file, type, j->exception_param, nullptr, &cb);
+    j->err = j->ok ? 0 : GetLastError();
+    return 0;
+}
+
+static void write_crash_dump(void* exception_param) {
+    if (!resolve_real_minidump()) return;
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    game_dir(dir, MAX_PATH);
+    if (!dir[0]) return;
+    prune_dumps(dir, 4);                           // with this one: the newest 5
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%sfps60_crash_%04u%02u%02u-%02u%02u%02u.dmp", dir, t.wYear, t.wMonth, t.wDay,
+                 t.wHour, t.wMinute, t.wSecond);
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) { log_line("CRASH: own dump not written (create %lu)", GetLastError()); return; }
+    DumpJob j = { exception_param, f, FALSE, WAIT_TIMEOUT };
+    HANDLE th = CreateThread(nullptr, 0, dump_thread, &j, 0, nullptr);
+    if (th) { WaitForSingleObject(th, 60000); CloseHandle(th); }
+    else dump_thread(&j);
+    BOOL ok = j.ok;
+    DWORD err = j.err;
+    LARGE_INTEGER sz = {};
+    GetFileSizeEx(f, &sz);
+    CloseHandle(f);
+    log_line("CRASH: own dump %ls %s (%lld KB, err %lu)", path + lstrlenW(dir), ok ? "written" : "FAILED",
+             sz.QuadPart / 1024, err);
 }
 
 // Set in DllMain when the host is FFX.exe (the loader only loads this DLL there; kept as a guard).
@@ -77,7 +201,14 @@ static bool g_host_ffx = false;
 // Called by the loader (SEH-guarded) before the game's crash dump is written.
 extern "C" void __cdecl mod_minidump_pre(void* exception_param, int* dump_type) {
     if (!g_host_ffx) return;
+    // After a dev hot reload this copy is passive and its log is closed: the copy it loaded reports.
+    if (HMODULE next = reload_next_module()) {
+        typedef void(__cdecl* pre_t)(void*, int*);
+        if (pre_t f = (pre_t)GetProcAddress(next, "mod_minidump_pre")) { f(exception_param, dump_type); return; }
+    }
     __try { log_crash(exception_param); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { write_crash_dump(exception_param); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     // Diagnostic ([fps60] crash_dump_mem=1): the game's crash dump also gets heap and module data
     // (MiniDumpWithDataSegs 0x1 | WithPrivateReadWriteMemory 0x200 | WithFullMemoryInfo 0x800).
