@@ -285,8 +285,9 @@ static void end_extrapolate(int i, uint8_t* a) {
 
 // --- SANITY: undo a bone that jumps on the render-only frame --------------------------------------------------------
 // Two keyframes far apart (e.g. ~180 degrees) that the stock game never samples between give a wrong pose when we
-// sample half way (seen as twisted monster limbs). Per bone rotation: if the render-only step moved it more than
-// max(0.06 turn, 3 x its change over the last tick + 0.01) away from tick k, it goes back to its tick-k value.
+// sample half way (seen as twisted monster limbs). Per bone: if the render-only step moved any of its three angles more
+// than max(0.06 turn, 3 x that angle's change over the last tick + 0.01) away from tick k, the bone goes back to its
+// tick-k angles (all three).
 static int      g_opt_sanity = 1;
 static uint8_t  g_sanity_bone_save[MAX_BONES * BONE_SIZE];   // the bones before the render-only step (tick k)
 static volatile LONG g_sanity_reverts = 0, g_sanity_lines = 0;
@@ -317,23 +318,32 @@ static void sanity_check(int i, uint8_t* a, int nb, int32_t c0) {
     const float* prev = g_prev_ang + (size_t)i * MAX_BONES * 3;
     const float* cur = g_cur_ang + (size_t)i * MAX_BONES * 3;
     for (int b = 0; b < nb; b++) {
+        const uint8_t* kb = g_sanity_bone_save + b * BONE_SIZE;
+        uint8_t* hb = bones + b * BONE_SIZE;
+        int jumped = -1;
+        float vk = 0, vh = 0, dh = 0, dt = 0;
+        for (int c = 0; c < 3 && jumped < 0; c++) {
+            vk = *(const float*)(kb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
+            vh = *(const float*)(hb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
+            dh = turn_diff(vh, vk);
+            dt = turn_diff(cur[b * 3 + c], prev[b * 3 + c]);
+            if (!(dh <= 0.06f || dh <= 3.0f * dt + 0.01f)) jumped = c;     // NaN counts as a jump
+        }
+        if (jumped < 0) continue;
+        // The whole bone goes back: the three angles are one rotation, and a bone whose keys switch to the other
+        // equivalent angle triple changes all three at once; restoring only the channel that jumped mixes the two
+        // triples into a wrong pose (Rikku's braids, map 0xB5).
         for (int c = 0; c < 3; c++) {
-            const uint8_t* kb = g_sanity_bone_save + b * BONE_SIZE;
-            uint8_t* hb = bones + b * BONE_SIZE;
-            float vk = *(const float*)(kb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
-            float vh = *(const float*)(hb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
-            float dh = turn_diff(vh, vk), dt = turn_diff(cur[b * 3 + c], prev[b * 3 + c]);
-            if (dh <= 0.06f || dh <= 3.0f * dt + 0.01f) continue;   // NaN falls through to the restore
             *(float*)(hb + BONE_ANGLE[c]) = *(const float*)(kb + BONE_ANGLE[c]);
             *(float*)(hb + BONE_ANGLE[c] + 0x30) = *(const float*)(kb + BONE_ANGLE[c] + 0x30);
-            InterlockedIncrement(&g_sanity_reverts);
-            if (g_sanity_lines < 40) {
-                InterlockedIncrement(&g_sanity_lines);
-                log_line("X2-SMOOTH-003 sanity: slot=%d id=0x%04X bone %d ch %d: k-1 %.4f k %.4f half %.4f (d %.4f vs tick %.4f) "
-                         "clock %d start=%d end=%d len=%d loops=%d fl=%08X - channel held",
-                         i, *(const uint16_t*)a, b, c, prev[b * 3 + c], vk, vh, dh, dt, c0, *(int32_t*)(a + OFF_MOTION_START),
-                         *(int32_t*)(a + OFF_MOTION_END), *(int32_t*)(a + OFF_MOTION_LOOP_LEN), (int)*(int16_t*)(a + OFF_MOTION_LOOPS), *(uint32_t*)(a + OFF_FLAGS));
-            }
+        }
+        InterlockedIncrement(&g_sanity_reverts);
+        if (g_sanity_lines < 40) {
+            InterlockedIncrement(&g_sanity_lines);
+            log_line("X2-SMOOTH-003 sanity: slot=%d id=0x%04X bone %d ch %d: k-1 %.4f k %.4f half %.4f (d %.4f vs tick %.4f) "
+                     "clock %d start=%d end=%d len=%d loops=%d fl=%08X - bone held",
+                     i, *(const uint16_t*)a, b, jumped, prev[b * 3 + jumped], vk, vh, dh, dt, c0, *(int32_t*)(a + OFF_MOTION_START),
+                     *(int32_t*)(a + OFF_MOTION_END), *(int32_t*)(a + OFF_MOTION_LOOP_LEN), (int)*(int16_t*)(a + OFF_MOTION_LOOPS), *(uint32_t*)(a + OFF_FLAGS));
         }
     }
 }

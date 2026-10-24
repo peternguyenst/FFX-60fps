@@ -200,3 +200,29 @@ TEST(smooth003_midcheck_wraps_around_a_turn) {
     CHECK(!midcheck_bad(0.48f, -0.49f, -0.46f, nullptr));           // 0.48 -> 0.54 (= -0.46); mid 0.51 = -0.49
     CHECK(midcheck_bad(0.48f, 0.0f, -0.46f, nullptr));
 }
+
+// SANITY puts back the whole bone when one of its angles jumps (the log's id 0x001A bone 14: ch 0 0.25 -> 0.5 and ch 2
+// 0.1393 -> -0.1106 at the half sample, keys in the other equivalent angle triple).
+TEST(smooth003_sanity_restores_all_three_angles) {
+    const int slot = 3, nb = 2;
+    std::vector<uint8_t> actor(0x910, 0), header(0x40, 0), bones(nb * BONE_SIZE, 0);
+    *(uint16_t*)&actor[0] = 0x001A;
+    *(uint8_t**)&actor[OFF_MODEL_HEADER] = header.data();
+    *(uint16_t*)&header[MODEL_HEADER_BONE_COUNT] = nb;
+    *(uint8_t**)&actor[OFF_BONES] = bones.data();
+    std::vector<float> prev(MAX_ACTORS * MAX_BONES * 3, 0), cur(MAX_ACTORS * MAX_BONES * 3, 0);
+    float* old_prev = g_prev_ang; float* old_cur = g_cur_ang;
+    g_prev_ang = prev.data(); g_cur_ang = cur.data();
+    g_angles_ticks[slot] = 2; g_angles_actor_id[slot] = 0x001A;
+    const float k[3] = { 0.25f, 0.20f, 0.1393f }, half[3] = { 0.5f, 0.21f, -0.1106f };
+    float* p = prev.data() + (size_t)slot * MAX_BONES * 3; float* c = cur.data() + (size_t)slot * MAX_BONES * 3;
+    for (int ch = 0; ch < 3; ch++) {
+        p[3 + ch] = c[3 + ch] = k[ch];                                         // bone 1 still over the last tick
+        *(float*)&g_sanity_bone_save[BONE_SIZE + BONE_ANGLE[ch]] = k[ch] / TURNS_PER_RADIAN;
+        *(float*)&bones[BONE_SIZE + BONE_ANGLE[ch]] = half[ch] / TURNS_PER_RADIAN;
+    }
+    sanity_check(slot, actor.data(), nb, 0);
+    for (int ch = 0; ch < 3; ch++)
+        CHECK(fabsf(*(float*)&bones[BONE_SIZE + BONE_ANGLE[ch]] - k[ch] / TURNS_PER_RADIAN) < 1e-5f);   // ch 1 too
+    g_prev_ang = old_prev; g_cur_ang = old_cur;
+}
