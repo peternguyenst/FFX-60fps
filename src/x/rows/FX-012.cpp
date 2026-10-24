@@ -26,7 +26,7 @@ static volatile LONG g_guarded = 0;
 enum { SITES = 32 };
 struct Site { void* ra; void* up; uint32_t n[4]; };   // up: the caller of the pool's caller (the code creating it)
 static Site     g_asite[SITES], g_fsite[SITES];
-static uint32_t g_fail[4];
+static uint32_t g_fail[4], g_overflow = 0;      // drops; main pool full but the second pool tried (FX-013)
 static long     g_net = 0, g_net_max = 0;        // live blocks since install (allocs - frees)
 
 static void count(Site* t, void* ra, void* up, int k) {
@@ -54,7 +54,11 @@ static void* __cdecl h_alloc(void* pool, int size) {
     void* up = up_of(g_alloc_ebp);
     count(g_asite, _ReturnAddress(), up, k);
     if (k == INV_BUILD) chain_once(g_alloc_ebp, up);
+    // A main pool whose second pool is set ([5] = its memory, FX-013) is followed by a try there: not a drop yet.
+    uint32_t second = 0;
+    bool retried = !p && safe_read_u32((uint8_t*)pool + 0x14, &second) && second;
     if (p) { if (++g_net > g_net_max) g_net_max = g_net; }
+    else if (retried) g_overflow++;
     else if (g_fail[k]++ == 0)
         log_line("FX-012: PPP pool allocation failed (pool %p, size %d, caller gva=0x%08X <- 0x%08X, inv kind %d, %ld blocks live)",
                  pool, size, rt_to_gva_exe(_ReturnAddress()), rt_to_gva_exe(up), k, g_net);
@@ -158,7 +162,9 @@ static void post() {
                  g_fail[2], g_fail[3]);
         memset(g_fail, 0, sizeof(g_fail));
     }
-    log_line("FX-012: PPP pool blocks live %ld (max %ld); failed-init steps guarded %ld", g_net, g_net_max, (long)g_guarded);
+    log_line("FX-012: PPP pool blocks live %ld (max %ld); main pool full -> second pool %u; failed-init steps guarded %ld", g_net,
+             g_net_max, g_overflow, (long)g_guarded);
+    g_overflow = 0;
     g_net_max = g_net;
 }
 
