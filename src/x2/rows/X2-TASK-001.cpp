@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-TASK-001 (FFX-2 only): actor render tasks queued by a script command are drawn on logic invocations only.
-// The actor-script command FUN_00695240 (script op table 0xD4FF30) queues one-shot tasks through FUN_00680030
-// (cdecl(fn, a1, a2, lifetime), group 0x60, plain RET): sub-op 0xA -> 0x694C70, 0xB -> 0x694EF0, 0x12 -> 0x6951D0
-// (draws through FUN_00696cc0 and sets the map/char draw-enable source DAT_00e48ee0 = 1), all with lifetime 1. The
-// task runner FUN_00680980 (Sg_MainLoop second loop) runs them once, in the invocation that queued them. Scripts run on
-// logic invocations only, so at 60 fps these draws exist on every second frame: U 16/10/2026, a battle move used by
-// Seymour (enemy model and orb missing on alternate frames). H: that this command is the one that move uses.
-// Fix: the lifetime-1 tasks of those three functions queued on a logic invocation are queued again, with the same
-// arguments, at the start of the next render-only invocation (they run in its task pass). The task data (actor
-// +0xBC block) lives across ticks; only the script that queued it can free it, and it does not run in between.
-// Also restores the stock DAT_00e48ee0 sequence (1 every invocation instead of 1,0,1,0).
+// X2-TASK-001: one-shot draws queued by battle scripts show on every frame (an enemy model and orb no longer blink).
+//
+// One actor-script command (FUN_00695240) queues draw tasks that live one invocation (sub-ops 0xA, 0xB and 0x12). The
+// task runner runs them once, in the invocation that queued them; scripts run on logic invocations only, so at 60 fps
+// these draws existed on every second frame. The fix: those tasks, queued on a logic invocation, are queued again with
+// the same arguments at the start of the next render-only invocation. Their data lives across ticks and only the
+// script that queued it can free it, which does not run in between. This also restores the stock sequence of the
+// map / character draw-enable flag (gva 0xE48EE0: 1 every invocation instead of 1, 0, 1, 0).
+// (That this is the command the blinking move uses is not proven, H.)
 #include "../x2.h"
 
 namespace x2 {

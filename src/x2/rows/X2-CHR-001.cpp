@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-CHR-001 (FFX-2 only): chr models reach the HD model list (hdframe+0xE9CC count, +0xE9D4 array) only through
-// Ch_DrawMain loop 3 (CALL FUN_00449f20(hdmodel) at 0x6DCD98), and the list is cleared on every invocation in battle
-// (FUN_00464e80 -> FUN_00468dc0). Loop 3 runs for an actor only when FUN_006e1610 cleared its +0x1A0 bit 0x1000, which
-// needs +0x1A0 bit 0x1000000: set by the logic actor update, and on render-only invocations by X2-SMOOTH-003's half step
-// for actors that take it. Actors without that half step (Full Throttle's swords, magic_0681, id 0x0133: +0x1A0
-// 0x415D1402 on logic / 0x405D1402 on render-only, D probe X2-DIAG-FTBLINK 17/10/2026) are then listed on logic
-// invocations only and drawn every second frame (U 16-17/10: sword and fire blink; the fire is the specular overlay pass
-// of the listed model). Fix: the models loop 3 adds on a logic invocation are recorded; at the end of each render-only
-// invocation, a recorded model that is not in the list is added again, if an active actor still owns it (+0x844). Skin,
-// spring and attach jobs are not re-run (no 2x); the model draws with the pose of the last tick, as at stock.
-// Evidence: outer repo re/ledger/FT-BLINK.md (S + D).
+// X2-CHR-001: characters' extra models (Full Throttle's swords and fire) are drawn on every frame.
+//
+// Character models get onto the HD renderer's model list only through the third loop of Ch_DrawMain, and in battle that
+// list is cleared every invocation. The loop runs for an actor only when its "step" flag is set: by the logic actor
+// update, and on render-only invocations by X2-SMOOTH-003's half step. Actors that take no half step (Full Throttle's
+// swords) were listed on logic invocations only, so drawn every second frame.
+// The fix: the models that loop adds on a logic invocation are recorded; at the end of each render-only invocation, a
+// recorded model missing from the list is added again, if an active actor still owns it. Nothing else is re-run
+// (no double speed); the model draws with the last tick's pose, as in the stock game. Evidence: re/ledger/FT-BLINK.md.
 #include "../x2.h"
 
 namespace x2 {

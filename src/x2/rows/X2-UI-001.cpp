@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-UI-001 (port of FFX UI-001): screen fades step inside Sg_ScreenFadeUpdate FUN_006d3960, which runs on every
-// invocation, so fades last half as long at 60 Hz. The CALL at 0x605E69 goes to a stub: on render-only
-// invocations the fade draws, then its state is restored, so it steps once per logic tick.
-// State (FFX-2 layout, slots first): 5 slots x 0x10 + active mask at +0x50 (0x116D7B8, 0x54); outputs 0x116CBA0
-// (0x10) and 0xD50658 (4). 0x116CB9C is not snapshotted (mirrors state set through FUN_004546a0).
-// Evidence: outer repo re/ledger/PORT-A.md §5 (S).
+// X2-UI-001: screen fades (to and from black, flashes) last as long as in the stock game.
+//
+// The fade update (Sg_ScreenFadeUpdate) runs on every invocation, so fades lasted half as long at 60 fps. Its CALL
+// (gva 0x605E69) goes to a hook: on render-only invocations the fade still draws, then its state is put back, so it
+// steps once per logic tick. Saved state: 5 fade slots and the active mask (gva 0x116D7B8, 0x54 bytes) and its two
+// outputs (0x116CBA0, 0x10 bytes; 0xD50658, 4 bytes). Evidence: re/ledger/PORT-A.md §5.
 #include "../x2.h"
 #include <string.h>
 

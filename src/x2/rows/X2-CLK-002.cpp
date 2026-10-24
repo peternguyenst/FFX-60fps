@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-CLK-002 (port of FFX CLK-002): map/BG keyframe animations (FUN_007c0580 and 3 siblings) read a clock in 1/60 s
-// units from FUN_007b97e0 (frame counter * 2) or FUN_007b9f60 (vblank), both +2 per invocation: 2x at 60 Hz.
-// Both getters return a mod clock that adds half the source's delta on 60 Hz invocations (+1 per 1/60 s: correct
-// speed, and the consumer's lerp makes the motion 60 Hz smooth), the full delta otherwise.
-// Evidence: outer repo re/ledger/PORT-B.md §1 (S).
+// X2-CLK-002: animated map backgrounds run at their normal speed, and smoothly.
+//
+// Map and background keyframe animations read a clock in 1/60 s units from two getters (frame counter x 2, and the
+// vblank count), both of which go up by 2 per invocation: double speed at 60 fps. Both getters now return our clock,
+// which goes up by half the source's step on 60 Hz invocations (1 per 1/60 s: the right speed, and since the
+// animations blend between keys, they also move at 60 Hz) and by the full step otherwise. The clock also survives the
+// vblank count jumping backwards around loads. Evidence: re/ledger/PORT-B.md §1.
 #include "../x2.h"
 
 namespace x2 {

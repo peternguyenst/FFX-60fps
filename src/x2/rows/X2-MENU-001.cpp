@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MENU-001: PS2-layer menus (title, field menu, save/load, item-get, script menus) run as the coroutine
-// Menu_CoroutineIterate 0x7645E0. While one is up ([0x016BC55C] or [0x016BC560] != 0) Sg_MainLoop jumps past the exec
-// loop (0x60550C), so exec alternation does nothing there, and the coroutine steps once per HOST frame (gate on the
-// turbo phase counter [0xDF6414] at 0x764824): 2x at a 60 Hz host (U 12/10/2026: title screen, main menu).
-// Fix A (MENU.md): hold stock pacing (divider 2, exec 1) while a menu is up or requested ([0xDF6870] != -1); menus
-// render at 30 fps as in the stock game. No game code is patched. Transitions are logged with the menu mode
-// [0x016BC5EC] (confirms the title screen is a menu mode, H in MENU.md).
-// Evidence: outer repo re/ledger/MENU.md (S); D: X2-DIAG-RATE, fps60x2.log 23:11.
+// X2-MENU-001: the game's menus (title, field menu, save / load, item get, script menus) run at their normal speed.
+//
+// These menus run in their own loop, which steps once per host frame, while the main loop skips the game logic: so at
+// a 60 Hz host they ran twice as fast, and our logic / render-only alternation does nothing there. The fix holds stock
+// pacing (30 fps, as in the stock game) while a menu is up or requested. No game code is patched. Each change is
+// logged with the menu mode. The field main menu is the exception: X2-MENU-002 runs it at 60 fps (menu002_claims).
+// Evidence: re/ledger/MENU.md.
 #include "../x2.h"
 
 namespace x2 {

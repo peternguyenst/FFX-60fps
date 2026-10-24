@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-CHR-002 (FFX-2 only, stock look fix): battle idles are play-once motions (loops 1) that the battle script restarts
-// whenever they end. While the script is busy (another actor's long attack) the idle ends and the actor holds its last
-// frame until the script runs again: Seymour stands frozen for ~10 s during Tidus's Blitz Ace. U 18/10/2026: also with
-// the mod off ("the game original have that issue too ... it look weird"). D 18/10 (X2-SMOOTH-003-FREEZEDIAG trace, id
-// 0x113F): motion seq 0xF09CAD1 start 0 end 0x31FF len 0x3200 loops 1 reaches clock 0x3180 at 00:44:02.13 and holds
-// until 00:44:11.91; between turns the game restarts the same motion from its end every 1-2 s (00:44:34.6 -> 35.6:
-// same seq, clock 0x3180 -> 0x80).
-// Fix: per actor slot, a motion the game itself restarted from its last frame (same seq, clock back near start) is
-// remembered as a game-looped motion. When such a motion then sits on its last frame for X2-CHR-002-HOLD logic ticks
-// (default 3), its clock is put back to its start, as the script's restart does. Other play-once motions (hits, deaths,
-// poses) are never touched, nor script-driven actors (+0x1A0 bit 0x40). Actor fields as X2-SMOOTH-003 (PORT-SMOOTH3.md
-// §5, S): clock +0x750, seq +0x724, start +0x728, end +0x72C, loops +0x734 (s16). That a clock write restarts the motion
-// cleanly is H (the sampler Ch_DecodeKeys reads clock and end each step, S).
+// X2-CHR-002: battle idle animations keep playing while the battle script is busy (a fix for the stock game too).
+//
+// A battle idle is a play-once animation that the battle script restarts whenever it ends. While the script is busy
+// (during another actor's long attack) the idle ends and the actor freezes on its last frame until the script runs
+// again: Seymour stood still for ~10 s during Tidus's Blitz Ace, with or without the mod.
+// The fix: per actor slot, an animation the game itself restarted from its last frame (same motion, clock back near
+// the start) is remembered as one the game loops. When such an animation then sits on its last frame for
+// X2-CHR-002-HOLD logic ticks (default 3), its clock is put back to the start, as the script's restart would do.
+// Other play-once animations (hits, deaths, poses) and script-driven actors are never touched. Actor fields as in
+// X2-SMOOTH-003. (That writing the clock restarts the animation cleanly is not proven, H.)
 #include "../x2.h"
 #include <string.h>
 

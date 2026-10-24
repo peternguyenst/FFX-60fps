@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-019 (port of FFX MAG-019): a particle draw reaches a VFX sub-instance whose materials are not filled yet,
-// and the lazy shader lookup FUN_004b9d50 (thiscall(this, a), RET 4) crashes on strstr(material[0].name, "D3D11/"):
-// D 16/10/2026 19:53, CoreDump.dmp, magic_0749 loaded, haystack 0xCDCDCDCD (unfilled block), stack Sg_MainLoop ->
-// 0x616660(1) -> FUN_006a5d30 -> OPP walk FUN_006b98e0 -> particle code 0x80EBF0 / 0x852880 -> FUN_004568c0 vtable
-// +0x28 -> FUN_004b9d50. FFX: the 60 Hz cadence of paused draws exposes it (Thunder/Thundara).
-// Fix: entry detour; while data [this+0x1C] is null, its material count [data+0x84] < 1, the material array
-// [data+0x88] is null or material[0].name [+0x24] is null/unreadable, return 1 without running the original: the
-// caller FUN_004568c0 aborts on nonzero and its caller FUN_00852880 (0x852A61) runs the game's own failure path
-// FUN_00456270 (frees the VFX instance's dynamic geometry), so nothing half-built survives and a later draw sets it up
-// again. Returning 0 ("go on", the FFX choice) left the instance without its shader object [this+0xC] and crashed in
-// FUN_004baa10 (0x4BAA3E, D 16/10/2026 19:58). Trips are counted per invocation kind.
-// Evidence: outer repo re/ledger/CRASH-0749.md (S + D).
+// X2-MAG-019: fixes a crash when a particle effect is drawn before its materials are loaded.
+//
+// A particle draw can reach an effect instance whose materials are not filled in yet; the game's lazy shader lookup
+// (FUN_004b9d50) then reads garbage and crashes. The 60 fps cadence of paused draws makes this happen (Blitz Ace's
+// DLL in FFX-2, Thunder in FFX). The fix: while the instance's data, material count, material array or first material
+// name is missing, the lookup returns 1 ("failed") without running. The game's own failure path then frees the
+// half-built instance, and a later draw sets it up again. (Returning 0, "go on", crashed one step later.) Counted per
+// invocation kind. Evidence: re/ledger/CRASH-0749.md.
 #include "../x2.h"
 #include <string.h>
 
