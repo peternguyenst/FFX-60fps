@@ -1,58 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-025 (port of FFX MAG-025): battle effect units (command scripts, OPU) step on every walk of the unit
-// bytecode walker FUN_006bbca0 (FFX OpuMain_UnitBytecodeWalk): the EXE walks pass 1 (FUN_006a5d30, through the
-// effect dispatch 0x616660(1) in Sg_MainLoop's second loop) on every invocation, and 310 magic DLLs call the walker
-// (service slot +0xB14) from their draw. WAIT countdowns, script handlers (battle signals, actor motion requests,
-// motion-end polls) and unit motion run 2x at 60 fps (FFX: Tidus's Mental Break wind-up). Render-only invocations
-// hold these walks, per walk source (EXE pass-1 call, DLL calls), in one of three modes:
-//   1: jump from the stream-loop head to its exit test: no stream steps, the unit's follow call still runs.
-//   2: keep every WAIT countdown; streams at WAIT 0 run their handlers.
-//   3: as 2, but a WAIT-0 stream runs only if its last logic walk ran handlers and yielded at the PC it started
-//      from (per-frame draw/poll loops: FFX's battle-entry shatter blinked without them).
-// Position integration is held in every mode (X2-MAG-025-POS); listed opcodes never run (X2-MAG-025-DENY, modes 2/3).
-// X2-MAG-025-LOOP1F (default 1, needs 0x1F in DENY): a held walk that reaches the 0x1F loop counter (Opu_Op1FLoopCounter
-// 0x6A7610: --[unit+0xB4+(op>>12)], or +0xB4 with op&0x200; non-zero -> PC + [PC+2], else PC + 4) jumps back without
-// counting while the count would stay non-zero, so a per-frame draw loop draws on render-only invocations too; the
-// last count still yields to the next logic walk. U 18/10/2026: dressphere change body blink (magic_0937, re/ledger/
-// XFADE-BLINK.md): denied, the stream yielded at 0x1F and mode 3 then skipped it every second frame; undenied, the
-// count ran 2x (Warrior sword blink). Once per loop per held walk: a 0x1F reached again by the same unit in the same
-// walk (body without a yield) stays denied, else the walk never ends (U 19/10/2026 Power Break hang, magic_0021).
-// Pass-1 (draw) walks only: on a held DLL pass-0 (update) walk the 0x1F yields (D 24/10/2026, CRASH-0946: magic_0946
-// passed late; its update stream's spawn loop `02 05 09 32 90 FF 1F` ran once per render-only frame uncounted, 78+ units
-// instead of the 48 a cast spawns unpassed, and its 64-slot particle table overflowed; X2-MAG-025-OPDIAG).
-// X2-MAG-025-EXEPASS0 (default 1): the EXE pass-0 walk (Fx_OpuUpdate 0x6A5CD0, walker call 0x6A5D08, reached only
-// through the effect dispatch 0x616660(0)) is held the same way (mode X2-MAG-025-MODE) on render-only invocations. It
-// runs there only when X2-MAG-008 passes the dispatch (cross-fade DLLs, X2-MAG-008-PASS-LIST): U 18/10/2026 with
-// PASS-LIST 885 937 906 the Warrior change stopped alternating dark / lit frames but played about 2x fast (0885 8.4 ->
-// 5.0 s, 0937 4.0 -> 2.6 s, 0906 6.4 -> 3.3 s; D fps60x2.log 18:17).
-// List profile (U 18/10/2026, Rikku -> Warrior fixed at 60 fps): while X2-MAG-008 passes a DLL named in
-// X2-MAG-008-PASS-LIST (or chained from one), DLL-called walks use X2-MAG-025-LISTMODE (default 2: mode 3 skipped a
-// draw loop on the first render-only walk after it started: one-frame dropout of the sword close-up's dark backdrop,
-// shard stutter) and DLL pass-0 walks are held too (the passed dispatch runs them on render-only invocations).
-// X2-MAG-025-PASS0MODE (default 1): mode for held pass-0 (update) walks, EXE and DLL. Modes 2/3 run the handlers of
-// WAIT-0 streams, i.e. update steps 2x: U 18/10/2026 the light balls around Rikku in the Warrior change faded out early
-// with the dispatch pass on, normal with it off. Mode 1 steps no stream on render-only update walks.
-// X2-MAG-025-DLLPASS0MODE (default 0 = the DLL mode, LISTMODE or DLLMODE): mode for DLL-called pass-0 walks;
-// PASS0MODE covers the EXE walk only. U 18/10: both at 1 brought the sword's dark / lit frames back; EXE 1 + DLL 0
-// keeps the light balls' duration and the sword.
-// X2-MAG-025-SLOWTEST=N (test, default 0): while the list profile is active, the walks picked by X2-MAG-025-SLOWSRC
-// (bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1; default 1) step on 1 logic invocation in N (mode-1 hold on the
-// others), so what they drive plays N times slower: tells which walk drives an effect (U 20/10: Rikku's light balls).
-// X2-MAG-025-ATTACHDENY (default 0, option; CRASH-0946, D 24/10/2026): opcode 0xDC sub-ops 0 and 6 (word >> 12; handler
-// FUN_006ba160 0xD4FD20[0xDC], S) attach a particle program to the unit: DLL callbacks [ctx+0x350]+0x40 / +0x44 (CALLs
-// 0x6BA270 / 0x6BA283), then unit+0xBB = 3. They are held (the stream yields, the next logic walk runs them) on held
-// walks in modes 2/3. X2-DIAG-PPPSLOT, magic_0946 passed late (list profile, mode 2): starts went from ~5/s on logic
-// walks to ~60/s on render-only held walks (spawn loops at WAIT 0), finishes stayed at the logic rate, and the DLL's
-// 64-slot table overflowed in 1.1 s (crash in Ppp_ParticleFree). Unpassed, no start ran on a held walk. The other 0xDC
-// sub-ops (scale, colour, ...) are not held. Not the crash cause (still crashed with it; LOOP1F below was): off by default,
-// the shipped fix was user-tested without it.
-// X2-MAG-025-DLL0DENY=hex,hex (default empty): opcodes also held (stream yields at them) on held DLL pass-0 walks only.
-// X2-MAG-025-OPDIAG counts EXE, DLL pass 1 and DLL pass 0 separately.
-// X2-MAG-025-FOLLOWGUARD: the attach follow handler reads [target+0xBC] unchecked (FFX Impulse crash); a NULL skips it.
-// FFX-2 changes (PORT-OPU.md §5): scratch EBX / unit EDI / PC ESI (FFX ESI / EBX / EDI); the integration gate is
-// cmp word [ebx+0x212],0 / jnz, so a held walk jumps to the gate's own target 0x6BC406 (AL from 0x6BC2EE kept); the
-// sweep-2 latch lives in a side map that the test does not clear, so a skipped stream needs no latch put-back.
-// Evidence: outer repo re/ledger/PORT-OPU.md (S); sigs tools/sigs_x2_opu.txt.
+// X2-MAG-025: battle effects run their scripts once per game tick, not once per drawn frame.
+//
+// Background. A battle effect is a set of "units", each running a small bytecode program (the game calls it OPU) in
+// up to 4 parallel "streams". The game's walker (FUN_006bbca0) steps every unit once: for each stream, if its WAIT
+// counter is above 0 it counts down, otherwise the stream runs opcode handlers until one yields; afterwards the unit's
+// position is integrated. A walk is "pass 0" (update) or "pass 1" (draw). It is called from the game (the effect
+// dispatch: pass 0 and pass 1, every invocation) and by 310 spell DLLs from their draw function.
+//
+// The problem. At 60 fps the walks also run on render-only invocations, so WAIT counters, script handlers (battle
+// signals, motion requests) and unit movement all ran at double speed.
+//
+// The fix. On render-only invocations a walk runs "held", in one of three modes:
+//   1  skip every stream step (the unit's follow call still runs)
+//   2  keep every WAIT counter; streams at WAIT 0 still run their handlers
+//   3  as 2, but a WAIT-0 stream runs only if it "repeats": its last logic walk ran handlers and yielded at the same
+//      opcode it started from. That is a per-frame draw or poll loop, which must run every frame or it blinks.
+// In every mode the position integration is skipped (X2-MAG-025-POS), and opcodes listed in X2-MAG-025-DENY never run
+// on a held walk (default 0x1F loop counter, 0x7F battle signal): the stream yields at them and the next logic walk
+// runs them.
+//
+// Which walk gets which mode ([rows] keys):
+//   game pass-1 walk                MODE (3)
+//   game pass-0 walk                PASS0MODE (1), with EXEPASS0 on (it only runs on render-only frames when
+//                                   X2-MAG-008 passes the effect dispatch)
+//   spell DLL walks                 DLLMODE (3); pass 0 only with PASS0, or under the list profile
+//   list profile                    while X2-MAG-008 passes a DLL from its PASS-LIST: LISTMODE (2) for DLL walks, and
+//                                   DLL pass-0 walks are held too (DLLPASS0MODE, 0 = same as the DLL mode)
+// LOOP1F (on): many draw loops are built on the 0x1F loop counter, which is in DENY. On a held pass-1 walk such a loop
+//   jumps back without counting, so it still draws; its last count yields as usual. Each loop jumps back at most once
+//   per held walk (a loop with no yield inside would never end) and never on pass-0 walks (a spawn loop would spawn
+//   extra particles: that overflowed magic_0946's particle table).
+// FOLLOWGUARD (on): the game's attach-follow handler reads [target+0xBC] without a check; when it is null the follow
+//   is skipped instead of crashing.
+// Test and diagnostic keys: ATTACHDENY, DLL0DENY (more held opcodes), OPDIAG (handler counts), OPTRACE, SLOWTEST /
+//   SLOWSRC (play the chosen walks N times slower, to find which walk drives an effect).
+//
+// The hooks sit inside the walker at fixed offsets from its stream-loop head, all checked byte by byte at install.
+// FFX-2 registers: scratch EBX, unit EDI, PC ESI. History, measurements and evidence: re/ledger/PORT-OPU.md (it also
+// keeps this file's earlier header), XFADE-BLINK.md, HANG-0021.md, CRASH-0946.md; sigs tools/sigs_x2_opu.txt.
 #include "../x2.h"
 #include <intrin.h>
 #include <stdio.h>
@@ -62,17 +47,19 @@ namespace x2 {
 
 typedef void(__cdecl* walker_fn)(uint32_t unit_ctx, uint32_t pass);
 
-// Walker sites (Ghidra VAs; all resolved from the stream-loop head signature and verified)
-static uint8_t* g_walker = nullptr;               // FUN_006bbca0
-static uint8_t* g_site_loop_head = nullptr;                // 0x6BC170 stream-loop head
-static uint8_t* g_site_stream_entry = nullptr;              // 0x6BC1D2 stream handler entry (after the latch tests)
-static uint8_t* g_site_handler_call = nullptr;               // 0x6BC239 push esi / push ebx / call eax (handler) / add esp,8
-static uint8_t* g_site_wait_dec = nullptr;                 // 0x6BC2C6 WAIT > 0 path: dec al / mov [ecx+edi+0x10],al
-static void*    g_site_next_stream = nullptr;                // 0x6BC2CC next stream
-static void*    g_site_after_streams = nullptr;                // 0x6BC2E1 after the 4-stream loop (sweep-2 test, then integration)
-static uint8_t* g_site_integration_gate = nullptr;                // 0x6BC2FC cmp word [ebx+0x212],0 (position integration gate)
-static void*    g_site_after_handler = nullptr;         // 0x6BC240 yield test
-static void*    g_site_after_integration = nullptr;           // 0x6BC406 after the integration (the gate's jnz target)
+// --- Places inside the game's walker that we hook ----------------------------------------------------------------------
+// All found from the stream-loop head signature and checked byte by byte in install(). Ghidra addresses in brackets.
+static uint8_t* g_walker = nullptr;                     // the walker itself (FUN_006bbca0)
+static uint8_t* g_site_loop_head = nullptr;             // top of the loop over the 4 streams (0x6BC170)
+static uint8_t* g_site_stream_entry = nullptr;          // a stream is about to run (0x6BC1D2)
+static uint8_t* g_site_handler_call = nullptr;          // the call of one opcode handler (0x6BC239)
+static uint8_t* g_site_wait_dec = nullptr;              // the WAIT countdown of a waiting stream (0x6BC2C6)
+static void*    g_site_next_stream = nullptr;           // on to the next stream (0x6BC2CC)
+static void*    g_site_after_streams = nullptr;         // after the stream loop (0x6BC2E1)
+static uint8_t* g_site_integration_gate = nullptr;      // the test before the position integration (0x6BC2FC)
+static void*    g_site_after_handler = nullptr;         // the yield test after a handler (0x6BC240)
+static void*    g_site_after_integration = nullptr;     // past the integration: where the gate jumps when paused (0x6BC406)
+// The original code at each hooked place (MinHook trampolines)
 static walker_fn   g_walker_orig = nullptr;
 static void*    g_loop_head_orig = nullptr;
 static void*    g_stream_entry_orig = nullptr;
@@ -80,52 +67,56 @@ static void*    g_handler_call_orig = nullptr;
 static void*    g_wait_dec_orig = nullptr;
 static void*    g_next_stream_orig = nullptr;
 static void*    g_integration_gate_orig = nullptr;
-static uint8_t* g_exe_pass1_ret = nullptr;             // return address of the EXE pass-1 walk call (0x6A5D85)
-static uint8_t* g_exe_pass0_ret = nullptr;            // return address of the EXE pass-0 walk call (0x6A5D0D)
+// Return addresses that tell the game's own walks apart from DLL ones
+static uint8_t* g_exe_pass1_ret = nullptr;              // after the game's pass-1 walk call (0x6A5D85)
+static uint8_t* g_exe_pass0_ret = nullptr;              // after the game's pass-0 walk call (0x6A5D0D)
 static bool     g_hooks_installed = false;
 extern Row row_MAG025;
 
-// FOLLOWGUARD: follow call 0x6BC446 (movzx eax,al / push esi / mov eax,[eax*4+0xD50120] / push ebx / call eax)
+// --- FOLLOWGUARD -------------------------------------------------------------------------------------------------------
+// After the streams, a unit may "follow" another one: the walker calls a handler from a table of 13 (0xD50120) at
+// 0x6BC446. The attach handler (FUN_006c2cd0) looks the target up and reads [target+0xBC] without a null check.
 typedef uint8_t*(__cdecl* find_unit_fn)(uint8_t* ctx, uint8_t* obj, uint16_t id);
-static uint8_t*    g_site_follow_call = nullptr;            // 0x6BC446
-static void*       g_site_after_follow = nullptr;      // 0x6BC457 inc word [ebx+0x218]
+static uint8_t*    g_site_follow_call = nullptr;        // the follow call (0x6BC446)
+static void*       g_site_after_follow = nullptr;       // just after it (0x6BC457)
 static void*       g_follow_call_orig = nullptr;
-static uint8_t**   g_follow_table = nullptr;           // 0xD50120 follow handler table (13 entries)
-static uint8_t*    g_follow_attach = nullptr;          // FUN_006c2cd0
-static find_unit_fn g_find_unit = nullptr;        // FUN_006ac1f0
-static int         g_opt_followguard = 1;            // X2-MAG-025-FOLLOWGUARD
-static volatile uint8_t g_follow_skip = 0;
+static uint8_t**   g_follow_table = nullptr;            // the follow handler table (0xD50120)
+static uint8_t*    g_follow_attach = nullptr;           // the attach handler (FUN_006c2cd0)
+static find_unit_fn g_find_unit = nullptr;              // the game's unit lookup (FUN_006ac1f0)
+static int         g_opt_followguard = 1;               // X2-MAG-025-FOLLOWGUARD
+static volatile uint8_t g_follow_skip = 0;              // skip the follow call now running
 static volatile LONG g_follow_skipped = 0;
 
-// [rows]
-static int g_opt_mode_exe = 3;                       // X2-MAG-025-MODE: EXE pass-1 walk (0 = untouched)
-static int g_opt_mode_dll = 3;                       // X2-MAG-025-DLLMODE: DLL-called walks (0 = untouched)
-static int g_opt_mode_list = 2;                      // X2-MAG-025-LISTMODE: DLL-called walks under the list profile
-static int g_opt_mode_exe_pass0 = 1;                     // X2-MAG-025-PASS0MODE: held EXE pass-0 walk (0 = as MODE)
-static int g_opt_mode_dll_pass0 = 0;                  // X2-MAG-025-DLLPASS0MODE: held DLL pass-0 walks (0 = as the DLL mode)
-static int g_opt_hold_dll_pass0 = 0;                          // X2-MAG-025-PASS0: hold DLL pass-0 walks too
-static uint8_t g_opt_hold_position = 1;                   // X2-MAG-025-POS
-static bool g_held_opcode[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
-static int  g_opt_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
-static int  g_opt_loop1f = 1;                        // X2-MAG-025-LOOP1F
-static int  g_opt_attach_deny = 0;                   // X2-MAG-025-ATTACHDENY
+// --- ini switches ([rows] X2-MAG-025-*) --------------------------------------------------------------------------------
+static int g_opt_mode_exe = 3;                          // MODE: the game's pass-1 walk (0 = never held)
+static int g_opt_mode_dll = 3;                          // DLLMODE: walks called by spell DLLs (0 = never held)
+static int g_opt_mode_list = 2;                         // LISTMODE: DLL walks under the list profile
+static int g_opt_mode_exe_pass0 = 1;                    // PASS0MODE: the game's pass-0 walk (0 = as MODE)
+static int g_opt_mode_dll_pass0 = 0;                    // DLLPASS0MODE: DLL pass-0 walks (0 = as the DLL mode)
+static int g_opt_hold_dll_pass0 = 0;                    // PASS0: hold DLL pass-0 walks outside the list profile too
+static uint8_t g_opt_hold_position = 1;                 // POS: skip the position integration on held walks
+static bool g_held_opcode[512];                         // DENY=hex,hex: never run on held walks (opcode word & 0x1FF)
+static int  g_opt_opdiag = 0;                           // OPDIAG: log held-walk handler counts every 30 invocations
+static int  g_opt_loop1f = 1;                           // LOOP1F
+static int  g_opt_attach_deny = 0;                      // ATTACHDENY
 static volatile LONG g_attach_held = 0;
-static volatile LONG g_optrace_left = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
+static volatile LONG g_optrace_left = 0;                // OPTRACE=n: log the first n held-walk handlers after a 0x1F
 static bool g_trace_on = false;
-static int  g_opt_slowtest = 0;                          // X2-MAG-025-SLOWTEST=N: list profile only, chosen walks step 1 logic frame in N
-static int  g_opt_slowtest_src = 1;                      // X2-MAG-025-SLOWSRC: bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1
+static int  g_opt_slowtest = 0;                         // SLOWTEST=N: under the list profile, chosen walks step 1 tick in N
+static int  g_opt_slowtest_src = 1;                     // SLOWSRC: bit 0 game pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1
 static uint32_t g_slowtest_walks[3];
 
-static volatile uint8_t g_held_mode = 0;              // mode of the held walk running now (0 = none)
-static uint8_t g_walk_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
-static volatile LONG g_held_walks[2] = {0, 0};         // held walks: EXE, DLL
-static volatile LONG g_wait0_ran = 0, g_wait0_held = 0;   // mode 3: WAIT-0 streams on held walks
-static volatile LONG g_op_ran[3][512], g_op_held[3][512];   // EXE, DLL pass 1, DLL pass 0
-static uint8_t g_walk_kind = 0;                       // opdiag / DLL0DENY source: 0 EXE, 1 DLL pass 1, 2 DLL pass 0
-static bool g_held_opcode_dll0[512];                    // X2-MAG-025-DLL0DENY=hex,hex: also held on DLL pass-0 walks
+// --- State of the walk running now -------------------------------------------------------------------------------------
+static volatile uint8_t g_held_mode = 0;                // mode of the held walk running now (0 = a normal walk)
+static uint8_t g_walk_src = 0;                          // 0 = the game's walk, 1 = a DLL's (for the log)
+static volatile LONG g_held_walks[2] = {0, 0};          // held walks so far: game, DLL
+static volatile LONG g_wait0_ran = 0, g_wait0_held = 0;   // mode 3: WAIT-0 streams that ran / were skipped
+static volatile LONG g_op_ran[3][512], g_op_held[3][512];   // OPDIAG counts per walk kind
+static uint8_t g_walk_kind = 0;                         // 0 game walk, 1 DLL pass 1, 2 DLL pass 0
+static bool g_held_opcode_dll0[512];                    // DLL0DENY=hex,hex: also never run on DLL pass-0 walks
 
-// Mode 3: per stream, did its last logic walk run handlers (WAIT 0 at entry) and yield at the PC it started from?
-// Keyed by unit record; 4 stream bits each.
+// Mode 3 needs to know, per unit and stream, whether its last logic walk "repeated" (ran handlers from WAIT 0 and
+// yielded at the opcode it started from). A small hash table keyed by the unit record, one bit per stream.
 struct RepeatEntry { uint8_t* rec; uint8_t mask; };
 static RepeatEntry g_repeat_table[4096];
 static RepeatEntry* repeat_entry(uint8_t* rec, bool add) {
@@ -141,20 +132,26 @@ static RepeatEntry* repeat_entry(uint8_t* rec, bool add) {
     }
     return nullptr;
 }
+// The stream a logic walk is running now: unit, stream number, PC and WAIT when it started
 static struct { uint8_t* rec; int s; uint32_t pc; uint8_t wait; bool valid; } g_stream_start;
-static volatile uint8_t g_skip_stream = 0;
-static volatile uint8_t g_hold_this_op = 0;
-static volatile uint8_t g_loop_jump_now = 0;
+static volatile uint8_t g_skip_stream = 0;              // the hook at stream entry skips this stream
+static volatile uint8_t g_hold_this_op = 0;             // the handler about to run must not (the stream yields)
+static volatile uint8_t g_loop_jump_now = 0;            // LOOP1F: jump to g_loop_target instead of the handler
 static uint32_t g_loop_target = 0;
 static volatile LONG g_loop_runs = 0;
-// LOOP1F guard: the uncounted jump-backs of the held walk running now. A loop whose body does not yield reaches the
-// same 0x1F again in the same walk; jumping back uncounted would never end (U 19/10/2026: Power Break hang, magic_0021
-// inner loop 0x99 / 0x1F counter 0 at file VA 0x1000553E, no WAIT in the body).
+// LOOP1F guard: the uncounted jump-back of the held walk running now. A loop whose body never yields reaches the same
+// 0x1F again in the same walk; jumping back uncounted would never end (this hung Power Break, HANG-0021.md).
 static uint8_t* g_loop1f_unit = nullptr;
 static uint8_t* g_loop1f_at = nullptr;
 static int      g_loop1f_jumps = 0;
 static volatile LONG g_loop_repeats = 0;
 
+// --- What the hooks do ---------------------------------------------------------------------------------------------------
+// scr = the walker's scratch block (+0x216 stream number, +0x21A current opcode word, +0x220 unit, +0x210 yield flag),
+// rec = the unit's stream record (PC of stream s at +4*s, its WAIT counter at +0x10+s).
+
+// A stream is about to run. Logic walk: remember where it starts (for the repeat test). Held walk in mode 3: a WAIT-0
+// stream that did not repeat on its last logic walk is skipped.
 static void __cdecl on_stream_entry(uint8_t* scr, uint8_t* rec) {
     int st = *(int16_t*)(scr + 0x216) & 3;
     uint8_t wait = rec[0x10 + st];
@@ -168,9 +165,10 @@ static void __cdecl on_stream_entry(uint8_t* scr, uint8_t* rec) {
     RepeatEntry* r = repeat_entry(rec, false);
     if (r && (r->mask >> st & 1)) { InterlockedIncrement(&g_wait0_ran); return; }
     InterlockedIncrement(&g_wait0_held);
-    g_skip_stream = 1;                           // sweep-2 latch: side map, the test left it set (no put-back)
+    g_skip_stream = 1;                           // the walker's "already ran" mark lives elsewhere: nothing to undo
 }
 
+// A stream has finished (logic walks): record whether it repeated, for mode 3.
 static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
     if (!g_stream_start.valid) return;
     g_stream_start.valid = false;
@@ -183,6 +181,8 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
     else r->mask &= (uint8_t)~(1 << st);
 }
 
+// An opcode handler is about to run on a held walk (modes 2/3): decide whether it may (DENY, DLL0DENY, ATTACHDENY),
+// and for a 0x1F loop counter whether LOOP1F jumps back without counting.
 static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
     uint16_t word = *(uint16_t*)(scr + 0x21A);
     int op = word & 0x1FF;
@@ -204,6 +204,8 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
     }
     g_loop_jump_now = 0;
     if (op == 0x1F && g_hold_this_op && g_opt_loop1f && g_walk_kind != 2) {   // not on DLL pass-0 (update) walks: CRASH-0946
+        // 0x1F decrements the unit's loop counter (+0xB4, or +0xB4 + word>>12) and jumps back by [PC+2] while it is
+        // not zero. Jump back without counting, unless this is the last count or the loop came round again in this walk.
         uint8_t* unit = *(uint8_t**)(scr + 0x220);
         uint8_t* ctr = unit ? unit + 0xB4 + ((word & 0x200) ? 0 : (uint8_t)(word >> 12)) : nullptr;
         if (ctr && (uint8_t)(*ctr - 1) != 0) {
@@ -227,6 +229,9 @@ static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
     if (g_opt_opdiag) InterlockedIncrement(g_hold_this_op ? &g_op_held[g_walk_kind][op] : &g_op_ran[g_walk_kind][op]);
 }
 
+// The hooks themselves are naked: they sit in the middle of the walker, save the registers around our C function,
+// then continue in the original code (..._orig) or jump past it.
+
 // Mode 1: skip the whole stream loop.
 __declspec(naked) static void hook_loop_head() {
     __asm {
@@ -238,7 +243,7 @@ __declspec(naked) static void hook_loop_head() {
     }
 }
 
-// Modes 2/3: a counting stream keeps its count.
+// Modes 2/3: a waiting stream keeps its WAIT count (no countdown on render-only frames).
 __declspec(naked) static void hook_wait_dec() {
     __asm {
         cmp byte ptr [g_held_mode], 2
@@ -249,6 +254,7 @@ __declspec(naked) static void hook_wait_dec() {
     }
 }
 
+// Every walk: on_stream_entry, then run the stream or skip to the next one.
 __declspec(naked) static void hook_stream_entry() {
     __asm {
         pushad
@@ -265,6 +271,7 @@ __declspec(naked) static void hook_stream_entry() {
     }
 }
 
+// Every walk: on_stream_next, then on to the next stream as usual.
 __declspec(naked) static void hook_next_stream() {
     __asm {
         pushad
@@ -277,8 +284,8 @@ __declspec(naked) static void hook_next_stream() {
     }
 }
 
-// Modes 2/3: count the handler; a denied one does not run and the stream yields at it (PC kept, WAIT 0), so the
-// next logic walk runs it.
+// Modes 2/3: on_handler, then one of three ways on. Held opcode: it does not run and the stream yields at it (PC kept,
+// WAIT 0), so the next logic walk runs it. LOOP1F jump: continue at the loop start, counter untouched. Else: run it.
 __declspec(naked) static void hook_handler_call() {
     __asm {
         cmp byte ptr [g_held_mode], 2
@@ -304,8 +311,8 @@ __declspec(naked) static void hook_handler_call() {
     }
 }
 
-// Held walk: take the gate's "paused" branch (as when the walker's own +0x212 is set) without writing +0x212: spawn
-// handlers read it too and would drop their spawn while the PC advances. AL (unit+0xB2) is left as loaded.
+// POS: on a held walk, skip the position integration by jumping where the gate jumps when the walker is paused. We
+// do not set the walker's pause flag (+0x212) itself: spawn handlers read it too and would drop their spawn.
 __declspec(naked) static void hook_integration_gate() {
     __asm {
         cmp byte ptr [g_held_mode], 0
@@ -318,6 +325,7 @@ __declspec(naked) static void hook_integration_gate() {
     }
 }
 
+// FOLLOWGUARD: before an attach follow, look the target up the way the handler will; if its +0xBC is null, skip it.
 static void __cdecl on_follow(uint32_t type, uint8_t* scr) {
     g_follow_skip = 0;
     if (type >= 13 || g_follow_table[type] != g_follow_attach) return;
@@ -352,6 +360,9 @@ __declspec(naked) static void hook_follow_call() {
     }
 }
 
+// --- The walk itself -------------------------------------------------------------------------------------------------------
+// Runs the game's walker with the hooks in "held" mode. Walks can nest (a handler can start another walk), so the
+// state of the outer walk is saved and put back.
 static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
     InterlockedIncrement(&g_held_walks[src]);
     uint8_t saved = g_held_mode, saved_src = g_walk_src, saved_dsrc = g_walk_kind;
@@ -379,6 +390,8 @@ static void walker_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret);
 static volatile int g_walk_pass = 0;
 int mag025_walk_info() { return g_held_mode | (g_walk_pass << 8); }
 
+// Replaces the walker's entry. Who called it (the return address: inside FFX-2.exe or not, and which call) decides
+// whether this walk is held and in which mode; see the table in the header.
 static void __cdecl hook_walker(uint32_t unit_ctx, uint32_t pass) {
     int saved = g_walk_pass;
     g_walk_pass = (uint8_t)pass + 1;
@@ -388,6 +401,7 @@ static void __cdecl hook_walker(uint32_t unit_ctx, uint32_t pass) {
 
 static void walker_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
     if (g_opt_slowtest > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
+        // SLOWTEST, logic frames: k = 0 game pass 0, 1 DLL pass 0, 2 DLL pass 1; chosen walks step 1 tick in N
         int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe_pass0_ret && ret == g_exe_pass0_ret) ? 0 : -1;
         if (k >= 0 && (g_slowtest_walks[k]++ % (uint32_t)g_opt_slowtest) != 0 && (g_opt_slowtest_src >> k & 1)) {
             held_walk(1, k ? 1 : 0, unit_ctx, pass);
@@ -396,7 +410,7 @@ static void walker_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
     }
     if (row_MAG025.on && !g_disabled && render_only()) {
         uint8_t p = (uint8_t)pass;
-        if (!in_image(ret)) {
+        if (!in_image(ret)) {                                   // called by a spell DLL
             bool prof = g_opt_mode_list && mag008_list_active();
             int m = prof ? g_opt_mode_list : g_opt_mode_dll;
             if (m && p == 0 && g_opt_mode_dll_pass0) m = g_opt_mode_dll_pass0;
@@ -417,6 +431,7 @@ static const char* mode_name(int m) {
                                                                              : "hold WAIT, run repeating WAIT-0 streams";
 }
 
+// --- Install: find and check every site; the hooks go in at the first pre() ------------------------------------------------
 static bool install() {
     g_walker = sig_find("X2-MAG-025 walker FUN_006bbca0",
         "55 8B EC 81 EC 18 08 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC 53 56 0F B7 75 08 57 89 B5 F4 F7 FF FF 83 FE 01 75 06 "
@@ -557,6 +572,8 @@ static bool install() {
     return true;
 }
 
+// --- Every invocation ------------------------------------------------------------------------------------------------------
+// First pre(), on the game thread: install the seven hooks (all or none) and the follow guard.
 static void pre() {
     if (g_hooks_installed) return;
     g_hooks_installed = true;
@@ -582,6 +599,7 @@ static void pre() {
         log_line("X2-MAG-025-FOLLOWGUARD: follow call hooked");
 }
 
+// OPDIAG: one line of opcode:count (and opcode:held count) for one walk kind, counters reset.
 static void log_ops(int src) {
     char line[1024]; int k = 0; line[0] = 0;
     for (int op = 0; op < 512; op++) {
@@ -592,6 +610,7 @@ static void log_ops(int src) {
     if (line[0]) log_line("X2-MAG-025 opdiag %s: held-walk handlers (op:count):%s", src == 0 ? "EXE" : src == 1 ? "DLL pass1" : "DLL pass0", line);
 }
 
+// After every invocation: diagnostics and the periodic counters line (every 1800 invocations, ~30 s).
 static void post() {
     static uint32_t tick = 0;
     if (g_opt_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); log_ops(2); }
