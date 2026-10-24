@@ -1,13 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-006 (port of FFX MAG-006 v3+v4): particle programs (Ppp_ProgramStep FUN_007fed00) step on every draw, so
-// at 60 fps they run 2x. On render-only invocations DLL callers (service table +0xB00) step with the engine's pause
-// flag 0x01CF579C set: the particles draw but their clock, age and ops don't advance. EXE callers keep stock
-// behaviour (pausing them crashed in FFX), except call sites other rows list (mag006_pause_exe_caller). A program that never advanced (+8 == 0 && +0xC == 0) steps unpaused
-// (FFX v4 FRESH: a paused first step draws unset state).
-// FFX-2 only: the step's first call FUN_006ba090 (E8 at entry+8) can clear the pause flag for the loaded magic
-// overlay (DAT_00e20b24 && DAT_00e10398); it is skipped while this row pauses a step.
-// Open (H, PORT-B §2): FFX-2's start-delay clock prog+0x78 (FUN_00804870) runs 2x for FRESH programs.
-// Evidence: outer repo re/ledger/PORT-B.md §2 (S).
+// X2-MAG-006: particle effects advance once per game tick, not once per drawn frame.
+//
+// Background. Sparks, glows, smoke and the like are "particle programs". Each one is stepped by Ppp_ProgramStep
+// (FUN_007fed00, cdecl(program, flags)) every time it is drawn: the step spawns, ages and moves the particles and draws
+// them. At 60 fps that is twice per tick, so effects would run at double speed. The engine has a global particle
+// pause flag (gva 0x01CF579C): while it is set, a step draws the particles but does not advance their clock, age or ops.
+//
+// The fix. On render-only invocations, steps called by spell DLLs run with the pause flag set: the particles are drawn
+// again in place. Steps called from FFX-2.exe itself keep the game's own pause state (pausing them crashed in FFX),
+// except call sites another row registers with mag006_pause_exe_caller (X2-MAG-026).
+//   FRESH (on): a program that has never advanced steps unpaused, or its first draw shows unset state.
+//   FFX-2's step first calls FUN_006ba090, which can clear the pause flag while a spell is loaded; we skip that call
+//   inside our paused steps.
+//
+// Particle restarts and frees (separate rows, sharing this hook):
+//   X2-FX-010-LOOPDEFER (on): at the end of an unpaused step, a looping particle that reached its end is restarted
+//     in its birth state. The stock game never draws that state (the next tick's ops run on it first), but our
+//     paused render-only step did: a blink. The restart is queued and applied at the start of the program's next
+//     unpaused step, before its ops. Covers the field particle step (FUN_007fef20) too.
+//   X2-FX-011-FREEDEFER (off, did not fix the glow it was written for): a particle that lives one tick is freed at
+//     the end of the step that drew it, so the render-only step had nothing to draw; its free is delayed the same way.
+// Test and diagnostic switches: F11 (render-only DLL steps unpaused: effects run 2x; tells whether a blink comes from
+// the paused path), UNPAUSE-LIST (per spell DLL), UNPAUSE-AB (one DLL unpaused in alternate seconds), FRESH2 (off),
+// X2-DIAG-PPPOPS hooks (mag006_cur_step / mag006_set_step_note).
+// History, measurements and evidence: re/ledger/PORT-B.md §2 (it also keeps this file's earlier comments), LENS-GLOW.md.
 #include "../x2.h"
 #include <intrin.h>
 #include <stdlib.h>
@@ -18,21 +34,22 @@ namespace x2 {
 typedef int(__cdecl* program_step_fn)(void* prog, uint32_t flags);   // bool cdecl(prog, flags), plain RET
 typedef void(__cdecl* pause_override_fn)(void* prog);
 
-static uint8_t*   g_program_step = nullptr;
-static program_step_fn g_program_step_orig = nullptr;
-static pause_override_fn g_pause_override = nullptr;
-static volatile int32_t* g_pause_flag = nullptr;
+static uint8_t*   g_program_step = nullptr;           // Ppp_ProgramStep in FFX-2.exe
+static program_step_fn g_program_step_orig = nullptr;  // its original code (MinHook trampoline)
+static pause_override_fn g_pause_override = nullptr;  // FUN_006ba090, the step's first call (may clear the pause flag)
+static volatile int32_t* g_pause_flag = nullptr;      // the engine's particle pause flag
 static bool       g_patches_done = false;
-static int        g_opt_fresh = 1;                // [rows] X2-MAG-006-FRESH
-static int        g_opt_fresh2 = 1;                  // [rows] X2-MAG-006-FRESH2
+static int        g_opt_fresh = 1;                    // [rows] X2-MAG-006-FRESH
+static int        g_opt_fresh2 = 1;                   // [rows] X2-MAG-006-FRESH2 (install reads it, default 0)
 static volatile LONG g_fresh2_calls = 0;
-static int        g_in_paused_step = 0;                 // game thread: this row is inside a paused step
+static int        g_in_paused_step = 0;               // game thread: inside one of our paused steps
 static volatile LONG g_paused_calls = 0, g_exe_calls = 0, g_fresh_calls = 0, g_override_skipped = 0;
 extern Row row_MAG006;
+// The step running now (for diagnostics): its program and who called it
 static void*  g_step_prog = nullptr;
 static int    g_step_caller = 0;                     // 0 none, 1 DLL caller, 2 EXE caller, 3 field step FUN_007fef20
 
-// EXE call sites paused like DLL callers (return addresses; X2-MAG-026 adds the family-X record step).
+// Game call sites that are paused like DLL callers (their return addresses; X2-MAG-026 registers one).
 static uint8_t* g_paused_exe_callers[4];
 static int      g_paused_exe_caller_count = 0;
 static volatile LONG g_exe_paused_calls = 0;
@@ -47,30 +64,28 @@ static bool is_paused_exe_caller(const void* ret) {
     return false;
 }
 
+// Replaces the step's call of FUN_006ba090: skipped inside our paused steps, so it cannot clear our pause.
 static void __cdecl hook_pause_override(void* prog) {
     if (g_in_paused_step) { InterlockedIncrement(&g_override_skipped); return; }
     g_pause_override(prog);
 }
 
-// Test switch (F11, default off): DLL-caller steps on render-only invocations run with the pause flag CLEAR, overriding
-// the pause a DLL sets itself (magic_0718's draw entry writes +0xBF0 = (exec==0)). Effects then step 2x; a blink that
-// stops tells that it lives on the paused path (U 16/10/2026: mission-start hex grid).
+// F11 test switch (off): render-only DLL steps run with the pause flag CLEAR, even where a spell DLL sets it itself.
+// Effects then run 2x; if a blink stops, it comes from the paused path.
 static volatile LONG g_f11_unpause_test = 0, g_unpaused_calls = 0;
 
-// X2-FX-010-LOOPDEFER (port of FFX FX-010-LOOPDEFER, default 1; U 16/10/2026: mission-start hex grid blinks, stops with
-// the F11 unpause test). At the end of an unpaused step the group loop FUN_00805b80 (and its twin FUN_00806130) restarts
-// looping particles that reached their end: age = loop start, FUN_007fff80 resets every op of the particle to its first
-// key and runs the ops' init callbacks (birth state). Stock draws nothing until the next tick's ops have run on it; the
-// paused render-only step in between drew the restarted particles in their raw birth state. Fix: under 60 Hz pacing every
-// restart is queued and applied at the start of that program's next unpaused step, before its ops (stock order); see
-// run_step. Dropped if the program ends or the particle left its list. Covers EXE-called programs too (they run
-// paused whenever a DLL left the pause flag set). Sites 0x8060A3 / 0x8063EF (CALL FUN_007fff80, cdecl(particle), plain
-// RET 0x7FFFD9, caller ADD ESP,4).
+// --- X2-FX-010-LOOPDEFER: restart looping particles at the stock moment ------------------------------------------------
+// At the end of an unpaused step the particle group loops (FUN_00805b80 and its twin FUN_00806130) restart a looping
+// particle that reached its end: FUN_007fff80 puts it back to its birth state. The stock game never draws that state
+// (the next tick's ops change it first); our paused render-only step in between drew it. So under 60 Hz pacing each
+// restart is queued and applied at the start of the program's next unpaused step, before its ops (the stock order;
+// see run_step). Dropped if the program ends or the particle has left its list. Also covers game-called programs:
+// they run paused too whenever a spell DLL has left the pause flag set. CALL sites 0x8060A3 / 0x8063EF.
 typedef void(__cdecl* restart_fn)(void*);
-static restart_fn g_particle_restart = nullptr;
+static restart_fn g_particle_restart = nullptr;     // FUN_007fff80
 static uint8_t*  g_restart_callsite[2] = {};
 static int       g_opt_loopdefer = 0;
-static void*     g_tracked_prog = nullptr;         // DLL-called program in a logic step now (game thread)
+static void*     g_tracked_prog = nullptr;         // program whose step is collecting restarts now (game thread)
 struct DeferredRestart { void* prog; void* part; };
 enum { MAX_DEFERRED_RESTARTS = 2048 };
 static DeferredRestart  g_deferred_restarts[MAX_DEFERRED_RESTARTS];
@@ -97,6 +112,7 @@ static bool part_in_prog(uint8_t* prog, void* part) {
     return false;
 }
 
+// Applies (or with drop, discards) the queued restarts of one program; the others stay queued.
 static void apply_deferred_restarts(void* prog, bool drop) {
     int w = 0;
     for (int i = 0; i < g_deferred_restart_count; i++) {
@@ -108,19 +124,13 @@ static void apply_deferred_restarts(void* prog, bool drop) {
     g_deferred_restart_count = w;
 }
 
-// One step with LOOPDEFER: restarts made by this step are queued; queued restarts are applied at the start of the
-// program's next UNPAUSED step (its ops then run on them, the stock order). A paused step keeps them queued: EXE-called
-// programs (field particles, e.g. the pyrefly river) also run paused on render-only frames whenever a magic DLL left the
-// pause flag set (magic_0718's draw entry writes it per draw; U 16/10/2026: river blinks ~1/s on the mission screen).
-// X2-FX-011-FREEDEFER (default 0: did not help the glow, U 17/10; U 17/10/2026: Full Throttle light-ball glow blinks, F11 fixes it; re/ledger/LENS-GLOW.md).
-// The end-of-step tail of the group loops (unpaused steps only, gate 0x80605D) frees a particle whose age +0xC reached
-// its life (0x806118 / twin 0x806556: `push 0; push esi; mov [edx],edi; call FUN_00804b80`). Particles that live one
-// tick are emitted, drawn and freed inside one unpaused step, so the paused render-only step that follows has nothing
-// to draw (pppKeShpTail3X / pppKeLns* 0 paused calls). Under 60 Hz pacing the free is deferred: the particle stays on the
-// program's list with age -= 0x1000 (the age it was drawn at), the paused step draws it unchanged (paused steps spawn,
-// age and free nothing), and it is unlinked and freed at the start of the program's next unpaused step, before that
-// step's spawn and ops (the stock order). If that empties a one-shot program (+0x1D), the step is not run and reports the
-// end (frees_end_program). (First build skipped one-shot last particles: the glow is one; U 17/10 13:19 still blinked.)
+// --- X2-FX-011-FREEDEFER (off by default): free one-tick particles at the stock moment -----------------------------
+// The group loops free a particle whose age (+0xC) reached its life at the end of an unpaused step (sites 0x806118 /
+// 0x806556: `push 0; push esi; mov [edx],edi; call FUN_00804b80`). A particle that lives one tick is born, drawn and
+// freed inside one step, so the paused render-only step after it has nothing to draw. With this on, the free is
+// delayed: the particle stays on the list with its age moved back one tick (the age it was drawn at), the paused step
+// draws it again, and it is unlinked and freed at the start of the program's next unpaused step, before that step's
+// spawns and ops. If that empties a one-shot program (+0x1D), the step reports the program's end instead of running.
 typedef void(__cdecl* particle_free_fn)(void* part, int flag);
 static particle_free_fn   g_particle_free = nullptr;               // FUN_00804b80
 static int       g_opt_freedefer = 0;
@@ -134,6 +144,7 @@ static int       g_deferred_free_count = 0;
 static volatile LONG g_frees_deferred = 0, g_frees_done = 0, g_frees_dropped = 0;
 static volatile LONG g_free_defer_result = 0;
 
+// Called from the free hook: 1 = queue this free (the hook keeps the particle), 0 = free it now as the game would.
 static int __cdecl free_defer(uint8_t* part, uint8_t* prog) {
     if (!g_opt_freedefer || !row_MAG006.on || g_disabled || pacing_kind() == INV_STOCK || g_deferred_free_count >= MAX_DEFERRED_FREES) return 0;
     if (g_tracked_prog != prog) return 0;          // only inside a tracked step (it flushes the queue at the next one)
@@ -142,6 +153,7 @@ static int __cdecl free_defer(uint8_t* part, uint8_t* prog) {
     return 1;
 }
 
+// Unlinks and frees (or with drop, forgets) the queued frees of one program; returns how many were freed.
 static int apply_deferred_frees(void* prog, bool drop) {
     int w = 0, freed = 0;
     for (int i = 0; i < g_deferred_free_count; i++) {
@@ -169,9 +181,9 @@ static int apply_deferred_frees(void* prog, bool drop) {
     return freed;
 }
 
-// A one-shot program (+0x1D) ends when its list is empty after a step (Ppp_ProgramStep tail `return prog+0x30 == 0`).
-// When the deferred free of its last particle empties the list, the step that would have reported the end has already
-// returned "running"; report the end now, without running another step (no spawn in a step stock never ran).
+// A one-shot program (+0x1D) ends when its particle list is empty after a step. If a delayed free empties the list,
+// the step that should have reported the end already returned "running": report it now, without running another step
+// (which would spawn particles in a step the stock game never ran).
 static volatile LONG g_oneshot_ends = 0;
 static bool frees_end_program(void* prog) {
     if (!apply_deferred_frees(prog, false)) return false;
@@ -182,10 +194,39 @@ static bool frees_end_program(void* prog) {
     return false;
 }
 
-#define DEFINE_FREE_HOOK(N)                                                                          __declspec(naked) static void hook_free##N() {                                                       __asm { pushad }                                                                              __asm { push dword ptr [ebp + 8] }                                                            __asm { push esi }                                                                            __asm { call free_defer }                                                                     __asm { add esp, 8 }                                                                          __asm { mov g_free_defer_result, eax }                                                                   __asm { popad }                                                                               __asm { cmp g_free_defer_result, 0 }                                                                     __asm { je replay }                                                                           __asm { sub dword ptr [esi + 0xC], 0x1000 }                                                   __asm { jmp dword ptr [g_free_keep_target + N * 4] }                                                 __asm { replay: }                                                                             __asm { mov dword ptr [edx], edi }                                                            __asm { push 0 }                                                                              __asm { push esi }                                                                            __asm { call dword ptr [g_particle_free] }                                                            __asm { mov edx, dword ptr [ebp - 0x20] }                                                     __asm { add esp, 8 }                                                                          __asm { jmp dword ptr [g_free_after_target + N * 4] }                                            }
+// The free hook, one copy per site (N = 0 / 1). It replaces `push 0; push esi; mov [edx],edi; call free` (ESI =
+// particle, [EBP+8] = program). Queued: age back one tick, continue where the game goes when the particle lives on.
+// Not queued: do exactly what the replaced instructions did, then continue after them.
+#define DEFINE_FREE_HOOK(N)                                                     \
+__declspec(naked) static void hook_free##N() {                                  \
+    __asm { pushad }                                                            \
+    __asm { push dword ptr [ebp + 8] }                                          \
+    __asm { push esi }                                                          \
+    __asm { call free_defer }                                                   \
+    __asm { add esp, 8 }                                                        \
+    __asm { mov g_free_defer_result, eax }                                      \
+    __asm { popad }                                                             \
+    __asm { cmp g_free_defer_result, 0 }                                        \
+    __asm { je replay }                                                         \
+    __asm { sub dword ptr [esi + 0xC], 0x1000 }                                 \
+    __asm { jmp dword ptr [g_free_keep_target + N * 4] }                        \
+    __asm { replay: }                                                           \
+    __asm { mov dword ptr [edx], edi }                                          \
+    __asm { push 0 }                                                            \
+    __asm { push esi }                                                          \
+    __asm { call dword ptr [g_particle_free] }                                  \
+    __asm { mov edx, dword ptr [ebp - 0x20] }                                   \
+    __asm { add esp, 8 }                                                        \
+    __asm { jmp dword ptr [g_free_after_target + N * 4] }                       \
+}
 DEFINE_FREE_HOOK(0)
 DEFINE_FREE_HOOK(1)
 
+// --- One step, with LOOPDEFER / FREEDEFER around it ---------------------------------------------------------------------
+// will_pause: the pause flag will be set during this step. Queued frees and restarts of this program are applied only
+// before an unpaused step; restarts made by this step are queued (g_tracked_prog). Without 60 Hz pacing (a menu holds
+// stock pacing) everything queued is applied first and the step runs as stock. Returns the step's result (nonzero =
+// the program ended; queued work for it is then dropped).
 static int run_step(void* prog, uint32_t flags, bool will_pause, program_step_fn step = nullptr) {
     if (!step) step = g_program_step_orig;
     if (g_deferred_free_count && (!will_pause || pacing_kind() == INV_STOCK)) {               // deferred frees first
@@ -210,10 +251,8 @@ static int run_step(void* prog, uint32_t flags, bool will_pause, program_step_fn
     return r;
 }
 
-// Field particle programs (pyrefly river, map effects) step through FUN_007fef20 (FFX FUN_007122f0: field loop
-// FUN_00810190 / FUN_00810F90 -> FUN_007fef20(prog, 0x30) -> group loop FUN_00806130, restart site 0x8063EF), not
-// Ppp_ProgramStep, on every invocation, with the pause flag as left by others (magic_0718 sets it per draw). Same
-// deferral (U 16/10/2026: river still blinked with only Ppp_ProgramStep covered; D: "EXE callers passed 0").
+// Field particle programs (the pyrefly river, map effects) are stepped by the field loop through FUN_007fef20, not
+// Ppp_ProgramStep, on every invocation, with the pause flag as others left it. They get the same LOOPDEFER treatment.
 static uint8_t*   g_field_step = nullptr;
 static program_step_fn g_field_step_orig = nullptr;
 static int __cdecl hook_field_step(void* prog, uint32_t flags) {
@@ -225,14 +264,12 @@ static int __cdecl hook_field_step(void* prog, uint32_t flags) {
     return r;
 }
 
-// Diagnostic (logged with FREEDEFER's line): steps from FUN_006a5f80 (return 0x6A5FD7, effect type 0xD4FA98 slot +8,
-// Full Throttle's light-ball program) per invocation kind and pause value (U 17/10: glow ops never reached paused).
+// Diagnostic (logged with FREEDEFER's line): steps called from 0x6A5FD7 (Full Throttle's light-ball program), counted
+// per invocation kind and pause flag value.
 static volatile LONG g_diag_6a5f_steps[4][3];                // [kind][pause: 0 / 1 / other]
 static uint32_t g_diag_6a5f_ret = 0x6A5FD7 - 0x400000;   // offset; compared against the live return address
-// X2-MAG-006-UNPAUSE-LIST (default "" = off; U 17/10: "681" stopped the blink but the effect looked skipped): magic DLLs whose own particle steps run UNPAUSED on render-only invocations
-// (the F11 test, per DLL). U 17/10/2026: Full Throttle (magic_0681) light-ball glow blinks with paused steps and not
-// with F11; the exact paused-step gate is not mapped (re/ledger/LENS-GLOW.md). Cost: that DLL's particle programs step
-// on every invocation (up to 2x their animation rate).
+// X2-MAG-006-UNPAUSE-LIST (default empty): spell DLL numbers whose own particle steps run UNPAUSED on render-only
+// invocations, i.e. the F11 test for one DLL. Cost: that DLL's particles then run up to 2x their speed.
 enum { MAX_UNPAUSE_LIST = 16, MAX_UNPAUSE_DLLS = 8 };
 static int      g_unpause_list[MAX_UNPAUSE_LIST];
 static int      g_unpause_list_count = 0;
@@ -243,9 +280,9 @@ static bool in_unpause_dll(const void* ret) {
             return true;
     return false;
 }
-// X2-MAG-006-UNPAUSE-AB (default 0 = off; user 23/10/2026: Ultima cannot be cast on demand, one cast must answer):
-// magic DLL number whose own render-only particle steps run unpaused in alternate seconds (odd GetTickCount seconds
-// on), each switch logged, so X2-DIAG-LUMA compares both halves of one cast (ULTIMA-0106.md).
+// X2-MAG-006-UNPAUSE-AB (default 0 = off): one spell DLL number whose render-only particle steps run unpaused in
+// alternate seconds, each switch logged, so a single cast shows both behaviours (for effects that cannot be cast on
+// demand).
 static int      g_ab_dll_number = 0;
 static uint8_t* g_ab_dll_base = nullptr;
 static uint32_t g_ab_dll_size = 0;
@@ -292,6 +329,8 @@ static int count_parts(void* prog) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { n = -1; }
     return n;
 }
+// --- The step hook ---------------------------------------------------------------------------------------------------------
+// Replaces Ppp_ProgramStep's entry. The return address tells who called: inside FFX-2.exe = the game, else a spell DLL.
 static int program_step_body(void* prog, uint32_t flags, void* ret);
 static int __cdecl hook_program_step(void* prog, uint32_t flags) {
     void* ret = _ReturnAddress();
@@ -304,13 +343,15 @@ static int __cdecl hook_program_step(void* prog, uint32_t flags) {
     g_step_prog = outer; g_step_caller = outer_cls;
     return r;
 }
+// Logic step or game caller: as stock. Render-only DLL step: unpaused if a test switch says so or the program is fresh,
+// else paused (the particles are drawn again without advancing).
 static int program_step_body(void* prog, uint32_t flags, void* ret) {
     if (!row_MAG006.on || g_disabled || g_in_paused_step) return g_program_step_orig(prog, flags);
     if ((uint32_t)((uint8_t*)ret - exe_base()) == g_diag_6a5f_ret) {
         int32_t pv = *g_pause_flag;
         InterlockedIncrement(&g_diag_6a5f_steps[pacing_kind() & 3][pv == 0 ? 0 : pv == 1 ? 1 : 2]);
     }
-    bool exe = in_image(ret) && !is_paused_exe_caller(ret);    // is_paused_exe_caller EXE callers take the DLL path
+    bool exe = in_image(ret) && !is_paused_exe_caller(ret);    // registered game call sites take the DLL path
     if (!render_only() || exe) {                 // logic steps, and EXE callers (stock pause state)
         if (exe && render_only()) InterlockedIncrement(&g_exe_calls);
         return run_step(prog, flags, *g_pause_flag != 0);
@@ -323,10 +364,7 @@ static int program_step_body(void* prog, uint32_t flags, void* ret) {
         *g_pause_flag = saved;
         return r;
     }
-    // X2-MAG-006-FRESH2 (default 0: fired once in Full Throttle, did not help, U 17/10): a program re-initialised by its DLL (+0xB08 FUN_007ff070 resets +8 and +0x78, not
-    // +0xC) is fresh too; its first step runs with the pause flag CLEAR (the DLL may have written -1 itself), so its
-    // emitters spawn. magic_0681 (Full Throttle) re-inits its light-ball program after every finished live step; the
-    // paused render-only first step left the glow groups empty = blink (U 17/10/2026; F11 fixed it; LENS-GLOW.md §2).
+    // FRESH2 (off): a program its DLL has re-initialised (+8 and +0x78 reset, +0xC not) counts as fresh too.
     if (g_opt_fresh2 && *(int32_t*)((uint8_t*)prog + 8) == 0 && *(int32_t*)((uint8_t*)prog + 0x78) == 0) {
         InterlockedIncrement(&g_fresh2_calls);
         int32_t saved = *g_pause_flag;
@@ -342,7 +380,7 @@ static int program_step_body(void* prog, uint32_t flags, void* ret) {
     InterlockedIncrement(&g_paused_calls);
     if (in_image(ret) && InterlockedIncrement(&g_exe_paused_calls) == 1)
         log_line("X2-MAG-006: first paused step from a listed EXE caller (return gva 0x%08X)", rt_to_gva(ret));
-    int32_t saved = *g_pause_flag;                   // values written by event scripts survive (FFX MAG-004)
+    int32_t saved = *g_pause_flag;                   // put back afterwards: event scripts write the flag too
     *g_pause_flag = 1;
     g_in_paused_step = 1;
     int r = g_program_step_orig(prog, flags);
@@ -351,6 +389,7 @@ static int program_step_body(void* prog, uint32_t flags, void* ret) {
     return r;
 }
 
+// --- Install: find and check every address; patches go in at the first pre() ----------------------------------------------
 static bool install() {
     // Ppp_ProgramStep: PUSH ESI; CALL override(prog); ADD ESP,4; CMP [..],0; JNZ; PUSH ESI; CALL start-delay
     g_program_step = sig_find("X2-MAG-006 Ppp_ProgramStep",
@@ -445,6 +484,8 @@ static bool install() {
     return true;
 }
 
+// --- Every invocation ------------------------------------------------------------------------------------------------------
+// First pre(), on the game thread: the override CALL patch, the step hook, then the LOOPDEFER / FREEDEFER patches.
 static void pre() {
     if (g_patches_done) return;
     g_patches_done = true;
@@ -485,6 +526,7 @@ static void pre() {
     } else g_opt_freedefer = 0;
 }
 
+// After every invocation: the F11 test key (only while the game window is in front) and the periodic log lines.
 static void post() {
     static bool down_prev = false;
     bool down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
