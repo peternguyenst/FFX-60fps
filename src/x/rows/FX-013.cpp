@@ -13,6 +13,7 @@
 //   game's DAT_00cec224 is left alone (the game frees only its own block).
 // Details: docs/fps60/rows/FX-013.md
 #include "../fps60.h"
+#include <intrin.h>
 
 typedef void(__cdecl* pinit_t)(uint32_t* desc, void* mem, int size);
 typedef void(__cdecl* pmain_t)(uint32_t* desc, void* scene, void* mem, int size);
@@ -27,7 +28,12 @@ static uint8_t*  g_pmain = nullptr;              // FUN_007169d0: current-pool s
 static pmain_t   g_pmain_tramp = nullptr;
 static uint32_t* g_main = nullptr;               // DAT_00cec22c
 static uint32_t* g_second = nullptr;             // DAT_00cec23c
-static uint8_t*  g_ppp_buf = nullptr;
+static uint8_t*  g_ppp_buf = nullptr;              // the main descriptor's second-pool buffer (allocated at install)
+// Every descriptor FUN_007169d0 makes current gets its own second pool at desc+0x10 (the allocators use
+// *PTR_DAT_00c3a4cc + 0x10 for whichever is current; FUN_007169d0 zeroes desc[5] = that pool's memory on all of them).
+enum { MAX_DESC = 8 };
+struct SecPool { uint32_t* desc; uint8_t* buf; LONG setups; };
+static SecPool   g_sec[MAX_DESC];
 static int       g_ppp_size = 0, g_mult = 4;
 static bool      g_patched = false, g_packets_on = false;
 static volatile LONG g_setups = 0;
@@ -45,13 +51,25 @@ static void __cdecl h_pinit(uint32_t* desc, void* mem, int size) {
 // is the second pool's memory pointer (DAT_00cec240): the second pool has to be set up after it returns.
 static void __cdecl h_pmain(uint32_t* desc, void* scene, void* mem, int size) {
     g_pmain_tramp(desc, scene, mem, size);
-    if (!row_FX013.on || g_disabled || !g_ppp_buf || desc != g_main) return;
-    if ((uintptr_t)g_ppp_buf <= (uintptr_t)desc[2]) return;   // must lie above the main pool's end
-    g_pinit_tramp(g_second, g_ppp_buf, g_ppp_size);
-    LONG n = InterlockedIncrement(&g_setups);
-    if (n == 1 || n % 20 == 0)
-        log_line("FX-013: particle second pool set up (%d KB at %p, main pool %d KB; setup %ld)", g_ppp_size / 1024, g_ppp_buf,
-                 size / 1024, n);
+    if (!row_FX013.on || g_disabled || !g_ppp_buf || !desc) return;
+    SecPool* sp = nullptr;
+    for (int i = 0; i < MAX_DESC && !sp; i++) {
+        if (g_sec[i].desc == desc) sp = &g_sec[i];
+        else if (!g_sec[i].desc) {
+            uint8_t* b = desc == g_main ? g_ppp_buf
+                       : (uint8_t*)VirtualAlloc(nullptr, g_ppp_size, MEM_RESERVE | MEM_COMMIT | MEM_TOP_DOWN, PAGE_READWRITE);
+            if (!b) return;
+            g_sec[i].desc = desc;
+            g_sec[i].buf = b;
+            sp = &g_sec[i];
+        }
+    }
+    if (!sp || (uintptr_t)sp->buf <= (uintptr_t)desc[2]) return;   // must lie above that descriptor's main pool end
+    g_pinit_tramp(desc + 4, sp->buf, g_ppp_size);
+    LONG n = InterlockedIncrement(&sp->setups);
+    if (n == 1 || n % 50 == 0)
+        log_line("FX-013: particle second pool set up for pool gva=0x%08X (%d KB at %p, its main pool %d KB, caller gva=0x%08X; setup %ld)",
+                 rt_to_gva_exe(desc), g_ppp_size / 1024, sp->buf, size / 1024, rt_to_gva_exe(_ReturnAddress()), n);
 }
 
 static bool install() {
