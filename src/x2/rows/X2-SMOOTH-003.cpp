@@ -1228,12 +1228,17 @@ static void pre() {
 // form with the middle angle within a quarter turn; a bone near that quarter turn (gimbal lock) is not judged. Every
 // DC_REPORT_FRAMES drawn frames the bones odd most often are logged with their counts, plus the first few odd frames
 // in full: all three angles of the three frames, the damped-bone flag (bone byte +0x144) and the damping target (+0x114).
+// The same is done for where each bone is drawn ("world"): the translation row of its matrix (bone +0x88, built by
+// Ch_BuildRootAndBones from scale, rotation and position) relative to bone 0; odd when it is more than
+// DC_WORLD_MIN_ODD of its distance to bone 0 away from half way, and further than the two frames are apart.
 static const int   DC_ACTORS = 32, DC_BONES = 256;
 static const float DC_MIN_ODD = 0.08f;                     // turns
 static const float DC_GIMBAL_MARGIN = 0.02f;               // turns: middle angle this close to a quarter turn = not judged
 static const int   DC_REPORT_FRAMES = 600;                 // drawn frames (~10 s) per summary
 static const int   DC_REPORT_BONES = 12, DC_DETAIL_LINES = 12;
 static const int   DC_MAX_FAULTS = 600;                    // faults in a row (~10 s of frames) before giving up
+static const uint32_t BONE_WORLD_T = 0x88 + 0x30;          // bone matrix +0x88, translation row
+static const float DC_WORLD_MIN_ODD = 0.05f;               // share of the bone's distance to bone 0
 static int      g_opt_drawcheck = 1;
 static float*   g_dc_ang = nullptr;                        // [3 frames][DC_ACTORS][DC_BONES][3], canonical triples
 static uint16_t g_dc_id[3][DC_ACTORS];
@@ -1242,6 +1247,8 @@ static int      g_dc_head = 0, g_dc_frames = 0, g_dc_window = 0, g_dc_window_lin
 static uint16_t g_dc_count[DC_ACTORS][DC_BONES][2];        // odd frames this window: [render-only, logic]
 static uint16_t g_dc_count_id[DC_ACTORS];                  // actor id the counts belong to
 static uint8_t  g_dc_damped[DC_ACTORS][DC_BONES];
+static float*   g_dc_pos = nullptr;                        // [3 frames][DC_ACTORS][DC_BONES][3], relative to bone 0
+static uint16_t g_dc_wcount[DC_ACTORS][DC_BONES][2];       // world odd frames this window: [render-only, logic]
 static volatile LONG g_dc_odd[4] = {}, g_dc_faults = 0;
 
 static float wrap_turn(float a) { a -= (float)(int)a; if (a > 0.5f) a -= 1.0f; if (a < -0.5f) a += 1.0f; return a; }
@@ -1266,8 +1273,21 @@ static float dc_odd_by(const float* x0, const float* x1, const float* x2, int* c
     return worst;
 }
 
-// Keeps the drawn angles of actor slot i in out (canonical; NaN marks a bone not judged); false if it has no skeleton.
-static bool drawcheck_copy(int i, const uint8_t* a, float* out) {
+// World position check: true when p1 is far from half way between p0 and p2 (see DC_WORLD_MIN_ODD); off = that
+// distance, len = the bone's distance to bone 0.
+static bool dc_world_odd(const float* p0, const float* p1, const float* p2, float* off, float* len) {
+    float e = 0, span = 0, l = 0;
+    for (int c = 0; c < 3; c++) {
+        float mid = 0.5f * (p0[c] + p2[c]);
+        e += (p1[c] - mid) * (p1[c] - mid); span += (p2[c] - p0[c]) * (p2[c] - p0[c]); l += p0[c] * p0[c];
+    }
+    *off = sqrtf(e); *len = sqrtf(l);
+    return *len > 0 && *off > DC_WORLD_MIN_ODD * *len && *off > sqrtf(span);
+}
+
+// Keeps the drawn angles of actor slot i in out (canonical; NaN marks a bone not judged) and the drawn positions in
+// pos; false if it has no skeleton.
+static bool drawcheck_copy(int i, const uint8_t* a, float* out, float* pos) {
     if (!a[OFF_ACTIVE] || (a[OFF_RANGE_SKIP] != 0 && a[OFF_RANGE_KEEP] == 0)) return false;
     const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
     int nb = bone_count(a);
@@ -1278,6 +1298,9 @@ static bool drawcheck_copy(int i, const uint8_t* a, float* out) {
         for (int c = 0; c < 3; c++) t[c] = *(const float*)(bones + b * BONE_SIZE + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
         if (!dc_canonical(t)) t[0] = NAN;
         g_dc_damped[i][b] = bones[b * BONE_SIZE + 0x144];
+        const float* w = (const float*)(bones + b * BONE_SIZE + BONE_WORLD_T);
+        const float* r = (const float*)(bones + BONE_WORLD_T);
+        for (int c = 0; c < 3; c++) pos[b * 3 + c] = w[c] - r[c];
     }
     return true;
 }
@@ -1288,10 +1311,29 @@ static void drawcheck_compare(int i, const uint8_t* a, int f0, int m, int t) {
     const float* M = g_dc_ang + ((size_t)m * DC_ACTORS + i) * DC_BONES * 3;
     const float* N = g_dc_ang + ((size_t)t * DC_ACTORS + i) * DC_BONES * 3;
     uint16_t id = g_dc_id[m][i];
-    if (g_dc_count_id[i] != id) { memset(g_dc_count[i], 0, sizeof(g_dc_count[i])); g_dc_count_id[i] = id; }
+    if (g_dc_count_id[i] != id) {
+        memset(g_dc_count[i], 0, sizeof(g_dc_count[i])); memset(g_dc_wcount[i], 0, sizeof(g_dc_wcount[i]));
+        g_dc_count_id[i] = id;
+    }
     int nb = bone_count(a);
     if (nb > DC_BONES) nb = DC_BONES;
     bool ro = g_dc_kind[m] == INV_RENDER_ONLY;
+    const float* P0 = g_dc_pos + ((size_t)f0 * DC_ACTORS + i) * DC_BONES * 3;
+    const float* P1 = g_dc_pos + ((size_t)m * DC_ACTORS + i) * DC_BONES * 3;
+    const float* P2 = g_dc_pos + ((size_t)t * DC_ACTORS + i) * DC_BONES * 3;
+    for (int b = 1; b < nb; b++) {
+        float off, len;
+        if (!dc_world_odd(P0 + b * 3, P1 + b * 3, P2 + b * 3, &off, &len)) continue;
+        uint16_t& n = g_dc_wcount[i][b][ro ? 0 : 1];
+        if (n < 0xFFFF) n++;
+        if (g_dc_window_lines >= DC_DETAIL_LINES) continue;
+        g_dc_window_lines++;
+        const float* p0 = P0 + b * 3; const float* p1 = P1 + b * 3; const float* p2 = P2 + b * 3;
+        log_line("X2-SMOOTH-003-DRAWCHECK: %s frame, slot=%d id=0x%04X bone %d drawn %.1f%% of its distance to bone 0 "
+                 "(%.2f) off: before (%.2f %.2f %.2f) this (%.2f %.2f %.2f) after (%.2f %.2f %.2f); damped=%d",
+                 ro ? "render-only" : "logic", i, id, b, 100.0f * off / len, len, p0[0], p0[1], p0[2], p1[0], p1[1],
+                 p1[2], p2[0], p2[1], p2[2], g_dc_damped[i][b]);
+    }
     for (int b = 0; b < nb; b++) {
         const float* x0 = A + b * 3; const float* x1 = M + b * 3; const float* x2 = N + b * 3;
         if (x0[0] != x0[0] || x1[0] != x1[0] || x2[0] != x2[0]) continue;      // near gimbal lock: not judged
@@ -1312,14 +1354,14 @@ static void drawcheck_compare(int i, const uint8_t* a, int f0, int m, int t) {
     }
 }
 
-// Logs the bones odd most often over the last window and starts a new one.
-static void drawcheck_report() {
+// Logs the bones of one counter table odd most often (what: which check).
+static void dc_report_counts(const char* what, uint16_t (*count)[DC_BONES][2]) {
     struct Top { int slot, bone, total; } top[DC_REPORT_BONES] = {};
     int ro_all = 0, logic_all = 0;
     for (int i = 0; i < DC_ACTORS; i++)
         for (int b = 0; b < DC_BONES; b++) {
-            int r = g_dc_count[i][b][0], l = g_dc_count[i][b][1], tot = r + l;
-            ro_all += r; logic_all += l;
+            int tot = count[i][b][0] + count[i][b][1];
+            ro_all += count[i][b][0]; logic_all += count[i][b][1];
             if (!tot || tot <= top[DC_REPORT_BONES - 1].total) continue;
             int k = DC_REPORT_BONES - 1;
             while (k > 0 && top[k - 1].total < tot) { top[k] = top[k - 1]; k--; }
@@ -1329,14 +1371,21 @@ static void drawcheck_report() {
     for (int k = 0; k < DC_REPORT_BONES && top[k].total; k++) {
         const Top& e = top[k];
         int w = _snprintf_s(buf + len, sizeof(buf) - len, _TRUNCATE, "%s0x%04X b%d %d/%d%s", k ? ", " : "",
-                            g_dc_count_id[e.slot], e.bone, g_dc_count[e.slot][e.bone][0], g_dc_count[e.slot][e.bone][1],
+                            g_dc_count_id[e.slot], e.bone, count[e.slot][e.bone][0], count[e.slot][e.bone][1],
                             g_dc_damped[e.slot][e.bone] ? " damped" : "");
         if (w < 0) break;
         len += w;
     }
-    log_line("X2-SMOOTH-003-DRAWCHECK: last %d drawn frames: odd bone frames render-only %d, logic %d; most often "
-             "(id bone render-only/logic): %s", g_dc_window, ro_all, logic_all, ro_all + logic_all ? buf : "none");
+    log_line("X2-SMOOTH-003-DRAWCHECK: last %d drawn frames, %s: odd bone frames render-only %d, logic %d; most often "
+             "(id bone render-only/logic): %s", g_dc_window, what, ro_all, logic_all, ro_all + logic_all ? buf : "none");
+}
+
+// Logs the bones odd most often over the last window (angles, then drawn positions) and starts a new one.
+static void drawcheck_report() {
+    dc_report_counts("angles", g_dc_count);
+    dc_report_counts("world", g_dc_wcount);
     memset(g_dc_count, 0, sizeof(g_dc_count));
+    memset(g_dc_wcount, 0, sizeof(g_dc_wcount));
     g_dc_window = 0; g_dc_window_lines = 0;
 }
 
@@ -1354,7 +1403,7 @@ static void drawcheck_actor_fault(int i, const uint8_t* a) {
 }
 
 static void drawcheck_post(int kind) {          // kind: pacing_kind() of the invocation just done
-    if (!g_opt_drawcheck || !g_dc_ang) return;
+    if (!g_opt_drawcheck || !g_dc_ang || !g_dc_pos) return;
     if (kind != INV_LOGIC && kind != INV_RENDER_ONLY) return;     // not drawn
     uint8_t* base = *g_actor_table;
     int n = *g_actor_count;
@@ -1365,8 +1414,9 @@ static void drawcheck_post(int kind) {          // kind: pacing_kind() of the in
     for (int i = 0; i < n; i++) {
         uint8_t* a = base + (size_t)i * ACTOR_SIZE;
         float* out = g_dc_ang + ((size_t)t * DC_ACTORS + i) * DC_BONES * 3;
+        float* pos = g_dc_pos + ((size_t)t * DC_ACTORS + i) * DC_BONES * 3;
         g_dc_id[t][i] = 0xFFFF;
-        __try { if (drawcheck_copy(i, a, out)) g_dc_id[t][i] = *(const uint16_t*)a; }
+        __try { if (drawcheck_copy(i, a, out, pos)) g_dc_id[t][i] = *(const uint16_t*)a; }
         __except (EXCEPTION_EXECUTE_HANDLER) { drawcheck_actor_fault(i, a); }
     }
     for (int i = n; i < DC_ACTORS; i++) g_dc_id[t][i] = 0xFFFF;
@@ -1492,7 +1542,8 @@ static bool install() {
     g_opt_drawcheck = config_row("X2-SMOOTH-003-DRAWCHECK", 1);
     if (g_opt_drawcheck) {
         g_dc_ang = (float*)calloc((size_t)3 * DC_ACTORS * DC_BONES * 3, sizeof(float));
-        if (!g_dc_ang) g_opt_drawcheck = 0;
+        g_dc_pos = (float*)calloc((size_t)3 * DC_ACTORS * DC_BONES * 3, sizeof(float));
+        if (!g_dc_ang || !g_dc_pos) g_opt_drawcheck = 0;
     }
     g_opt_keyhold = config_row("X2-SMOOTH-003-KEYHOLD", 1);
     g_opt_keyhold_limit = config_row("X2-SMOOTH-003-KEYHOLD-D", 0x300);

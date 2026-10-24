@@ -243,27 +243,33 @@ TEST(smooth003_drawcheck_logs_odd_bone_and_skips_unreadable_actor) {
     *(uint8_t**)(bad + OFF_MODEL_HEADER) = header.data();
     *(uintptr_t*)(bad + OFF_BONES) = 0x10;                       // freed / garbage: reading it faults
     uint8_t* table_ptr = table.data(); int32_t count = 2;
-    uint8_t* volatile* old_table = g_actor_table; volatile int32_t* old_count = g_actor_count; float* old_ang = g_dc_ang;
+    uint8_t* volatile* old_table = g_actor_table; volatile int32_t* old_count = g_actor_count; float* old_ang = g_dc_ang; float* old_pos = g_dc_pos;
     g_actor_table = (uint8_t* volatile*)&table_ptr; g_actor_count = &count;
     std::vector<float> ang((size_t)3 * DC_ACTORS * DC_BONES * 3, 0);
-    g_dc_ang = ang.data(); g_dc_frames = 0; g_dc_head = 0; g_dc_window = 0; g_dc_window_lines = 0; g_opt_drawcheck = 1;
+    std::vector<float> pos((size_t)3 * DC_ACTORS * DC_BONES * 3, 0);
+    g_dc_ang = ang.data(); g_dc_pos = pos.data(); g_dc_frames = 0; g_dc_head = 0; g_dc_window = 0; g_dc_window_lines = 0; g_opt_drawcheck = 1;
     float* bone1_ch0 = (float*)&bones[BONE_SIZE + BONE_ANGLE[0]];
     const float frames[3] = { 0.10f, 0.40f, 0.12f };              // bone 1 sticks out on the middle frame
     // bone 0 flips to the other equivalent triple of the same rotation on the middle frame: not odd
     float* bone0 = (float*)&bones[BONE_ANGLE[0]];
     const float same[3][3] = { { 0.0f, 0.02f, 0.1f }, { 0.5f, 0.48f, 0.6f }, { 0.0f, 0.02f, 0.1f } };
     int kinds[3] = { INV_LOGIC, INV_RENDER_ONLY, INV_LOGIC };
+    // bone 1 is drawn 10 units from bone 0, and 3 units off to the side on the middle frame
+    float* bone1_world = (float*)&bones[BONE_SIZE + BONE_WORLD_T];
+    const float side[3] = { 0.0f, 3.0f, 0.0f };
     for (int f = 0; f < 3; f++) {
         *bone1_ch0 = frames[f] / TURNS_PER_RADIAN;
+        bone1_world[0] = 10.0f; bone1_world[1] = side[f]; bone1_world[2] = 0.0f;
         for (int c = 0; c < 3; c++) bone0[c] = same[f][c] / TURNS_PER_RADIAN;
         drawcheck_post(INV_BACKLOG);                                 // not drawn: ignored
         drawcheck_post(kinds[f]);
     }
     CHECK(fake::log_contains("render-only frame, slot=0 id=0x001A bone 1 odd by"));
     drawcheck_report();
-    CHECK(fake::log_contains("render-only 1, logic 0; most often (id bone render-only/logic): 0x001A b1 1/0"));
+    CHECK(fake::log_contains("angles: odd bone frames render-only 1, logic 0; most often (id bone render-only/logic): 0x001A b1 1/0"));
+    CHECK(fake::log_contains("world: odd bone frames render-only 1, logic 0; most often (id bone render-only/logic): 0x001A b1 1/0"));
     CHECK(fake::log_contains("id=0x001A bone 1 odd by"));
     CHECK(!fake::log_contains("id=0x001A bone 0 odd by"));
     CHECK(fake::log_contains("slot=1 id=0x00C9 unreadable"));
-    g_actor_table = old_table; g_actor_count = old_count; g_dc_ang = old_ang; g_dc_frames = 0;
+    g_actor_table = old_table; g_actor_count = old_count; g_dc_ang = old_ang; g_dc_pos = old_pos; g_dc_frames = 0;
 }
