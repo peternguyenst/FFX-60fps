@@ -1723,7 +1723,8 @@ bool smooth003_actor_clock(uint16_t id, int32_t* clock) {
 // --- POSELOG: one actor's drawn pose per frame, to a file (diagnostic, off) ---------------------------------------------
 // X2-SMOOTH-003-POSELOG-ID=<actor id> with -FROM / -TO (motion clock range, actor +0x750): after every invocation in
 // that range one line goes to <game>\fps60x2-poselog.csv (appended; each run starts with a "#" line): frame kind (L
-// logic, R render-only, B backlog, S stock), motion clock, sample clock (+0x754), and per bone: damped byte (+0x144),
+// logic, R render-only, B backlog, S stock), the watched actor's motion and sample clock (+0x754), the line's actor id
+// (the watched actor, then each actor attached to it), and per bone: damped byte (+0x144),
 // angles in turns (+0xE4..), target (+0x114..), local position (+0xF4..), scale (+0x104..) and drawn position (matrix
 // +0x88 translation minus bone 0's). Then "|" and per cloth mesh: vertex count and every vertex (the cloth job's
 // result, entry +0x08). A stock run and a 60 fps run of the same cutscene compare at equal sampled clocks.
@@ -1731,32 +1732,12 @@ static int   g_poselog_id = 0, g_poselog_from = 0, g_poselog_to = 0;
 static FILE* g_poselog = nullptr;
 static bool  g_poselog_failed = false;
 
-static void poselog_post() {
-    uint8_t* base = *g_actor_table;
-    int n = *g_actor_count;
-    if (!base || n <= 0) return;
-    if (n > MAX_ACTORS) n = MAX_ACTORS;
-    for (int i = 0; i < n; i++) {
-        const uint8_t* a = base + (size_t)i * ACTOR_SIZE;
-        if (!a[OFF_ACTIVE] || *(const uint16_t*)a != g_poselog_id) continue;
-        int32_t clock = *(const int32_t*)(a + OFF_MOTION_CLOCK);
-        if (clock < g_poselog_from || clock > g_poselog_to) return;
-        const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
-        int nb = bone_count(a);
-        if (!bones || !nb) return;
-        if (!g_poselog) {
-            char path[MAX_PATH];
-            DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
-            while (len && path[len - 1] != '\\') len--;
-            _snprintf_s(path + len, MAX_PATH - len, _TRUNCATE, "fps60x2-poselog.csv");
-            g_poselog = _fsopen(path, "a", _SH_DENYNO);        // shared: readable while the game runs
-            if (!g_poselog) { g_poselog_failed = true; log_line("X2-SMOOTH-003-POSELOG: cannot open %s - off", path); return; }
-            SYSTEMTIME t; GetLocalTime(&t);
-            fprintf(g_poselog, "# run %02d:%02d:%02d id 0x%04X clocks %d..%d, %d bones\n", t.wHour, t.wMinute, t.wSecond,
-                    g_poselog_id, g_poselog_from, g_poselog_to, nb);
-            log_line("X2-SMOOTH-003-POSELOG: writing id 0x%04X at clocks %d..%d to %s", g_poselog_id, g_poselog_from, g_poselog_to, path);
-        }
-        fprintf(g_poselog, "%c,%d,%d", "LRBS"[pacing_kind() & 3], clock, *(const int32_t*)(a + OFF_SAMPLED_CLOCK));
+// One line: frame kind, the watched actor's clocks, this actor's id, its bones and cloth (see above).
+static void poselog_line(const uint8_t* a, int32_t clock, int32_t sampled) {
+    const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+    int nb = bone_count(a);
+    fprintf(g_poselog, "%c,%d,%d,%04X", "LRBS"[pacing_kind() & 3], clock, sampled, *(const uint16_t*)a);
+    if (bones && nb) {
         const float* r = (const float*)(bones + 0x88 + 0x30);
         for (int b = 0; b < nb; b++) {
             const uint8_t* hb = bones + b * BONE_SIZE;
@@ -1770,14 +1751,48 @@ static void poselog_post() {
                     tgt[0] * TURNS_PER_RADIAN, tgt[1] * TURNS_PER_RADIAN, tgt[2] * TURNS_PER_RADIAN,
                     pos[0], pos[1], pos[2], scl[0], scl[1], scl[2], w[0] - r[0], w[1] - r[1], w[2] - r[2]);
         }
-        for_dyn_mesh((uint8_t*)a, [&](uint8_t*, float* vtex, uint32_t nv) {
-            fprintf(g_poselog, ",|,%u", nv);
-            for (uint32_t v = 0; v < nv; v++) fprintf(g_poselog, ",%.2f,%.2f,%.2f", vtex[v * 4], vtex[v * 4 + 1], vtex[v * 4 + 2]);
-        });
-        fprintf(g_poselog, "\n");
-        fflush(g_poselog);
-        return;
     }
+    for_dyn_mesh((uint8_t*)a, [&](uint8_t*, float* vtex, uint32_t nv) {
+        fprintf(g_poselog, ",|,%u", nv);
+        for (uint32_t v = 0; v < nv; v++) fprintf(g_poselog, ",%.2f,%.2f,%.2f", vtex[v * 4], vtex[v * 4 + 1], vtex[v * 4 + 2]);
+    });
+    fprintf(g_poselog, "\n");
+}
+
+// The watched actor, then every actor attached to it (actor +0x1A8 = parent actor), one line each.
+static void poselog_post() {
+    uint8_t* base = *g_actor_table;
+    int n = *g_actor_count;
+    if (!base || n <= 0) return;
+    if (n > MAX_ACTORS) n = MAX_ACTORS;
+    const uint8_t* watched = nullptr;
+    for (int i = 0; i < n && !watched; i++) {
+        const uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+        if (a[OFF_ACTIVE] && *(const uint16_t*)a == g_poselog_id) watched = a;
+    }
+    if (!watched || !bone_count(watched)) return;
+    int32_t clock = *(const int32_t*)(watched + OFF_MOTION_CLOCK);
+    int32_t sampled = *(const int32_t*)(watched + OFF_SAMPLED_CLOCK);
+    if (clock < g_poselog_from || clock > g_poselog_to) return;
+    if (!g_poselog) {
+        char path[MAX_PATH];
+        DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
+        while (len && path[len - 1] != '\\') len--;
+        _snprintf_s(path + len, MAX_PATH - len, _TRUNCATE, "fps60x2-poselog.csv");
+        g_poselog = _fsopen(path, "a", _SH_DENYNO);        // shared: readable while the game runs
+        if (!g_poselog) { g_poselog_failed = true; log_line("X2-SMOOTH-003-POSELOG: cannot open %s - off", path); return; }
+        SYSTEMTIME t; GetLocalTime(&t);
+        fprintf(g_poselog, "# run %02d:%02d:%02d id 0x%04X clocks %d..%d, %d bones\n", t.wHour, t.wMinute, t.wSecond,
+                g_poselog_id, g_poselog_from, g_poselog_to, bone_count(watched));
+        log_line("X2-SMOOTH-003-POSELOG: writing id 0x%04X and its attached actors at clocks %d..%d to %s", g_poselog_id,
+                 g_poselog_from, g_poselog_to, path);
+    }
+    poselog_line(watched, clock, sampled);
+    for (int i = 0; i < n; i++) {
+        const uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+        if (a[OFF_ACTIVE] && *(const uint8_t* const*)(a + OFF_PARENT) == watched) poselog_line(a, clock, sampled);
+    }
+    fflush(g_poselog);
 }
 
 // After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
