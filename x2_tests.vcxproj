@@ -68,11 +68,16 @@
     <!-- code under test, unchanged -->
     <ClCompile Include="src\x2\x2_pacing.cpp" />
     <ClCompile Include="src\x2\rows\X2-MAG-035.cpp" />
+    <ClCompile Include="src\x2\rows\x2_smooth_common.cpp" />
+    <!-- X2-SR-003.cpp and X2-SMOOTH-003.cpp are #included by their test files (their helpers are static) -->
     <!-- tests -->
     <ClCompile Include="tests\x2\test_main.cpp" />
     <ClCompile Include="tests\x2\fakes.cpp" />
     <ClCompile Include="tests\x2\test_pacing.cpp" />
     <ClCompile Include="tests\x2\test_mag035.cpp" />
+    <ClCompile Include="tests\x2\test_sr003.cpp" />
+    <ClCompile Include="tests\x2\test_smooth003.cpp" />
+    <ClCompile Include="tests\x2\test_smooth_math.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tests\x2\test.h" />

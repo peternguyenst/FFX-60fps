@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: Apache-2.0
+// Tests for X2-SMOOTH-003's helpers that run on plain memory: the loop-wrap guard, the angle maths, the short-loop and
+// slot tests, and the loop-end extrapolation. The row's .cpp is included so its static helpers can be called; it is
+// not compiled on its own in x2_tests.
+#include "test.h"
+#include "fakes.h"
+#include "../../src/x2/rows/X2-SMOOTH-003.cpp"
+#include <math.h>
+#include <vector>
+
+using namespace x2;
+
+// A zeroed actor record with a motion set up.
+struct TestActor {
+    std::vector<uint8_t> mem = std::vector<uint8_t>(ACTOR_SIZE, 0);
+    uint8_t* p() { return mem.data(); }
+    template <class T> T& at(uint32_t off) { return *(T*)(p() + off); }
+    void motion(int32_t start, int32_t end, int32_t loop_len, int16_t loops) {
+        at<uint32_t>(OFF_MOTION_SEQ) = 1;
+        at<int32_t>(OFF_MOTION_START) = start;
+        at<int32_t>(OFF_MOTION_END) = end;
+        at<int32_t>(OFF_MOTION_LOOP_LEN) = loop_len;
+        at<int16_t>(OFF_MOTION_LOOPS) = loops;
+    }
+};
+
+static bool close_to(float a, float b) { return fabsf(a - b) < 1e-4f; }
+
+// --- guard_clock: where would the logic step sample for clock c? (clock in 1/256 frames) ---
+
+TEST(smooth003_guard_clock_inside_the_motion_is_unchanged) {
+    TestActor a;
+    a.motion(0, 0x500, 0x400, 0);
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), 0x300, &kind), 0x300);
+    CHECK_EQ(kind, 0);
+}
+
+TEST(smooth003_guard_clock_wraps_a_loop_back_by_its_length) {
+    TestActor a;
+    a.motion(0, 0x500, 0x400, 0);
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), 0x580, &kind), 0x180);
+    CHECK_EQ(kind, 1);
+}
+
+TEST(smooth003_guard_clock_wraps_several_lengths) {
+    TestActor a;
+    a.motion(0, 0x500, 0x100, 0);
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), 0x880, &kind), 0x480);
+    CHECK_EQ(kind, 1);
+}
+
+TEST(smooth003_guard_clock_clamps_a_play_once_motion_at_its_last_whole_frame) {
+    TestActor a;
+    a.motion(0, 0x5C0, 0x400, 1);                    // play once: last whole frame = 0x500
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), 0x580, &kind), 0x500);
+    CHECK_EQ(kind, 2);
+    CHECK_EQ(guard_clock(a.p(), 0x480, &kind), 0x480);
+    CHECK_EQ(kind, 0);
+}
+
+TEST(smooth003_guard_clock_negative_clock_wraps_to_zero) {
+    TestActor a;
+    a.motion(0, 0x500, 0x400, 0);
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), -5, &kind), 0);
+    CHECK_EQ(kind, 1);
+}
+
+TEST(smooth003_guard_clock_zero_length_loop_restarts_at_the_start) {
+    TestActor a;
+    a.motion(0x40, 0x500, 0, 0);
+    int kind = -1;
+    CHECK_EQ(guard_clock(a.p(), 0x600, &kind), 0x40);
+    CHECK_EQ(kind, 1);
+}
+
+TEST(smooth003_guard_clock_no_stock_equivalent_holds) {
+    TestActor a;
+    a.motion(0, 0x500, 0, 3);                         // zero length, counted loops: the stock step has no answer
+    int kind = -1;
+    guard_clock(a.p(), 0x600, &kind);
+    CHECK_EQ(kind, 3);
+    a.motion(0, 0, 1, 0);                             // would need more than 64 wraps
+    guard_clock(a.p(), 0x10000, &kind);
+    CHECK_EQ(kind, 3);
+}
+
+// --- turn_diff: size of the shortest turn, in turns ---
+
+TEST(smooth003_turn_diff_takes_the_short_way_round) {
+    CHECK(close_to(turn_diff(0.2f, 0.1f), 0.1f));
+    CHECK(close_to(turn_diff(0.1f, 0.2f), 0.1f));
+    CHECK(close_to(turn_diff(0.95f, 0.05f), 0.1f));      // across a whole turn
+    CHECK(close_to(turn_diff(2.3f, 0.2f), 0.1f));        // several turns apart
+    CHECK(close_to(turn_diff(0.1f, 0.6f), 0.5f));        // exactly opposite
+}
+
+// --- short_loop: animations one frame long run as stock ---
+
+TEST(smooth003_short_loop) {
+    TestActor a;
+    a.motion(0, 0x100, 0x100, 0);
+    CHECK(short_loop(a.p()));
+    a.motion(0, 0x200, 0x200, 0);
+    CHECK(!short_loop(a.p()));                        // longer than a frame
+    a.motion(0, 0x100, 0x100, 1);
+    CHECK(!short_loop(a.p()));                        // play once
+    a.motion(0, 0x100, 0x100, 0);
+    a.at<uint32_t>(OFF_FLAGS) = FLAG_SCRIPTED;
+    CHECK(!short_loop(a.p()));                        // script-driven
+    a.at<uint32_t>(OFF_FLAGS) = 0;
+    a.at<uint32_t>(OFF_MOTION_SEQ) = 0;
+    CHECK(!short_loop(a.p()));                        // no motion
+}
+
+// --- slot_of: actor pointer -> slot index ---
+
+TEST(smooth003_slot_of) {
+    std::vector<uint8_t> table(ACTOR_SIZE * 4);
+    uint8_t* base = table.data();
+    CHECK_EQ(slot_of(base, base, 4), 0);
+    CHECK_EQ(slot_of(base + 2 * ACTOR_SIZE, base, 4), 2);
+    CHECK_EQ(slot_of(base + 2 * ACTOR_SIZE + 8, base, 4), -1);   // not at a record start
+    CHECK_EQ(slot_of(base + 3 * ACTOR_SIZE, base, 3), -1);       // past the slots in use
+    CHECK_EQ(slot_of(base, nullptr, 4), -1);
+}
+
+// --- ENDEXTRAP: continue each bone half a tick past tick k ---
+
+struct BonedActor : TestActor {
+    std::vector<uint8_t> header = std::vector<uint8_t>(16, 0);
+    std::vector<uint8_t> bones;
+    explicit BonedActor(int nbones) : bones((size_t)nbones * BONE_SIZE, 0) {
+        at<uint16_t>(0) = 0x1234;                      // actor id
+        *(uint16_t*)(header.data() + MODEL_HEADER_BONE_COUNT) = (uint16_t)nbones;
+        at<uint8_t*>(OFF_MODEL_HEADER) = header.data();
+        at<uint8_t*>(OFF_BONES) = bones.data();
+    }
+    float& angle(int bone, int ch) { return *(float*)(bones.data() + bone * BONE_SIZE + BONE_ANGLE[ch]); }
+    float& mirror(int bone, int ch) { return *(float*)(bones.data() + bone * BONE_SIZE + BONE_ANGLE[ch] + 0x30); }
+};
+
+static void angle_buffers() {
+    if (!g_cur_ang) {
+        g_prev_ang = (float*)calloc((size_t)MAX_ACTORS * MAX_BONES * 3, sizeof(float));
+        g_cur_ang = (float*)calloc((size_t)MAX_ACTORS * MAX_BONES * 3, sizeof(float));
+    }
+}
+
+TEST(smooth003_end_extrapolate_continues_half_a_tick) {
+    angle_buffers();
+    BonedActor a(2);
+    a.angle(0, 0) = 0.10f;                            // tick k-1
+    a.angle(1, 0) = 0.0f;
+    a.angle(1, 1) = 6.2f;
+    record_angles(5, a.p());
+    a.angle(0, 0) = 0.20f;                            // tick k
+    a.angle(1, 0) = 1.0f;                             // moved 0.16 turn in one tick: a cut, not continued
+    a.angle(1, 1) = 0.05f;                            // crossed 2*pi going up
+    record_angles(5, a.p());
+    end_extrapolate(5, a.p());
+    CHECK(close_to(a.angle(0, 0), 0.25f));
+    CHECK(close_to(a.mirror(0, 0), 0.25f));
+    CHECK(close_to(a.angle(1, 0), 1.0f));
+    CHECK(close_to(a.angle(1, 1), 0.05f + 0.5f * (0.05f + 6.2831853f - 6.2f)));
+}
+
+TEST(smooth003_end_extrapolate_needs_two_ticks_of_the_same_actor) {
+    angle_buffers();
+    BonedActor a(1);
+    a.angle(0, 0) = 0.10f;
+    record_angles(6, a.p());
+    end_extrapolate(6, a.p());                        // only one tick recorded
+    CHECK(close_to(a.angle(0, 0), 0.10f));
+    a.angle(0, 0) = 0.20f;
+    record_angles(6, a.p());
+    a.at<uint16_t>(0) = 0x9999;                       // the slot now holds another actor
+    end_extrapolate(6, a.p());
+    CHECK(close_to(a.angle(0, 0), 0.20f));
+}

@@ -61,6 +61,23 @@ volatile uint32_t* g_frame_counter = &fake::frame_counter;
 
 bool sig_match(const void*, const char*) { return false; }
 uint8_t* abs_operand(const char*, const uint8_t*) { return nullptr; }
+// Nothing of the game is there to find: a row's install() fails cleanly. Tests call its helpers directly instead.
+uint8_t* sig_find(const char*, const char*, uint32_t) { return nullptr; }
+uint8_t* exe_base() { return nullptr; }
+uint32_t rt_to_gva(const void*) { return 0; }
+uint8_t* call_target(const uint8_t*) { return nullptr; }
+bool in_image(const void*) { return false; }
+
+// --- x2_hooks.cpp: nothing is patched in a test ---
+bool patch_call_rel32(uint8_t*, void*, void*) { return false; }
+bool patch_u32(void*, uint32_t) { return false; }
+bool hook_entry(const char*, void*, void*, void**) { return false; }
+void hook_remove(void*) {}
+
+// --- x2_perf.cpp ---
+bool perf_on() { return false; }
+LONGLONG perf_now() { return 0; }
+void perf_walk(LONGLONG) {}
 
 // --- x2_hooks.cpp ---
 volatile LONG g_disabled = 0;
