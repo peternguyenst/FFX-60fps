@@ -101,6 +101,7 @@
     <ClCompile Include="src\x2\x2_hooks.cpp" />
     <ClCompile Include="src\x2\x2_pacing.cpp" />
     <ClCompile Include="src\x2\x2_rows.cpp" />
+    <ClCompile Include="src\x2\x2_rollback.cpp" />
     <ClCompile Include="src\x2\x2_perf.cpp" />
     <ClCompile Include="src\x2\rows\x2_smooth_common.cpp" />
     <ClCompile Include="src\x2\rows\X2-MAG-008.cpp" />

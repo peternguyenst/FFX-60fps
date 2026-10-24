@@ -23,6 +23,7 @@ extern std::vector<PassedDll> passed;         // mag008_pass_late calls
 
 extern x2::magic_load_fn magic_on_load;       // what the row gave magic_mods_subscribe
 extern x2::magic_unload_fn magic_on_unload;
+extern std::vector<std::string> rows_off;          // row_on(id) is false for these
 
 void set_ini(const char* key, int value);     // config_row(key, ...) returns value from now on
 void set_ini_str(const char* key, const char* value);

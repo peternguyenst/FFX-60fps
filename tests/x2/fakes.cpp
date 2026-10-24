@@ -18,6 +18,7 @@ std::vector<std::string> log;
 std::vector<PassedDll> passed;
 x2::magic_load_fn magic_on_load = nullptr;
 x2::magic_unload_fn magic_on_unload = nullptr;
+std::vector<std::string> rows_off;
 
 static std::map<std::string, int> g_ini;
 static std::map<std::string, std::string> g_ini_str;
@@ -67,6 +68,17 @@ uint8_t* exe_base() { return nullptr; }
 uint32_t rt_to_gva(const void*) { return 0; }
 uint8_t* call_target(const uint8_t*) { return nullptr; }
 bool in_image(const void*) { return false; }
+
+bool safe_copy(void* dst, const void* src, size_t n) {
+    __try { memcpy(dst, src, n); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// --- x2_rows.cpp: every row counts as on, except the ones a test switches off ---
+bool row_on(const char* id) {
+    for (const std::string& off : fake::rows_off) if (off == id) return false;
+    return true;
+}
 
 // --- x2_hooks.cpp: nothing is patched in a test ---
 bool patch_call_rel32(uint8_t*, void*, void*) { return false; }
