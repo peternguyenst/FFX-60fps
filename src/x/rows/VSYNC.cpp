@@ -17,10 +17,35 @@ static present_t g_present_orig = nullptr;
 static void*     g_present = nullptr;
 static volatile LONG g_forced = 0;
 
+// DIAG-FRAMETIME: time inside Present and what the game passes (observe only; the values pass through unchanged
+// while the row is off).
+static LARGE_INTEGER g_qpf = {};
+static double   g_pres_ms = 0;
+static uint32_t g_pres_n = 0, g_pres_sync1 = 0;
+static UINT     g_last_flags = 0;
+static DWORD    g_pres_tid = 0;
+
 static HRESULT STDMETHODCALLTYPE h_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
-    if (!row_VSYNC.on || g_disabled) return g_present_orig(sc, sync, flags);
-    if (InterlockedIncrement(&g_forced) == 1) log_line("VSYNC: first Present with SyncInterval 1 (the game passed %u)", sync);
-    return g_present_orig(sc, 1, flags);
+    UINT use = sync;
+    if (row_VSYNC.on && !g_disabled) {
+        if (InterlockedIncrement(&g_forced) == 1) log_line("VSYNC: first Present with SyncInterval 1 (the game passed %u)", sync);
+        use = 1;
+    }
+    LARGE_INTEGER a, b;
+    QueryPerformanceCounter(&a);
+    HRESULT hr = g_present_orig(sc, use, flags);
+    QueryPerformanceCounter(&b);
+    if (g_qpf.QuadPart) g_pres_ms += (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart;
+    g_pres_n++;
+    if (use) g_pres_sync1++;
+    g_last_flags = flags;
+    g_pres_tid = GetCurrentThreadId();
+    return hr;
+}
+
+void vsync_present_stats(double* ms, uint32_t* n, uint32_t* synced, unsigned* flags, unsigned long* tid) {
+    *ms = g_pres_ms; *n = g_pres_n; *synced = g_pres_sync1; *flags = g_last_flags; *tid = g_pres_tid;
+    g_pres_ms = 0; g_pres_n = 0; g_pres_sync1 = 0;
 }
 
 // Present's address from a throwaway swap chain (DXGI's vtable slot 8, shared by all swap chains of the process).
@@ -55,12 +80,21 @@ static void* find_present() {
     return p;
 }
 
-static bool install() {
+static bool hook_present() {
     if (g_present) return true;
+    QueryPerformanceFrequency(&g_qpf);
     void* p = find_present();
     if (!p) return false;
     if (!hook_entry("VSYNC Present", p, (void*)&h_present, (void**)&g_present_orig)) return false;
     g_present = p;
+    return true;
+}
+
+bool vsync_hook_for_diag() { return hook_present(); }
+
+static bool install() {
+    if (!hook_present()) return false;
+    void* p = g_present;
     log_line("  VSYNC: IDXGISwapChain::Present at %p hooked; SyncInterval 1 while on%s", p,
              rate_mult_cfg() > 2 ? " (above 60 fps the monitor refresh caps the game speed)" : "");
     return true;

@@ -182,6 +182,8 @@ void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 dr
 extern Row row_UI001;                            // rows/UI-001.cpp
 extern Row row_UI017;                           // rows/UI-017.cpp (pad latch per logic tick, K4)
 extern Row row_VSYNC;                            // rows/VSYNC.cpp (option: Present with SyncInterval 1)
+bool vsync_hook_for_diag();                      // rows/VSYNC.cpp: Present hooked (pass-through while VSYNC is off)
+void vsync_present_stats(double* ms, uint32_t* n, uint32_t* synced, unsigned* flags, unsigned long* tid);  // and reset
 extern Row row_UI013;                            // rows/UI-013.cpp (distortion grid wave step 1/N per invocation)
 extern Row row_UI021;                            // rows/UI-021.cpp (title water flipbook steps once per logic tick)
 extern Row row_UISPH001;                        // rows/UI-SPH-001.cpp (Sphere Grid update per logic tick)

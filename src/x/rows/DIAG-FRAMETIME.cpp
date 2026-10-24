@@ -56,6 +56,12 @@ static void dump() {
              pct(0.5), pct(0.95), pct(0.99), g_max, want, w1, off1, w2, off2);
     log_line("DIAG-FRAMETIME:   split per frame: game work %.3f ms, limiter Sleep %.3f ms (%.2f calls), rest (render + "
              "Present) %.3f ms", g_work / g_n, g_sleep / g_n, (double)g_sleeps / g_n, mean - (g_work + g_sleep) / g_n);
+    double pms; uint32_t pn, psync; unsigned pflags; unsigned long ptid;
+    vsync_present_stats(&pms, &pn, &psync, &pflags, &ptid);
+    if (pn)
+        log_line("DIAG-FRAMETIME:   Present: %u calls (%.2f per frame), %.3f ms inside each, SyncInterval > 0 on %u, flags 0x%X, "
+                 "thread %lu (%s)", pn, (double)pn / g_n, pms / pn, psync, pflags, ptid,
+                 ptid == g_tid ? "game thread" : "other thread");
     memset(g_hist, 0, sizeof(g_hist));
     g_n = 0; g_sum = g_sum2 = 0; g_min = 1e9; g_max = 0;
     g_work = g_sleep = 0; g_sleeps = 0;
@@ -102,6 +108,7 @@ static bool install() {
     g_win = (uint32_t)config_row("DIAG-FRAMETIME-N", 600);
     if (g_win < 60) g_win = 60;
     log_line("  DIAG-FRAMETIME: frame times at Sg_MainLoop entry, summary every %u frames", g_win);
+    if (!vsync_hook_for_diag()) log_line("  DIAG-FRAMETIME: Present hook failed - no Present timing");
     return true;
 }
 
