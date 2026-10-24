@@ -273,3 +273,16 @@ TEST(smooth003_drawcheck_logs_odd_bone_and_skips_unreadable_actor) {
     CHECK(fake::log_contains("slot=1 id=0x00C9 unreadable"));
     g_actor_table = old_table; g_actor_count = old_count; g_dc_ang = old_ang; g_dc_pos = old_pos; g_dc_frames = 0;
 }
+
+// MESHCHECK: a cloth vertex drawn off to the side on the middle frame is odd; a mesh moving steadily is not.
+TEST(smooth003_meshcheck_finds_a_vertex_off_on_the_middle_frame) {
+    const uint32_t n = 3;
+    float v0[n * 4] = { 0, 0, 0, 1,  10, 0, 0, 1,  0, 10, 0, 1 };
+    float v1[n * 4] = { 1, 0, 0, 1,  11, 0, 0, 1,  1, 10, 0, 1 };   // moved 1 to the side
+    float v2[n * 4] = { 2, 0, 0, 1,  12, 0, 0, 1,  2, 10, 0, 1 };
+    float worst = 0;
+    CHECK_EQ(mesh_odd(v0, v1, v2, n, &worst), 0);
+    v1[2 * 4 + 2] = 4.0f;                                          // vertex 2 sticks out by 4 on the middle frame
+    CHECK_EQ(mesh_odd(v0, v1, v2, n, &worst), 1);
+    CHECK(worst > 0.2f && worst < 0.4f);
+}

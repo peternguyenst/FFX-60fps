@@ -900,6 +900,7 @@ struct ClothSnap { float* vtex; uint8_t* actor; uint32_t n; LONG ncur, nprev; fl
 static volatile LONG g_cloth_jump_lines = 0, g_cloth_jumps = 0;
 enum { MAX_CLOTH_SNAPS = 128 };
 static ClothSnap g_cloth_snaps[MAX_CLOTH_SNAPS];
+static thread_local uint16_t tl_deform_actor_id = 0;       // MESHCHECK: actor whose cloth this thread is deforming
 static SRWLOCK g_cloth_snaps_lock = SRWLOCK_INIT;
 
 // Finds (or, with create, makes) the snap of a mesh. Jobs run on several worker threads at once, hence the lock. A new
@@ -989,6 +990,7 @@ static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
         for (uint32_t v = 0; v < n * 4; v += 4)
             for (int c = 0; c < 3; c++) vtex[v + c] = s->cur[v + c] + k * (s->cur[v + c] - s->prev[v + c]);
     });
+    tl_deform_actor_id = *(const uint16_t*)a;
     if (*g_cloth_deform_gate == 0) g_cloth_deform(a);
     for_dyn_mesh(a, [&](uint8_t*, float* vtex, uint32_t n) {
         ClothSnap* s = snap_get(vtex, a, n, false);
@@ -1079,6 +1081,7 @@ static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
             for_dyn_mesh(a, [&](uint8_t* en, float*, uint32_t) { if (*(void**)(en + 0x0C) && !*(int*)(en + 0x34)) reset[k] = true; });
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    tl_deform_actor_id = *count > 0 ? *(const uint16_t*)list[0] : 0;
     g_cloth_job_orig(list, count);
     __try {
         for (int k = 0; k < n; k++) {
@@ -1088,6 +1091,8 @@ static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { fault("cloth snap", GetExceptionCode()); }
 }
+
+static void install_meshcheck();                            // MESHCHECK, below
 
 // --- Patching (game thread, first pre()) --------------------------------------------------------------------------------
 // Points the four game CALLs at our hooks (without GATES only the step and the Ch_NoSkelPass call) and hooks the cloth
@@ -1104,6 +1109,7 @@ static bool apply_patches() {
             return false;
         }
     }
+    if (g_opt_cloth >= 3) install_meshcheck();
     if (g_opt_cloth >= 2) {
         if (hook_entry("X2-SMOOTH-003-CLOTHHOLD", g_cloth_job, (void*)&hook_cloth_job, (void**)&g_cloth_job_orig))
             log_line("X2-SMOOTH-003-CLOTHHOLD: Ch_ClothJob gva=0x%08X hooked (mode %d: %s)", rt_to_gva(g_cloth_job), g_opt_cloth,
@@ -1285,6 +1291,140 @@ static float*   g_dc_pos = nullptr;                        // [3 frames][DC_ACTO
 static uint16_t g_dc_wcount[DC_ACTORS][DC_BONES][2];       // world odd frames this window: [render-only, logic]
 static volatile LONG g_dc_odd[4] = {}, g_dc_faults = 0;
 
+// --- MESHCHECK: which cloth meshes flicker as drawn (diagnostic, part of DRAWCHECK) -------------------------------------
+// Ch_ClothDeform builds each HD mesh vertex buffer from the cloth vertices (each vertex a blend of three, optionally
+// pushed out along that triangle's normal), then marks the buffer for upload with a one-line setter (FUN_00514ab0,
+// `*flag = value`) on the buffer record + 0x88. Our copy of that setter also keeps the buffer: vertices (4 floats) at
+// record + 0x8C, count at record + 0x84. The last build in an invocation is the one drawn; it is kept for the last three
+// drawn frames. A vertex of the middle frame is odd when it is further than MESH_MIN_ODD of the mesh size from half way
+// between the frames on both sides and further than those two are apart. Counts per actor id and frame kind go into
+// the DRAWCHECK summary.
+static const uint32_t DEFORM_UPLOAD_CALL = 0x475;          // Ch_ClothDeform + 0x475: CALL FUN_00514ab0 (gva 0x6DB275)
+static const uint8_t  DEFORM_UPLOAD_BEFORE[] = { 0x05, 0x88, 0x00, 0x00, 0x00, 0x6A, 0x01, 0x50 };  // ADD EAX,0x88; PUSH 1; PUSH EAX
+static const uint8_t  UPLOAD_SETTER_BYTES[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x55, 0x08, 0x8B, 0x4D, 0x0C, 0x8B, 0x02, 0x89, 0x0A, 0x5D };
+static const uint32_t MESH_REC_FLAG = 0x88, MESH_REC_VERTS = 0x8C, MESH_REC_COUNT = 0x84;
+static const float    MESH_MIN_ODD = 0.02f;                // share of the mesh size (bounding box diagonal)
+static const uint32_t MESH_MAX_VERTS = 16384;
+enum { MESH_TRACKS = 64 };
+struct MeshTrack {
+    float* out;                        // the game's vertex buffer (key)
+    uint16_t actor_id; uint32_t n;
+    float* frames[3]; int kind[3]; uint32_t inv[3]; int head, count;
+    LONG odd[2], odd_verts[2]; float worst[2];   // this window: [render-only, logic]
+};
+static MeshTrack g_mesh[MESH_TRACKS];
+static SRWLOCK g_mesh_lock = SRWLOCK_INIT;
+static uint8_t* g_upload_setter = nullptr;
+
+
+// Middle frame m against f0 and t: odd vertices and the largest offset as a share of the mesh size.
+static int mesh_odd(const float* v0, const float* v1, const float* v2, uint32_t n, float* worst_share) {
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (uint32_t v = 0; v < n; v++)
+        for (int c = 0; c < 3; c++) { float x = v1[v * 4 + c]; if (x < lo[c]) lo[c] = x; if (x > hi[c]) hi[c] = x; }
+    float size = sqrtf((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(size > 0)) return 0;
+    int odd = 0; float worst = 0;
+    for (uint32_t v = 0; v < n; v++) {
+        float e = 0, span = 0;
+        for (int c = 0; c < 3; c++) {
+            float a = v0[v * 4 + c], b = v1[v * 4 + c], d = v2[v * 4 + c], mid = 0.5f * (a + d);
+            e += (b - mid) * (b - mid); span += (d - a) * (d - a);
+        }
+        e = sqrtf(e);
+        if (e > MESH_MIN_ODD * size && e > sqrtf(span)) { odd++; if (e / size > worst) worst = e / size; }
+    }
+    *worst_share = worst;
+    return odd;
+}
+
+static void mesh_record(uint8_t* rec, int kind) {
+    float* out = *(float**)(rec + MESH_REC_VERTS);
+    uint32_t n = *(uint32_t*)(rec + MESH_REC_COUNT);
+    if (!out || !n || n > MESH_MAX_VERTS) return;
+    AcquireSRWLockExclusive(&g_mesh_lock);
+    MeshTrack* t = nullptr; MeshTrack* free_t = nullptr;
+    for (int i = 0; i < MESH_TRACKS && !t; i++) {
+        if (g_mesh[i].out == out) t = &g_mesh[i];
+        else if (!g_mesh[i].out && !free_t) free_t = &g_mesh[i];
+    }
+    if (!t && free_t) { t = free_t; t->out = out; t->n = 0; }
+    if (t && t->n != n) {
+        for (int f = 0; f < 3; f++) { free(t->frames[f]); t->frames[f] = (float*)malloc(n * 16); }
+        bool ok = t->frames[0] && t->frames[1] && t->frames[2];
+        t->n = ok ? n : 0; t->head = 0; t->count = 0;
+    }
+    if (t && t->n) {
+        t->actor_id = tl_deform_actor_id;
+        int last = (t->head + 2) % 3;
+        if (t->count && t->inv[last] == g_inv) memcpy(t->frames[last], out, n * 16);   // rebuilt again: the later one is drawn
+        else {
+            // the newest frame is complete: judge the one before it against its neighbours
+            if (t->count >= 3) {
+                int m = (t->head + 1) % 3, f0 = t->head;
+                float worst = 0;
+                int odd = mesh_odd(t->frames[f0], t->frames[m], t->frames[last], n, &worst);
+                if (odd) {
+                    int k = t->kind[m] == INV_RENDER_ONLY ? 0 : 1;
+                    t->odd[k]++; t->odd_verts[k] += odd;
+                    if (worst > t->worst[k]) t->worst[k] = worst;
+                }
+            }
+            memcpy(t->frames[t->head], out, n * 16);
+            t->kind[t->head] = kind; t->inv[t->head] = g_inv;
+            t->head = (t->head + 1) % 3;
+            if (t->count < 3) t->count++;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_mesh_lock);
+}
+
+// Our copy of FUN_00514ab0 at its Ch_ClothDeform call: the same store, then the buffer is kept (drawn frames only).
+static uint32_t __cdecl hook_mark_upload(uint32_t* flag, uint32_t value) {
+    uint32_t old = *flag;
+    *flag = value;
+    int kind = g_inv_kind;
+    if (g_opt_drawcheck && (kind == INV_LOGIC || kind == INV_RENDER_ONLY))
+        __try { mesh_record((uint8_t*)flag - MESH_REC_FLAG, kind); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return old;
+}
+
+// Points the upload CALL in Ch_ClothDeform at hook_mark_upload, after checking the bytes around it and the setter.
+static void install_meshcheck() {
+    if (!g_opt_drawcheck || !g_cloth_deform) return;
+    uint8_t* site = (uint8_t*)g_cloth_deform + DEFORM_UPLOAD_CALL;
+    uint8_t* setter = call_target(site);
+    if (memcmp(site - sizeof(DEFORM_UPLOAD_BEFORE), DEFORM_UPLOAD_BEFORE, sizeof(DEFORM_UPLOAD_BEFORE)) != 0 || !setter ||
+        !in_image(setter) || memcmp(setter, UPLOAD_SETTER_BYTES, sizeof(UPLOAD_SETTER_BYTES)) != 0) {
+        log_line("  X2-SMOOTH-003-DRAWCHECK: cloth upload CALL not at Ch_ClothDeform +0x475 - mesh check off");
+        return;
+    }
+    if (!patch_call_rel32(site, setter, (void*)&hook_mark_upload)) { log_line("  X2-SMOOTH-003-DRAWCHECK: upload CALL patch failed - mesh check off"); return; }
+    g_upload_setter = setter;
+    log_line("  X2-SMOOTH-003-DRAWCHECK: mesh check on, CALL gva=0x%08X (expected 0x006DB275) -> setter gva=0x%08X (expected 0x00514AB0)",
+             rt_to_gva(site), rt_to_gva(setter));
+}
+
+// DRAWCHECK summary part: cloth meshes with odd frames this window, then a new window.
+static void meshcheck_report() {
+    char buf[1024] = ""; int len = 0, shown = 0;
+    AcquireSRWLockExclusive(&g_mesh_lock);
+    for (int i = 0; i < MESH_TRACKS; i++) {
+        MeshTrack& t = g_mesh[i];
+        if (t.out && (t.odd[0] || t.odd[1]) && shown < 12) {
+            int w = _snprintf_s(buf + len, sizeof(buf) - len, _TRUNCATE, "%s0x%04X (%u vertices) %ld/%ld frames, %ld/%ld vertices, worst %.1f%%/%.1f%%",
+                                shown ? "; " : "", t.actor_id, t.n, t.odd[0], t.odd[1], t.odd_verts[0], t.odd_verts[1],
+                                100.0f * t.worst[0], 100.0f * t.worst[1]);
+            if (w > 0) { len += w; shown++; }
+        }
+        t.odd[0] = t.odd[1] = t.odd_verts[0] = t.odd_verts[1] = 0; t.worst[0] = t.worst[1] = 0;
+    }
+    ReleaseSRWLockExclusive(&g_mesh_lock);
+    if (g_upload_setter)
+        log_line("X2-SMOOTH-003-DRAWCHECK: last %d drawn frames, cloth meshes (render-only/logic): %s", g_dc_window,
+                 shown ? buf : "none odd");
+}
+
 static float wrap_turn(float a) { a -= (float)(int)a; if (a > 0.5f) a -= 1.0f; if (a < -0.5f) a += 1.0f; return a; }
 
 // Puts an angle triple (turns) in the form with the middle angle in [-1/4, 1/4]; false near the quarter turn.
@@ -1418,6 +1558,7 @@ static void dc_report_counts(const char* what, uint16_t (*count)[DC_BONES][2]) {
 static void drawcheck_report() {
     dc_report_counts("angles", g_dc_count);
     dc_report_counts("world", g_dc_wcount);
+    meshcheck_report();
     memset(g_dc_count, 0, sizeof(g_dc_count));
     memset(g_dc_wcount, 0, sizeof(g_dc_wcount));
     g_dc_window = 0; g_dc_window_lines = 0;
