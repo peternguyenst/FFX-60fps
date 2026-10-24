@@ -32,38 +32,8 @@ bool safe_copy(void* dst, const void* src, size_t n) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// ---------------------------------------------------------------- patterns
-struct Pattern { uint8_t b[96]; uint8_t m[96]; int len; };
-
-static int hexv(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-static bool parse(const char* s, Pattern* p) {
-    p->len = 0;
-    while (*s) {
-        if (*s == ' ') { s++; continue; }
-        if (p->len >= 96) return false;
-        if (s[0] == '?' && s[1] == '?') { p->b[p->len] = 0; p->m[p->len] = 0; }
-        else {
-            int hi = hexv(s[0]), lo = hexv(s[1]);
-            if (hi < 0 || lo < 0) return false;
-            p->b[p->len] = (uint8_t)(hi * 16 + lo); p->m[p->len] = 1;
-        }
-        p->len++;
-        s += 2;
-    }
-    return p->len > 0;
-}
-
-static bool match_at(const uint8_t* at, const Pattern* p) {
-    for (int i = 0; i < p->len; i++) if (p->m[i] && at[i] != p->b[i]) return false;
-    return true;
-}
-
+// ---------------------------------------------------------------- patterns (parsing and matching: x2_pattern.cpp)
+// FFX-2.exe's code section (only .text: the scan never looks at other sections).
 static bool text_range(uint8_t** lo, uint8_t** hi) {
     uint8_t* base = exe_base();
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
@@ -81,18 +51,14 @@ static bool text_range(uint8_t** lo, uint8_t** hi) {
     return false;
 }
 
+// Hits of `pattern` in FFX-2.exe's .text: 0, 1, 2 (= more than one), -1 = bad pattern or headers.
 static int scan(const char* pattern, uint8_t** first) {
-    Pattern p;
+    BytePattern p;
     *first = nullptr;
-    if (!parse(pattern, &p)) return -1;
+    if (!parse_pattern(pattern, &p)) return -1;
     uint8_t *lo, *hi;
     if (!text_range(&lo, &hi)) return -1;
-    int hits = 0;
-    for (uint8_t* a = lo; a + p.len <= hi; a++) {
-        if (a[0] != p.b[0] && p.m[0]) continue;
-        if (match_at(a, &p)) { if (!hits) *first = a; if (++hits > 1) break; }
-    }
-    return hits;
+    return count_hits(lo, hi, p, first);
 }
 
 uint8_t* call_target(const uint8_t* site) {
@@ -127,9 +93,9 @@ uint8_t* sig_find(const char* label, const char* pattern, uint32_t expected_gva)
 }
 
 bool sig_match(const void* at, const char* pattern) {
-    Pattern p;
-    if (!at || !parse(pattern, &p)) return false;
-    __try { return match_at((const uint8_t*)at, &p); }
+    BytePattern p;
+    if (!at || !parse_pattern(pattern, &p)) return false;
+    __try { return pattern_matches((const uint8_t*)at, p); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
@@ -165,8 +131,8 @@ bool sigs_resolve_all() {
     if (runner) {
         g_mainloop_callsite = runner + RUNNER_CALL;
         uint8_t* ml = call_target(g_mainloop_callsite);
-        Pattern p;
-        if (ml && in_image(ml) && parse(SIG_MAINLOOP, &p) && match_at(ml, &p)) {
+        BytePattern p;
+        if (ml && in_image(ml) && parse_pattern(SIG_MAINLOOP, &p) && pattern_matches(ml, p)) {
             g_sg_mainloop = ml;
             log_line("  Sg_MainLoop        gva=0x%08X (runner call target, %d bytes verified)", rt_to_gva(ml), p.len);
         } else {

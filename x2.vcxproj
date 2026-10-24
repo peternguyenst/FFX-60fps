@@ -97,6 +97,7 @@
     <ClCompile Include="src\x2\x2_log.cpp" />
     <ClCompile Include="src\x2\x2_config.cpp" />
     <ClCompile Include="src\x2\x2_sigs.cpp" />
+    <ClCompile Include="src\x2\x2_pattern.cpp" />
     <ClCompile Include="src\x2\x2_hooks.cpp" />
     <ClCompile Include="src\x2\x2_pacing.cpp" />
     <ClCompile Include="src\x2\x2_rows.cpp" />

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Tests for the signature scanner the spell-DLL rows use (BytePattern, parse_pattern, pattern_matches, scan_module,
+// Tests for the shared signature scanner, x2_pattern.cpp (BytePattern, parse_pattern, pattern_matches, scan_module,
 // matches_at): pattern text, wildcards, exactly-one-hit counting, executable sections only. Run against real spell
-// DLLs where the game is installed.
+// DLLs where the game is installed. Written against the old copy in X2-MAG-016 before the three copies were merged;
+// X2-MAG-016.cpp is included for its driver signatures and its DLL-load logic (the census at the end).
 #include "test.h"
 #include "fakes.h"
 #include "../../src/x2/rows/X2-MAG-016.cpp"
@@ -113,4 +114,20 @@ TEST(scanner_looks_at_code_only) {
     CHECK(in_image);                                    // the bytes are there ...
     uint8_t* first = nullptr;
     CHECK_EQ(scan_module(d.base(), d.size, hex_of(marker).c_str(), &first), 0);   // ... but not in code
+}
+
+// Census (--slow): X2-MAG-016's DLL-load logic recognises exactly the 79 record-driver DLLs (census() is in
+// test_dll_census.cpp).
+typedef void (*load_fn)(uint8_t*, uint32_t, const char*);
+int census(load_fn on_load_fn, const char* recognised_text, int* recognised);
+
+TEST(mag016_recognises_the_79_record_drivers) {
+    if (!t::slow_tests()) { t::skip("slow: run x2_tests.exe --slow"); return; }
+    row_MAG016.on = 1;
+    g_disabled = 0;
+    int recognised = 0;
+    int dlls = census(on_load, "driver hook failed", &recognised);
+    if (dlls < 0) { t::skip("game spell DLLs not found"); return; }
+    CHECK_EQ(dlls, 844);
+    CHECK_EQ(recognised, 79);
 }

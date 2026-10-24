@@ -65,6 +65,16 @@ extern volatile uint32_t* g_divider;
 extern volatile int32_t*  g_backlog_count;
 extern volatile uint32_t* g_frame_counter;
 
+// ---------------------------------------------------------------- x2_pattern.cpp
+// Byte pattern "55 8B ?? EC" (?? = any byte): bytes b, mask m (1 = must match), length.
+struct BytePattern { uint8_t b[96]; uint8_t m[96]; int len; };
+bool parse_pattern(const char* text, BytePattern* p);           // false: bad hex, half a byte, empty or too long
+bool pattern_matches(const uint8_t* at, const BytePattern& p);
+bool matches_at(const uint8_t* at, const char* pattern);        // parse + match (false for a bad pattern)
+int  count_hits(const uint8_t* lo, const uint8_t* hi, const BytePattern& p, uint8_t** first);   // 0, 1 or 2 (= more)
+// Hits in a loaded module's executable sections: 0, 1, 2 (= more than one), -1 = bad headers or pattern.
+int  scan_module(uint8_t* mod, uint32_t size, const char* pattern, uint8_t** first);
+
 // ---------------------------------------------------------------- x2_hooks.cpp
 extern volatile LONG g_disabled;                 // any fault -> 1, hooks pass through
 extern bool g_divider_hooked;
