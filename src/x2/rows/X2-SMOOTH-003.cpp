@@ -24,6 +24,8 @@
 //               play-once animations, e.g. each stride of a run)
 //   SHORTLOOP   animations one frame long (hold poses) run exactly as stock: a half-frame sample twists them
 //   SANITY      a bone that jumps much further on the render-only frame than it moved over the last tick is put back
+//   DRAWCHECK   diagnostic (on while in progress): after every invocation the drawn bone angles are kept for 3 frames;
+//               a bone that is the odd one out against the frames on both sides is logged with the frame kind
 //   MIDCHECK    every render-only pose is checked one tick later against the true half-way point between the two
 //               logic ticks around it; a bone drawn far from it is logged and drawn at its tick pose for a while
 //   KEYHOLD     a bone whose two animation keys are far apart (cutscene data can store one rotation two ways) keeps
@@ -39,6 +41,7 @@
 // History, measurements and evidence: re/ledger/PORT-SMOOTH3.md (it also keeps this file's earlier header),
 // XFADE-BLINK.md (PEEL), KEYHOLD-X2.md; signatures tools/sigs_x2_smooth3.txt (ffx2-fps60 repo).
 #include "x2_smooth.h"
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -891,7 +894,9 @@ static volatile LONG g_extrap_n = 0, g_extrap_miss = 0;
 
 // One cloth mesh: its vertex array in the game (vtex, n vertices of 4 floats), and our copies of the latest (cur, from
 // logic tick ncur) and previous (prev, tick nprev; 0 = none) job results.
-struct ClothSnap { float* vtex; uint8_t* actor; uint32_t n; LONG ncur, nprev; float* cur; float* prev; };
+struct ClothSnap { float* vtex; uint8_t* actor; uint32_t n; LONG ncur, nprev; float* cur; float* prev;
+                   float typical_move; };   // running average of the largest vertex move per tick (jump log)
+static volatile LONG g_cloth_jump_lines = 0, g_cloth_jumps = 0;
 enum { MAX_CLOTH_SNAPS = 128 };
 static ClothSnap g_cloth_snaps[MAX_CLOTH_SNAPS];
 static SRWLOCK g_cloth_snaps_lock = SRWLOCK_INIT;
@@ -913,7 +918,7 @@ static ClothSnap* snap_get(float* vtex, uint8_t* actor, uint32_t n, bool create)
     if (s && create && (s->n != n || s->actor != actor)) {
         free(s->cur); free(s->prev);
         s->cur = (float*)malloc(n * 16); s->prev = (float*)malloc(n * 16);
-        s->n = (s->cur && s->prev) ? n : 0; s->actor = actor; s->ncur = s->nprev = 0;
+        s->n = (s->cur && s->prev) ? n : 0; s->actor = actor; s->ncur = s->nprev = 0; s->typical_move = 0;
     }
     ReleaseSRWLockExclusive(&g_cloth_snaps_lock);
     return s;
@@ -943,6 +948,26 @@ static void cloth_snap_after_step(uint8_t* a, bool reset) {
         float* t = s->prev; s->prev = s->cur; s->cur = t;
         s->nprev = reset ? 0 : s->ncur;
         memcpy(s->cur, vtex, n * 16);
+        // Jump log (diagnostic): the largest vertex move of this tick against the usual one. A blend across a jump
+        // draws the mesh half way between two far shapes.
+        if (s->nprev && s->nprev == s->ncur) {
+            float big = 0;
+            for (uint32_t v = 0; v < n * 4; v += 4) {
+                float dx = s->cur[v] - s->prev[v], dy = s->cur[v + 1] - s->prev[v + 1], dz = s->cur[v + 2] - s->prev[v + 2];
+                float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > big) big = d2;
+            }
+            big = sqrtf(big);
+            if (s->typical_move > 0 && big > 4.0f * s->typical_move + 1.0f) {
+                InterlockedIncrement(&g_cloth_jumps);
+                if (g_cloth_jump_lines < 40) {
+                    InterlockedIncrement(&g_cloth_jump_lines);
+                    log_line("X2-SMOOTH-003-CLOTHHOLD: id 0x%04X cloth mesh (%u vertices) jumped %.2f in one tick (usual %.2f)",
+                             *(const uint16_t*)a, n, big, s->typical_move);
+                }
+            }
+            s->typical_move = s->typical_move > 0 ? 0.9f * s->typical_move + 0.1f * big : big;
+        } else s->typical_move = 0;
         s->ncur = g_logic_tick;
     });
 }
@@ -1195,16 +1220,89 @@ static void pre() {
     memset((void*)g_walked_now, 0, sizeof(g_walked_now));
 }
 
+// --- DRAWCHECK: which bones flicker as drawn (diagnostic) -------------------------------------------------------------
+// After every invocation (post) the bone angles of each active actor are kept for the last three frames. For the
+// middle frame, a bone whose angle is far from the half-way point of the frames on both sides ("odd one out") is
+// logged with that frame's kind and all three angles of the three frames (an equivalent angle triple shows as all
+// three changing together), plus the damped-bone flag (bone byte +0x144) and the damping target angles (+0x114).
+static const int   DC_ACTORS = 32, DC_BONES = 256;
+static const float DC_MIN_ODD = 0.08f;                     // turns
+static int      g_opt_drawcheck = 1;
+static float*   g_dc_ang = nullptr;                        // [3 frames][DC_ACTORS][DC_BONES][3]
+static uint16_t g_dc_id[3][DC_ACTORS];
+static int      g_dc_kind[3];
+static int      g_dc_head = 0, g_dc_frames = 0;
+static volatile LONG g_dc_odd[4] = {}, g_dc_lines = 0;
+
+static void drawcheck_post() {
+    if (!g_opt_drawcheck || !g_dc_ang) return;
+    uint8_t* base = *g_actor_table;
+    int n = *g_actor_count;
+    if (!base || n <= 0) return;
+    if (n > DC_ACTORS) n = DC_ACTORS;
+    int t = g_dc_head;                                     // the frame recorded now
+    float* now = g_dc_ang + (size_t)t * DC_ACTORS * DC_BONES * 3;
+    g_dc_kind[t] = pacing_kind();
+    for (int i = 0; i < n; i++) {
+        uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+        const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+        int nb = bone_count(a);
+        if (!a[OFF_ACTIVE] || !bones || !nb) { g_dc_id[t][i] = 0xFFFF; continue; }
+        if (nb > DC_BONES) nb = DC_BONES;
+        g_dc_id[t][i] = *(const uint16_t*)a;
+        float* o = now + (size_t)i * DC_BONES * 3;
+        for (int b = 0; b < nb; b++)
+            for (int c = 0; c < 3; c++) o[b * 3 + c] = *(const float*)(bones + b * BONE_SIZE + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
+    }
+    g_dc_head = (t + 1) % 3;
+    if (++g_dc_frames < 3) return;
+    int m = (t + 2) % 3, f0 = (t + 1) % 3;                 // middle frame m, oldest frame f0, newest t
+    const float* A = g_dc_ang + (size_t)f0 * DC_ACTORS * DC_BONES * 3;
+    const float* M = g_dc_ang + (size_t)m * DC_ACTORS * DC_BONES * 3;
+    for (int i = 0; i < n; i++) {
+        uint16_t id = g_dc_id[m][i];
+        if (id == 0xFFFF || g_dc_id[f0][i] != id || g_dc_id[t][i] != id) continue;
+        uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+        const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+        int nb = bone_count(a);
+        if (nb > DC_BONES) nb = DC_BONES;
+        for (int b = 0; b < nb; b++) {
+            const float* x0 = A + (size_t)i * DC_BONES * 3 + b * 3;
+            const float* x1 = M + (size_t)i * DC_BONES * 3 + b * 3;
+            const float* x2 = now + (size_t)i * DC_BONES * 3 + b * 3;
+            float worst = 0; int wc = -1;
+            for (int c = 0; c < 3; c++) {
+                float err = 0;
+                midcheck_bad(x0[c], x1[c], x2[c], &err);
+                float span = turn_diff(x2[c], x0[c]);
+                if (err > DC_MIN_ODD && err > span && err > worst) { worst = err; wc = c; }
+            }
+            if (wc < 0) continue;
+            InterlockedIncrement(&g_dc_odd[g_dc_kind[m] & 3]);
+            if (g_dc_lines >= 80) continue;
+            InterlockedIncrement(&g_dc_lines);
+            const uint8_t* hb = bones + b * BONE_SIZE;
+            log_line("X2-SMOOTH-003-DRAWCHECK: %s frame, slot=%d id=0x%04X bone %d odd by %.3f turn on ch %d: "
+                     "before (%.3f %.3f %.3f) this (%.3f %.3f %.3f) after (%.3f %.3f %.3f); damped=%d target now (%.3f %.3f %.3f)",
+                     g_dc_kind[m] == INV_RENDER_ONLY ? "render-only" : g_dc_kind[m] == INV_LOGIC ? "logic" : "other",
+                     i, id, b, worst, wc, x0[0], x0[1], x0[2], x1[0], x1[1], x1[2], x2[0], x2[1], x2[2], hb[0x144],
+                     *(const float*)(hb + 0x114) * TURNS_PER_RADIAN, *(const float*)(hb + 0x118) * TURNS_PER_RADIAN,
+                     *(const float*)(hb + 0x11C) * TURNS_PER_RADIAN);
+        }
+    }
+}
+
 // After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
 static void post() {
+    if (g_opt_drawcheck && g_dc_ang && smooth_live(3)) __try { drawcheck_post(); } __except (EXCEPTION_EXECUTE_HANDLER) { g_opt_drawcheck = 0; log_line("X2-SMOOTH-003-DRAWCHECK: fault - off"); }
     if (g_freeze_state) __try { freeze_diag(); } __except (EXCEPTION_EXECUTE_HANDLER) { g_freeze_state = nullptr; log_line("X2-SMOOTH-003-FREEZEDIAG: fault - off"); }
     static LONG last = 0;
     if (g_walks - last >= 1800) {
         last = g_walks;
         log_line("X2-SMOOTH-003: walks=%ld stepped=%ld batches=%ld pays=%ld gated(seq=%ld motev=%ld) "
-                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
+                 "loopguard(wrap=%ld clamp=%ld hold=%ld) loopend_holds=%ld endx=%ld sanity=%ld midcheck(bad=%ld held=%ld) drawcheck(odd logic=%ld render-only=%ld) stock_steps=%ld cloth_held=%ld cloth_drawn=%ld cloth_miss=%ld half=%d live=%d",
                  g_walks, g_stepped, g_batches, g_pays, g_gated_seq, g_gated_motev, g_guard_wrap, g_guard_clamp,
-                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
+                 g_guard_hold, g_loopend_holds, (LONG)g_endx, (LONG)g_sanity_reverts, (LONG)g_mid_bad, (LONG)g_mid_held, (LONG)g_dc_odd[INV_LOGIC], (LONG)g_dc_odd[INV_RENDER_ONLY], g_stock_steps, (LONG)g_cloth_skipped, (LONG)g_extrap_n, (LONG)g_extrap_miss, *g_half_rate_switch, smooth_live(3));
     }
     static LONG reported_s = 0;
     if (!reported_s && g_stock_steps > 0) {
@@ -1290,6 +1388,11 @@ static bool install() {
     g_opt_endextrap_once = config_row("X2-SMOOTH-003-ENDEXTRAP-ONCE", 1);
     g_opt_sanity = config_row("X2-SMOOTH-003-SANITY", 1);
     g_opt_midcheck = config_row("X2-SMOOTH-003-MIDCHECK", 1);
+    g_opt_drawcheck = config_row("X2-SMOOTH-003-DRAWCHECK", 1);
+    if (g_opt_drawcheck) {
+        g_dc_ang = (float*)calloc((size_t)3 * DC_ACTORS * DC_BONES * 3, sizeof(float));
+        if (!g_dc_ang) g_opt_drawcheck = 0;
+    }
     g_opt_keyhold = config_row("X2-SMOOTH-003-KEYHOLD", 1);
     g_opt_keyhold_limit = config_row("X2-SMOOTH-003-KEYHOLD-D", 0x300);
     if (g_opt_keyhold_limit < 0x80 || g_opt_keyhold_limit > 0x800) g_opt_keyhold_limit = 0x300;
