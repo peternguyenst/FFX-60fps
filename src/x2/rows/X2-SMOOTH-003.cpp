@@ -294,6 +294,48 @@ static void damp_save(int i, const uint8_t* a) {
     g_damp_n[i] = (uint16_t)k;
 }
 
+// The game's damping (0x6E8ED0 with 0.7, 0, 10): the weight on the old angle is 0.7 - 10 x the change (radians,
+// shortest way round), at least 0; result = weight x old + (1 - weight) x target.
+static const float DAMP_KEEP = 0.7f, DAMP_KEEP_PER_RADIAN = 10.0f, TWO_PI = 6.2831853f, PI_F = 3.1415926f;
+static float damp_filter(float target, float old) {
+    if (target - old > PI_F) old += TWO_PI;
+    if (old - target > PI_F) old -= TWO_PI;
+    float keep = DAMP_KEEP - fabsf(target - old) * DAMP_KEEP_PER_RADIAN;
+    if (keep < 0) keep = 0;
+    return keep * old + (1.0f - keep) * target;
+}
+
+// Half way from a to b, the short way round (radians).
+static float half_way_angle(float a, float b) {
+    float d = b - a;
+    while (d > PI_F) d -= TWO_PI;
+    while (d < -PI_F) d += TWO_PI;
+    return a + 0.5f * d;
+}
+
+// After the render-only step: a damped bone is drawn half way between its angle at tick k and the angle the next
+// logic step would give it (the game's filter on the target carried on from k through the half-step target). Running
+// the filter on the half-step target instead put render-only frames about a third of a tick's movement ahead of half
+// way while a bone moved steadily: a vibration (U 24/10/2026, Rikku's cloth as she moves her hand). Bones the step
+// did not damp (angle == target) keep the step's value.
+static void damp_half_way(int i, uint8_t* a) {
+    int k = g_damp_n[i];
+    uint8_t* bones = *(uint8_t**)(a + OFF_BONES);
+    if (!k || bones != g_damp_bones[i]) return;
+    const DampSave* in = g_damp_save + (size_t)i * DAMP_MAX_BONES;
+    for (int j = 0; j < k; j++) {
+        uint8_t* hb = bones + in[j].bone * BONE_SIZE;
+        float* angle = (float*)(hb + BONE_ANGLE[0]);
+        const float* half_target = (const float*)(hb + BONE_TARGET);
+        if (memcmp(angle, half_target, 12) == 0) continue;
+        for (int c = 0; c < 3; c++) {
+            float next_target = in[j].target[c] + 2.0f * (half_target[c] - in[j].target[c]);   // carried on one tick
+            float next = damp_filter(next_target, in[j].angle[c]);
+            angle[c] = half_way_angle(in[j].angle[c], next);
+        }
+    }
+}
+
 static void damp_restore(int i, uint8_t* a) {
     int k = g_damp_n[i];
     g_damp_n[i] = 0;
@@ -799,6 +841,7 @@ static void render_only_walk() {
             }
             *(uint32_t*)(a + OFF_FLAGS) = fl | FLAG_STEP_MOTION;
             if (!render_only_step(i, a, fl)) return;
+            if (g_opt_damphold) __try { damp_half_way(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
             g_walked_now[i] = 1;
             g_walk_ran = true;
             InterlockedIncrement(&g_stepped);

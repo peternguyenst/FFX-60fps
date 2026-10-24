@@ -313,3 +313,34 @@ TEST(smooth003_damphold_puts_back_damped_bones_only) {
     CHECK_EQ((int)g_damp_n[slot], 0);
     g_damp_save = old;
 }
+
+// DAMPHOLD on render-only frames: a damped bone moving steadily is drawn half way between its tick-k angle and the
+// angle the next logic step gives it, not one filter step toward the half-step target.
+TEST(smooth003_damphold_draws_damped_bone_half_way) {
+    const int nb = 1, slot = 5;
+    std::vector<uint8_t> actor(ACTOR_SIZE, 0), header(0x40, 0), bones(nb * BONE_SIZE, 0);
+    *(uint16_t*)&actor[0] = 0x001A;
+    *(uint8_t**)&actor[OFF_MODEL_HEADER] = header.data();
+    *(uint16_t*)&header[MODEL_HEADER_BONE_COUNT] = nb;
+    *(uint8_t**)&actor[OFF_BONES] = bones.data();
+    bones[BONE_DAMPED] = 1;
+    float* angle = (float*)&bones[BONE_ANGLE[0]];
+    float* target = (float*)&bones[BONE_TARGET];
+    // steady motion of 0.004 rad per tick: target k = 0.10, the angle lags (keep weight ~0.7)
+    const float t_k = 0.10f, v_k = 0.09f, d = 0.004f;
+    for (int c = 0; c < 3; c++) { angle[c] = v_k; target[c] = t_k; }
+    std::vector<DampSave> save((size_t)MAX_ACTORS * DAMP_MAX_BONES);
+    DampSave* old = g_damp_save; g_damp_save = save.data();
+    damp_save(slot, actor.data());
+    // the render-only step writes the half-step target and damps toward it
+    for (int c = 0; c < 3; c++) { target[c] = t_k + d / 2; angle[c] = damp_filter(target[c], v_k); }
+    damp_half_way(slot, actor.data());
+    float next = damp_filter(t_k + d, v_k);
+    CHECK(close_to(angle[0], 0.5f * (v_k + next)));
+    // a bone the step did not damp (angle == target) keeps the step's value
+    for (int c = 0; c < 3; c++) { angle[c] = 0.2f; target[c] = 0.2f; }
+    damp_half_way(slot, actor.data());
+    CHECK(close_to(angle[0], 0.2f));
+    g_damp_n[slot] = 0;
+    g_damp_save = old;
+}
