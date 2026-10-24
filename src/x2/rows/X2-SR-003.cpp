@@ -24,16 +24,16 @@ namespace x2 {
 extern Row row_SR003;
 
 static volatile int32_t*  g_title_req = nullptr;   // DAT_016bc51c: 1 = title return requested (Sg_MainLoop), 2 = done
-static volatile uint32_t* g_btl_flags = nullptr;   // DAT_0119347c: bit 0x200 = loss allowed
-static volatile int8_t*   g_result = nullptr;      // DAT_00df84b5: pending battle result (party check)
-static volatile int8_t*   g_bstate = nullptr;      // DAT_00df68a0: 0 none, 1 running, 0x26 teardown
-static volatile int8_t*   g_bresult = nullptr;     // DAT_00df68a2: final battle result
+static volatile uint32_t* g_battle_flags = nullptr;   // DAT_0119347c: bit 0x200 = loss allowed
+static volatile int8_t*   g_pending_result = nullptr;      // DAT_00df84b5: pending battle result (party check)
+static volatile int8_t*   g_battle_state = nullptr;      // DAT_00df68a0: 0 none, 1 running, 0x26 teardown
+static volatile int8_t*   g_battle_result = nullptr;     // DAT_00df68a2: final battle result
 static uint8_t*           g_pad = nullptr;         // pad block 0x0119ED48 (index byte +0x9C, held word +4, 0x20 per pad)
 static uint16_t           g_chord = 0x090F;
 static char               g_chord_text[96];
-static bool               g_armed = true;
+static bool               g_chord_armed = true;
 
-static const struct { const char* name; uint16_t bit; } k_buttons[] = {
+static const struct { const char* name; uint16_t bit; } BUTTONS[] = {
     {"L2", 0x0001}, {"R2", 0x0002}, {"L1", 0x0004}, {"R1", 0x0008},
     {"TRIANGLE", 0x0010}, {"CIRCLE", 0x0020}, {"CROSS", 0x0040}, {"SQUARE", 0x0080},
     {"SELECT", 0x0100}, {"L3", 0x0200}, {"R3", 0x0400}, {"START", 0x0800},
@@ -52,15 +52,15 @@ static uint16_t parse_chord(const char* s) {
         tok[n] = 0;
         if (!n) break;
         bool found = false;
-        for (auto& b : k_buttons) if (!strcmp(tok, b.name)) { mask |= b.bit; found = true; }
+        for (auto& b : BUTTONS) if (!strcmp(tok, b.name)) { mask |= b.bit; found = true; }
         if (!found) { log_line("  X2-SR-003: unknown button '%s' in soft_reset", tok); return 0; }
     }
     return mask;
 }
-static int                g_btl_pending = 0;       // logic ticks since a battle reset, 0 = none
+static int                g_battle_reset_ticks = 0;       // logic ticks since a battle reset, 0 = none
 
-static uint8_t* gva(uint32_t va) { return exe_base() + (va - 0x400000); }
-template <typename T> static T rd(uint32_t va) { return *(volatile T*)gva(va); }
+static uint8_t* at_gva(uint32_t va) { return exe_base() + (va - 0x400000); }
+template <typename T> static T read_gva(uint32_t va) { return *(volatile T*)at_gva(va); }
 
 static uint16_t pad_held() {
     uint8_t idx = g_pad[0x9C];
@@ -68,47 +68,47 @@ static uint16_t pad_held() {
 }
 
 // FFX SR-005 equivalents (SOFTRESET-X2.md "Port plan"): 0 = may reset, else the first blocking condition.
-static const char* blocked() {
-    int8_t bs = *g_bstate;
+static const char* reset_blocked_by() {
+    int8_t bs = *g_battle_state;
     if (bs != 0 && bs != 1)                              return "battle starting or ending";
-    if (bs == 1 && (*g_result != 0 || *g_bresult != 0)) return "battle result already decided";
-    if (rd<int32_t>(0x016BC55C) != 0)                    return "menu screen running";
-    if (rd<int32_t>(0x016BC524) != 0 || rd<int32_t>(0x016BC560) != 0 || rd<int32_t>(0x016BC528) != 0) return "paused";
-    if (rd<int32_t>(0x00DF6870) != -1)                   return "screen request pending";
-    if (rd<int32_t>(0x0119F358) != 0)                    return "map change in flight";
-    if (bs == 0 && rd<uint32_t>(0x00D61748) == 0x17)     return "at the title";
+    if (bs == 1 && (*g_pending_result != 0 || *g_battle_result != 0)) return "battle result already decided";
+    if (read_gva<int32_t>(0x016BC55C) != 0)                    return "menu screen running";
+    if (read_gva<int32_t>(0x016BC524) != 0 || read_gva<int32_t>(0x016BC560) != 0 || read_gva<int32_t>(0x016BC528) != 0) return "paused";
+    if (read_gva<int32_t>(0x00DF6870) != -1)                   return "screen request pending";
+    if (read_gva<int32_t>(0x0119F358) != 0)                    return "map change in flight";
+    if (bs == 0 && read_gva<uint32_t>(0x00D61748) == 0x17)     return "at the title";
     if (*g_title_req == 1)                               return "title return already requested";
-    uint8_t* fmv = *(uint8_t**)gva(0x00DC594C);
+    uint8_t* fmv = *(uint8_t**)at_gva(0x00DC594C);
     if (fmv && *(volatile uint8_t*)(fmv + 0x6CC) != 0)   return "movie playing";   // byte flag (X2-W2A-002)
     return nullptr;
 }
 
-static void battle_tick() {
-    int8_t bs = *g_bstate;
-    if (bs == 0) { log_line("X2-SR-003: battle torn down after %d ticks (title load follows)", g_btl_pending); g_btl_pending = 0; return; }
-    *g_btl_flags &= ~0x200u;                             // a script may set it again while the battle ends
-    if (++g_btl_pending == 300)
+static void battle_reset_tick() {
+    int8_t bs = *g_battle_state;
+    if (bs == 0) { log_line("X2-SR-003: battle torn down after %d ticks (title load follows)", g_battle_reset_ticks); g_battle_reset_ticks = 0; return; }
+    *g_battle_flags &= ~0x200u;                             // a script may set it again while the battle ends
+    if (++g_battle_reset_ticks == 300)
         log_line("X2-SR-003: battle still up after 10 s (state 0x%02X, result %d/%d) - a GAME OVER window may wait for a button (H)",
-                 (uint8_t)bs, (int)*g_result, (int)*g_bresult);
-    if (g_btl_pending > 1800) { log_line("X2-SR-003: battle did not end in 60 s (state 0x%02X) - given up", (uint8_t)bs); g_btl_pending = 0; }
+                 (uint8_t)bs, (int)*g_pending_result, (int)*g_battle_result);
+    if (g_battle_reset_ticks > 1800) { log_line("X2-SR-003: battle did not end in 60 s (state 0x%02X) - given up", (uint8_t)bs); g_battle_reset_ticks = 0; }
 }
 
 static void post() {
     if (g_disabled || pacing_kind() == INV_RENDER_ONLY) return;
-    if (g_btl_pending) { battle_tick(); return; }
+    if (g_battle_reset_ticks) { battle_reset_tick(); return; }
     bool chord = (pad_held() & g_chord) == g_chord;
-    if (!chord) { g_armed = true; return; }
-    if (!g_armed) return;
-    g_armed = false;                                     // once per chord: release to re-arm
-    if (const char* why = blocked()) { log_line("X2-SR-003: soft reset chord ignored (%s)", why); return; }
-    if (*g_bstate == 1) {
-        *g_btl_flags &= ~0x200u;
-        *g_result = 1;
-        g_btl_pending = 1;
+    if (!chord) { g_chord_armed = true; return; }
+    if (!g_chord_armed) return;
+    g_chord_armed = false;                                     // once per chord: release to re-arm
+    if (const char* why = reset_blocked_by()) { log_line("X2-SR-003: soft reset chord ignored (%s)", why); return; }
+    if (*g_battle_state == 1) {
+        *g_battle_flags &= ~0x200u;
+        *g_pending_result = 1;
+        g_battle_reset_ticks = 1;
         log_line("X2-SR-003: soft reset in battle -> defeat (loss-allowed bit cleared), game over -> title follows");
         return;
     }
-    log_line("X2-SR-003: soft reset -> title (map 0x%X)", rd<uint32_t>(0x00D61748));
+    log_line("X2-SR-003: soft reset -> title (map 0x%X)", read_gva<uint32_t>(0x00D61748));
     *g_title_req = 1;
 }
 
@@ -153,12 +153,12 @@ static bool install() {
         return false;
     }
     g_title_req = (volatile int32_t*)abs_operand("title request", req_site + 2);
-    g_btl_flags = (volatile uint32_t*)abs_operand("battle call flags", s[2].at + 2);
+    g_battle_flags = (volatile uint32_t*)abs_operand("battle call flags", s[2].at + 2);
     g_pad       = abs_operand("pad block", s[3].at + 0x11);
-    g_result    = (volatile int8_t*)abs_operand("pending battle result", s[4].at + 0xF);
-    g_bstate    = (volatile int8_t*)abs_operand("battle state", s[5].at + 2);
-    g_bresult   = (volatile int8_t*)abs_operand("battle result", s[5].at + 0xA);
-    if (!g_title_req || !g_btl_flags || !g_pad || !g_result || !g_bstate || !g_bresult) return false;
+    g_pending_result    = (volatile int8_t*)abs_operand("pending battle result", s[4].at + 0xF);
+    g_battle_state    = (volatile int8_t*)abs_operand("battle state", s[5].at + 2);
+    g_battle_result   = (volatile int8_t*)abs_operand("battle result", s[5].at + 0xA);
+    if (!g_title_req || !g_battle_flags || !g_pad || !g_pending_result || !g_battle_state || !g_battle_result) return false;
     config_str("x2", "soft_reset", g_chord_text, sizeof(g_chord_text), "L1+L2+R1+R2+START+SELECT");
     uint16_t m = parse_chord(g_chord_text);
     if (!m || (m & (m - 1)) == 0) {
@@ -168,8 +168,8 @@ static bool install() {
     g_chord = m;
     log_line("  X2-SR-003: reset gva=0x%08X; request 0x%08X, loss flags 0x%08X, result 0x%08X, state 0x%08X/0x%08X, pad 0x%08X; "
              "chord '%s' (mask 0x%04X), field and battle", rt_to_gva(fn), rt_to_gva((const void*)g_title_req),
-             rt_to_gva((const void*)g_btl_flags), rt_to_gva((const void*)g_result), rt_to_gva((const void*)g_bstate),
-             rt_to_gva((const void*)g_bresult), rt_to_gva(g_pad), g_chord_text, g_chord);
+             rt_to_gva((const void*)g_battle_flags), rt_to_gva((const void*)g_pending_result), rt_to_gva((const void*)g_battle_state),
+             rt_to_gva((const void*)g_battle_result), rt_to_gva(g_pad), g_chord_text, g_chord);
     return true;
 }
 
