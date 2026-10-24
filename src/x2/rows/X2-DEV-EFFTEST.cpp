@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DEV-EFFTEST (test tool, user 22/10/2026: test every spell effect for blinks / crashes without reporting each one).
-// Numpad 5 (X2-DEV-EFFTEST-KEY) toggles test mode. While it is on, every battle request for a magic effect plays the
-// next untested magic DLL instead: the game's only setter of the effect number, FUN_00857820(int id) (cdecl, plain RET
-// 0x857855; `MOV [g_dwMagicOverlayId 0xD6E400],EAX` at 0x85782D; callers FUN_006216b0 / FUN_00644610), gets the test
-// number. The number becomes "magic_%04d" in FUN_008571b0. Numbers come from <game>\magicFiles\FFX-2\magic_NNNN.dll
-// (language variants count once); numbers in the game's "unknown magic file" table (ints from 0xD6E408 until < 0, which
-// FUN_008572d9 answers with a deliberate null write) are skipped. X2-DIAG-BLINK logs each one's verdict at unload,
-// X2-DIAG-CRASH any fault. Progress survives restarts in <game>\fps60x2-efftest.txt ("start N" / "done N"): a number
-// started but never done (crash, hang, soft reset) is reported at the next start and skipped.
-// Effects play on the wrong caster / target, so wrong looks, waits or crashes of a test effect are test artefacts.
-// ini [rows]: X2-DEV-EFFTEST=1 (row, default 1), X2-DEV-EFFTEST-KEY=<vk, decimal; 101 = numpad 5>,
-// X2-DEV-EFFTEST-FROM=<first number, default 0>.
-// X2-DEV-EFFTEST-ONLY=<number, default 0 = off> (user 23/10/2026: Ultima cannot be cast on demand): test mode plays
-// that one magic DLL on every request, without the progress file, e.g. 106 = Ultima (ULTIMA-0106.md).
+// X2-DEV-EFFTEST (test tool): test every spell effect for blinks and crashes without casting each one.
+//
+// Numpad 5 (X2-DEV-EFFTEST-KEY) toggles test mode. While it is on, every effect the battle asks for plays the next
+// untested spell DLL instead: the game's only setter of the effect number (FUN_00857820) is given the test number.
+// Numbers come from <game>\magicFiles\FFX-2 (language copies count once); numbers the game itself refuses (its
+// "unknown magic file" table) are skipped. X2-DIAG-BLINK logs each one's blink verdict at unload, X2-DIAG-CRASH any
+// crash. Progress survives restarts in <game>\fps60x2-efftest.txt; a number started but never finished (crash, hang,
+// soft reset) is reported at the next start and skipped. Effects play on the wrong caster and target, so odd looks,
+// waits or crashes of a test effect can be test artefacts.
+// ini [rows]: X2-DEV-EFFTEST=1, X2-DEV-EFFTEST-KEY=<virtual-key code, decimal; 101 = numpad 5>,
+// X2-DEV-EFFTEST-FROM=<first number>, X2-DEV-EFFTEST-ONLY=<number> (play that one DLL on every request, no progress
+// file; e.g. 106 = Ultima, which cannot be cast on demand).
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>

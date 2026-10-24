@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-027 (port of FFX MAG-027): event timeline walker of the cross-fade magic DLLs (27 DLLs, magic_0681 shape
-// FUN_10003220: thiscall(list), plain RET), run from the DLL's draw on every invocation. list[0] -> header, clock =
-// short [header+6]; list[1..] -> event records {u16 type, start, end, ...} up to type 0xFFFF; each event's handler
-// (table by type) is called with (event, clock), the clock read BEFORE the walker's own INC, which runs only when the
-// exec getter (+0x400) is non-zero. So at 60 Hz every clock value is handled twice (render-only invocation, then the
-// next logic one), and a handler's start / end phase runs twice: magic_0681's cross-fade handler FUN_10006830 frees its
-// buffer at the end tick (_aligned_free) - twice = heap corruption, U 16/10/2026 23:11 (0xC0000374, WER dump, stack
-// magic_0681 draw -> FUN_10003220 -> FUN_10003500 -> FUN_10006830 -> msvcr110 free).
-// Fix: on render-only invocations the events whose start equals the clock are taken out of the list for that walk
-// (they appear on the logic invocation), and events whose end equals the clock get end+1 for that walk, so they run
-// their in-range phase (draw) instead of the end phase; list and end fields are restored right after. Start / end
-// phases run once, on the logic invocation. (First build hid end events too: each element vanished for one frame as
-// it ended, U 16/10/2026 23:24 "blink" in Full Throttle, magic_0681, 97 hidden in 18 s.) If the shortened list let the walk mark the timeline finished
-// (clock 0xFFFF), the clock is put back: the logic invocation decides.
-// Evidence: outer repo re/ledger/CRASH-0681.md (S + D).
+// X2-MAG-027: cross-fade spells run each timeline event's start and end once (fixes a crash in Full Throttle).
+//
+// 27 cross-fade spell DLLs (magic_0681's family) walk an event timeline from their draw, on every invocation. Each
+// event has a start and an end frame; its handler is called with the timeline clock, and the clock advances only on
+// logic invocations. So at 60 fps every clock value was handled twice (render-only, then logic), and an event's start
+// and end ran twice: magic_0681's handler frees a buffer at the end, twice = heap corruption.
+// The fix, on render-only invocations, for that one walk: events starting at this clock are taken out of the list
+// (they start on the logic invocation), and events ending at this clock get end + 1 (they run their normal in-range
+// draw instead of their end). The list and the end fields are restored right after. If the shortened list made the
+// walk mark the timeline finished, the clock is put back: the logic invocation decides. (A first build also hid ending
+// events, which made each element vanish for one frame as it ended.) Evidence: re/ledger/CRASH-0681.md.
 #include "../x2.h"
 #include <intrin.h>
 #include <string.h>

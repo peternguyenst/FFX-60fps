@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DEV-IMMORTAL (test tool, user 22/10/2026: long fights for crash tests): numpad 7 (X2-DEV-IMMORTAL-KEY) toggles
-// the game's own leftover debug flag "party takes no damage", DAT_00df68b8 (enemy-side twin DAT_00df68b9). The HP
-// damage apply FUN_0061b750(id, chr, dmg) returns before HP +0x3B4 changes when dmg > 0, the target is side 0
-// (FUN_00625bc0: ids 0x0F..0x1E are side 1) and the flag is set (0x61B7EA `CMP byte [0x00df68b8],AL; JNZ`); MP damage
-// FUN_0061b620 and FUN_0061b830 test it the same way. Setters FUN_0065db10 / FUN_0065db00 and battle script opcodes
-// also write it, so while on the row writes 1 before every invocation; turning it off puts back the value seen at
-// switch-on. Statuses that are not HP damage (e.g. petrify, instant KO) are not covered (H).
-// Evidence: outer repo re/ledger/DEV-IMMORTAL.md (S).
-// ini [rows]: X2-DEV-IMMORTAL=1 (row, default 1), X2-DEV-IMMORTAL-KEY=<virtual-key code, decimal; 103 = numpad 7>,
-// X2-DEV-IMMORTAL-START=1 (start with the party immortal).
+// X2-DEV-IMMORTAL (test tool): a key makes the party take no HP or MP damage, for long test fights.
+//
+// Numpad 7 by default toggles the game's own leftover debug flag "party takes no damage" (gva 0xDF68B8): the game's
+// damage functions return early while it is set. Other code and battle scripts also write the flag, so while on, the
+// row writes 1 before every invocation; turning it off puts back the value it had when it was turned on. Statuses that
+// are not damage (petrify, instant KO) are not covered (H). Evidence: re/ledger/DEV-IMMORTAL.md.
+// ini [rows]: X2-DEV-IMMORTAL=1, X2-DEV-IMMORTAL-KEY=<virtual-key code, decimal; 103 = numpad 7>,
+// X2-DEV-IMMORTAL-START=1 (start immortal).
 #include "../x2.h"
 
 namespace x2 {

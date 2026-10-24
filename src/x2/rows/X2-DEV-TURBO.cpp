@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DEV-TURBO (test tool, port of FFX DEV-TURBO core + SOUND): while a key is held, the game runs X2-DEV-TURBO-SPEED
-// times faster through its own booster path. Sg_MainLoop scales its delta by the booster factor (FUN_0051c1b0, called at
-// 0x60514A: delta * [0xD42280 + idx*4] when the index [0xDEAF74] != 0, plain RETs 0x51C221 / 0x51C25F); the larger
-// delta becomes a backlog count, which the runner executes with skip-render invocations. Frameskip is allowed only while
-// the booster is on (FUN_006044b0 -> FUN_0051c1a0 `XOR EAX,EAX; CMP [idx],EAX; SETNZ AL; RET`, its only caller). The row
-// forces both while the key is held (outer repo re/MAINLOOP.md §4-§5, S). Pacing sees the extra invocations as backlog.
-// X2-DEV-TURBO-SOUND (default 1): the booster switches the sound into its turbo mode on engage / release by calling
-// FUN_006066f0(1 / 0) (cdecl(int), state [0xDF6404], plain RET 0x60673A; same bytes as FFX FUN_00821c60, S); the key
-// path calls it on the key edges, a release is skipped while the game's own booster is engaged ([0xDEAF78]).
-// Not ported: FFX DEV-TURBO-VOICE (voice-busy query, SyncData base shift); voiced cutscenes may still wait at 1x (H).
+// X2-DEV-TURBO (test tool): while a key is held, the game runs X2-DEV-TURBO-SPEED times faster.
+//
+// It uses the game's own booster path: the main loop scales its time step by the booster factor, the bigger step
+// becomes extra logic invocations without drawing (backlog), and frame skipping is allowed only while the booster is
+// on. The row forces both while the key is held; pacing sees the extra invocations as backlog. See re/MAINLOOP.md §4-§5.
+// X2-DEV-TURBO-SOUND (on): the sound is switched into the booster's turbo mode on press and back on release (unless
+// the game's own booster is on). Voiced cutscenes may still wait at normal speed (FFX's voice part is not ported, H).
 // ini [rows]: X2-DEV-TURBO=1, X2-DEV-TURBO-KEY=<virtual-key code, decimal; 96 = numpad 0>, X2-DEV-TURBO-SPEED=<2..30>.
 #include "../x2.h"
 

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-FX-010-DRAWOPS (port of FFX FX-010-DRAWOPS): the particle draw ops pppDrawShapeCamera FUN_008320a0 and
-// pppDrawShapeCameraDisPos FUN_00833040 put their draw call behind `if (pause == 0)`, together with the sub-particle
-// spawn and integrate. On render-only invocations the pause flag 0x1CF579C is set (X2-MAG-006, and the Ego framework
-// of magic_0078 itself), so these effects are drawn on logic invocations only: they blink (hit flash).
-// Fix: the JNZ of the gate is NOPed and the spawn / integrate CALLs go to stubs that skip while paused, so the draw
-// runs on every invocation and the sub-particles still step once per tick.
-// Evidence: outer repo re/ledger/DRAWCAM.md (S); sigs tools/sigs_x2_drawcam.txt.
+// X2-FX-010-DRAWOPS: camera-facing particle shapes (hit flashes and similar) are drawn on every frame.
+//
+// Two particle draw ops (pppDrawShapeCamera and pppDrawShapeCameraDisPos) draw only when particles are not paused,
+// together with spawning and moving their sub-particles. On render-only invocations particles are paused (X2-MAG-006,
+// and some spell frameworks pause them too), so these shapes showed on logic frames only: a blink.
+// The fix: the pause test before the draw is removed (NOPed), and the spawn / move calls go to hooks that skip while
+// paused, so the shape is drawn every invocation and its sub-particles still step once per tick.
+// Evidence: re/ledger/DRAWCAM.md; signatures tools/sigs_x2_drawcam.txt.
 #include "../x2.h"
 
 namespace x2 {

@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DEV-BISECT (test tool, default 1 while testing): F8 (game window focused) turns the battle/effect rows off one at
-// a time, so a visual bug can be pinned to a row without restarting: none -> X2-MAG-006 -> X2-UI-001 -> X2-LOOP-004 ->
-// X2-LOOP-005 -> X2-MAG-009 off -> none. Each press is logged. 18/10/2026 dressphere blink: TEXANIM-001, TASK-001,
-// MAG-016, MAG-020, MAG-026, CHR-001, CHR-002, MAG-032 already tested off (no change, U) and dropped from the list.
-// Not listed: X2-MAG-008 and X2-MAG-025 (off mid-battle, magic_0888 overflows the effect heap: deliberate null write in
-// op_malloc FUN_0069fed0 at 0x69FF4D, D fps60x2.log 16:03:43), rows whose patches do not check .on at runtime
-// (FX-010-DRAWOPS, FX-012) and crash guards (MAG-019/027/030/031).
-// The toggle runs in post() of the last registered row, after every other row's post(), so a row is never switched
-// between its own pre() and post(). Patches stay in place; a row that is off passes through (its stubs check .on).
-// Used for the hit-effect blink (U 12/10/2026: "frame 1 flash, frame 2 off, frame 3 flash").
-// X2-DEV-BISECT-AUTO=<seconds> (default 0 = off; user 23/10/2026: one cast should answer, Ultima's sphere blink): while
-// an X2-DIAG-FTBLINK-DLL magic DLL is loaded, the steps below advance every <seconds> without a key, a baseline step
-// (everything as installed) before every test step, continuing across loads; everything goes back when the DLL
-// unloads. The current step is in g_bisect_step for X2-DIAG-CAPTURE's F lines.
+// X2-DEV-BISECT (test tool): F8 turns the battle / effect rows off one at a time, to find which row causes a visual bug
+// without restarting.
+//
+// Each F8 press moves to the next step and is logged: none -> X2-MAG-006 off -> X2-UI-001 -> X2-LOOP-004 ->
+// X2-LOOP-005 -> X2-MAG-009 -> none. Not in the list: X2-MAG-008 and X2-MAG-025 (switching them off mid-battle made a
+// spell overflow the effect heap), rows whose patches do not check their on switch (X2-FX-010-DRAWOPS, X2-FX-012) and
+// the crash guards. The switch happens in post() of the last row, after every other row's post(), so a row is never
+// switched between its own pre() and post(). Patches stay in place; a row that is off passes straight through.
+// X2-DEV-BISECT-AUTO=<seconds> (off): while an X2-DIAG-FTBLINK-DLL spell is loaded, the steps advance by themselves
+// every <seconds>, with a baseline step (everything on) before each test step, so one cast tests every row; everything
+// goes back when the DLL unloads. The current step is in g_bisect_step (X2-DIAG-CAPTURE logs it).
 #include "../x2.h"
 #include "x2_smooth.h"
 

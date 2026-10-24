@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DEV-TOPMOST (test tool, user 22/10/2026: keep the game visible over other apps while reading something else):
-// a key (X2-DEV-TOPMOST-KEY, default numpad 6) toggles the game window between always-on-top and normal
-// (SetWindowPos HWND_TOPMOST / HWND_NOTOPMOST on the process's visible top-level window). Works in windowed and
-// borderless modes; exclusive fullscreen has no "on top" to give. No game code involved.
-// ini [rows]: X2-DEV-TOPMOST=1 (row, default 1), X2-DEV-TOPMOST-KEY=<virtual-key code, decimal; 102 = numpad 6>,
-// X2-DEV-TOPMOST-START=1 (on top from the first frame the window exists).
+// X2-DEV-TOPMOST (test tool): a key keeps the game window on top of other windows, or lets it go again.
+//
+// Numpad 6 by default (X2-DEV-TOPMOST-KEY). Works in windowed and borderless modes (exclusive fullscreen has no "on
+// top"). No game code involved. ini [rows]: X2-DEV-TOPMOST=1, X2-DEV-TOPMOST-KEY=<virtual-key code, decimal;
+// 102 = numpad 6>, X2-DEV-TOPMOST-START=1 (on top from the start).
 #include "../x2.h"
 
 namespace x2 {
