@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-030 (FFX-2 only): the "T" magic overlays (71 magic_*.dll files, magic_0718 shape) run a record driver from
-// a script task (service +0x60C -> task group 0x40, run by FUN_00680980 in Sg_MainLoop's second loop, so on every
-// invocation). Each record starts (init callback, once) when its start frame <= the driver clock; the clock advances
-// at the end of a call only when the exec getter +0x400 is non-zero. Stock exec is always 1, so a record starts on the
-// tick after the clock reaches it, after that tick's overlay update re-polls the script flags (+0x420). At 60 Hz the
-// render-only invocation right after a logic one starts it half a tick early, with flags polled before the script set
-// them: magic_0718's init FUN_10001220 then finds no variant flag and writes through a null object (crash, D 16/10/2026
-// 17:39:31, CoreDump.dmp: magic_0718_us.dll+0x1418 MOV [EAX+0x130],1, EAX=0, map 0x91).
-// Fix: on render-only invocations the driver runs with its clock one tick back (then restored), so no record starts
-// or ends there; records already running are called as before.
-// Evidence: outer repo re/ledger/MAG-TASK.md (S); offline scan of magicFiles/FFX-2: 71 DLLs, 1 hit each, all checks.
-// X2-MAG-030-DMG (default 1): that render-only re-run calls running records' callbacks with the same record frame as the
-// logic call before it, so frame-keyed one-shot actions run twice; for damage that uses up the multi-hit budget and the
-// later hits do nothing (U 17/10/2026: Tidus's Blitz Ace, magic_0749, half the hits had no number and no reaction; D:
-// X2-DIAG-HIT, hit checks in L/R pairs; S: magic_0749 FUN_10002e30 `if (rec+4 == 0x3E) svc+0x3CC(...)`). While the
-// re-run is active, ms_set_damage FUN_0061b150 (service +0x3CC) returns 0 without applying. Outer repo re/ledger/DMGNUM.md.
+// X2-MAG-030: "timeline" spell DLLs start and end their effect parts only on logic frames (fixes two crashes).
+//
+// Background. 92 spell DLLs (commsphere recordings, magic_0718's family and others) play a timeline: a list of records,
+// each with a start and end frame. A driver function in the DLL runs on every invocation: it starts each record whose
+// start frame <= the timeline clock (calling its init once), calls the running ones, and advances the clock at the
+// end, but only when the exec flag is set (logic frames).
+//
+// The problem. In the stock game the clock is checked once per tick, after the tick's script has set the flags a
+// record's init reads. At 60 fps the render-only invocation right after a logic one starts the record half a tick
+// early, before those flags are set: the init found no object and wrote through a null pointer (crashes in magic_0718,
+// magic_0760 and magic_0740 while a commsphere recording played).
+// The fix. On render-only invocations the driver runs with its clock one tick back (then put back), so no record
+// starts or ends there; records already running are still called.
+//
+// Driver shapes (each found in the loaded DLL by signature, one hit required, all operands checked):
+//   A  magic_0718 shape, 71 DLLs: clock and exec flag are globals of the DLL
+//   B  magic_0760 shape, 11 DLLs: the same with the record table in EDI    (X2-MAG-030-B, on)
+//   C  magic_0740 shape, 10 DLLs: the timeline is an object in ECX, clock at [ECX]   (X2-MAG-030-C, on)
+// X2-MAG-030-DMG (on): the render-only re-run calls running records with the same frame as the logic call before it,
+//   so one-shot actions keyed to a frame ran twice. For damage that used up a multi-hit attack's budget (Blitz Ace:
+//   half the hits did nothing). While the re-run is active, ms_set_damage (FUN_0061b150) does nothing.
+// History, measurements and evidence: re/ledger/MAG-TASK.md (it also keeps this file's earlier comments), DMGNUM.md.
 #include "../x2.h"
 #include "../../../third_party/minhook/include/MinHook.h"
 #include <string.h>
@@ -23,8 +29,8 @@ namespace x2 {
 
 extern Row row_MAG030;
 
-// ---------------------------------------------------------------- signatures (magic_0718_us Ghidra VAs, base 0x10000000)
-// Driver FUN_10003870: __fastcall (ecx passed on to +0x400), no stack args, plain RETs (+0x27, +0xFF, +0x10B).
+// --- Driver signatures (offsets from the driver entry; addresses are magic_0718_us's, DLL base 0x10000000) ------------
+// Shape A, magic_0718 FUN_10003870: __fastcall (ECX passed on to the exec getter), no stack arguments, plain RETs.
 static const char SIG_ENTRY[] =     // entry: exec getter +0x400 -> [exec], live count test, record loop setup
     "55 8B EC 51 A1 ?? ?? ?? ?? 8B 80 00 04 00 00 FF D0 83 3D ?? ?? ?? ?? 00 A3 ?? ?? ?? ?? 75 09 B8 01 00 00 00 "
     "8B E5 5D C3 53 56 33 DB 57 BE ?? ?? ?? ?? 39 1D ?? ?? ?? ?? 0F 8E";
@@ -33,24 +39,16 @@ static const char SIG_START[] =     // entry+0x44: record test, start != -1, CMP
 static const char SIG_TAIL[] =      // entry+0xE8: if ([exec]) INC [clock] (operand +0xF3); plain RET
     "83 3D ?? ?? ?? ?? 00 74 06 FF 05 ?? ?? ?? ?? 5F 5E 33 C0 5B 8B E5 5D C3";
 enum { OFF_SVC = 5, OFF_EXEC = 0x19, OFF_START = 0x44, OFF_CLOCK = 0x5E, OFF_TAIL = 0xE8, OFF_TAIL_EXEC = 0xEA, OFF_TAIL_CLOCK = 0xF3 };
-// X2-MAG-030-B (default 1): the second driver shape (magic_0760 FUN_10003680; 11 DLLs: magic_0760 and magic_0797 with its
-// 9 language copies; offline scan of magicFiles/FFX-2: 1 hit each, all checks; A + B = all 82 exec-getter drivers). It
-// loads the record table into EDI first and indexes it +4 / +8 / +0xC / +0x10 / +0x14 (A: ADD EDI,0xC, then -8 ..):
-// same record logic, same clock / exec use. U 18/10/2026: the game closed while a commsphere recording was viewed, twice;
-// D (X2-DIAG-CRASH): magic_0760+0x12D6 MOV [EAX+0x130],1 with EAX = 0 on a render-only invocation, from the driver's
-// record init (+0x36F4): the same defect as the magic_0718 crash above. Outer repo re/ledger/MAG-TASK.md §B.
+// Shape B, magic_0760 FUN_10003680 (magic_0760, magic_0797 and its 9 language copies): loads the record table into EDI
+// first and indexes it from there; otherwise the same record logic and clock / exec use as A.
 static const char SIG_ENTRY_B[] =   // as A, plus MOV EDI,[record table] before MOV ESI,records
     "55 8B EC 51 A1 ?? ?? ?? ?? 8B 80 00 04 00 00 FF D0 83 3D ?? ?? ?? ?? 00 A3 ?? ?? ?? ?? 75 09 B8 01 00 00 00 "
     "8B E5 5D C3 53 56 33 DB 57 8B 3D ?? ?? ?? ?? BE ?? ?? ?? ?? 39 1D ?? ?? ?? ?? 0F 8E";
 static const char SIG_START_B[] =   // entry+0x44: record test (short JE), start != -1, CMP start,[clock] (operand +0x57)
     "33 D2 89 55 FC 39 16 74 ?? 8B 47 04 83 F8 FF 74 ?? 3B 05";
-// X2-MAG-030-C (default 1): the third shape (magic_0740 FUN_10005570; 10 DLLs: 0614 0631 0740 0741 0759 0770 0799 0808
-// 0872 0923; offline scan: 1 hit each, all checks, field offsets identical; a loose scan for the record start/end tests
-// finds no driver outside A/B/C). The timeline is an object in ECX (thiscall): clock [obj+0], record count [obj+4], live
-// count [obj+8], records obj+0xC (stride 0x74), record table [obj+0x74C], exec [obj+0x750]; same record logic, and the
-// tail INC [obj] runs only when exec != 0. U 18/10/2026: the game closed while another commsphere recording was viewed;
-// D (X2-DIAG-CRASH): magic_0740+0x12E0 write [0 + 0x130] on a render-only invocation from the driver's record init
-// (+0x55E4). The clock is found through ECX at each call.
+// Shape C, magic_0740 FUN_10005570 (0614 0631 0740 0741 0759 0770 0799 0808 0872 0923): the timeline is an object in
+// ECX (thiscall): clock [obj+0], record count [obj+4], live count [obj+8], records from obj+0xC (0x74 bytes each),
+// record table [obj+0x74C], exec flag [obj+0x750]. The clock is found through ECX at each call.
 static const char SIG_ENTRY_C[] =   // PUSH EBP; MOV EBP,ESP; MOV EAX,[svc]; SUB ESP,8; MOV EAX,[EAX+0x400]; PUSH EBX; MOV EBX,ECX;
     // CALL EAX; CMP [EBX+8],0; MOV [EBX+exec],EAX; JNE; MOV EAX,1; POP EBX; leave; RET; CMP [EBX+4],0; PUSH ESI; PUSH EDI;
     // MOV EDI,[EBX+table]; LEA ESI,[EBX+0xC]
@@ -70,7 +68,8 @@ static const Shape SHAPES[3] = {
 };
 static int g_opt_shape[3] = { 1, 1, 1 };
 
-// ---------------------------------------------------------------- local scanner (DLL executable sections)
+// --- A small signature scanner for loaded spell DLLs (x2_sigs.cpp only scans FFX-2.exe) -------------------------------
+// "55 8B ?? .." -> bytes b and mask m (1 = must match, 0 = ??).
 struct BytePattern { uint8_t b[64]; uint8_t m[64]; int len; };
 
 static int hex_digit(char c) {
@@ -132,7 +131,7 @@ static bool matches_at(const uint8_t* at, const char* pattern) {
     return parse_pattern(pattern, &p) && pattern_matches(at, p);
 }
 
-// ---------------------------------------------------------------- per-DLL slots
+// --- Hooked drivers (one slot per loaded timeline DLL) ---------------------------------------------------------------------
 typedef uint32_t(__fastcall* driver_fn)(void* ecx, void* edx);
 
 enum { MAX_SLOTS = 8 };
@@ -151,11 +150,13 @@ static uint8_t*      g_set_damage_entry = nullptr;      // FUN_0061b150 ms_set_d
 static set_damage_fn      g_set_damage_orig = nullptr;
 static int           g_opt_dmg = 0;
 static volatile LONG g_damage_skipped = 0;
+// X2-MAG-030-DMG: damage requests from inside a render-only driver re-run are dropped (the logic call already made them).
 static uint32_t __cdecl hook_set_damage(uint32_t att, uint32_t tgt, uint32_t flag) {
     if (g_in_render_only_driver) { InterlockedIncrement(&g_damage_skipped); return 0; }
     return g_set_damage_orig(att, tgt, flag);
 }
 
+// Render-only invocation: run the driver with its clock one tick back, so it starts and ends nothing, then put it back.
 static uint32_t run_driver(void* ecx, void* edx, int idx) {
     DriverSlot& s = g_slots[idx];
     if (!row_MAG030.on || g_disabled || !render_only()) return s.orig(ecx, edx);
@@ -172,15 +173,17 @@ static uint32_t run_driver(void* ecx, void* edx, int idx) {
     return r;
 }
 
+// One hook function per slot (the slot number is baked in, since the driver's own arguments do not say which DLL).
 template <int I> static uint32_t __fastcall hook_driver(void* ecx, void* edx) { return run_driver(ecx, edx, I); }
 static void* const DRIVERS[MAX_SLOTS] = { (void*)&hook_driver<0>, (void*)&hook_driver<1>, (void*)&hook_driver<2>, (void*)&hook_driver<3>,
                                           (void*)&hook_driver<4>, (void*)&hook_driver<5>, (void*)&hook_driver<6>, (void*)&hook_driver<7> };
 
-// ---------------------------------------------------------------- load / unload (loader lock)
-// The hooked prologue (9 bytes) holds an absolute operand (A1 <service table ptr>): it is hooked only once it points
-// inside the loaded module (relocated), so MinHook's copy is final.
+// --- DLL load / unload (runs under the Windows loader lock) ---------------------------------------------------------------
+// The hooked first 9 bytes contain an absolute address (MOV EAX,[service table]); the hook goes in only once that
+// address points inside the loaded DLL (relocated), so MinHook copies the final bytes.
 static bool in_module(uint8_t* mod, uint32_t size, uint32_t v) { return v >= (uint32_t)mod && v - (uint32_t)mod < size; }
 
+// A spell DLL loaded: if it has a driver of one of the shapes (exactly one hit, every operand checked), hook it.
 static void on_load(uint8_t* mod, uint32_t size, const char* name) {
     if (!row_MAG030.on || g_disabled) return;
     uint8_t* entry = nullptr;
