@@ -60,7 +60,7 @@ void rate_init() {
     g_mult_cfg = mult_of(fps);
     g_mult = 2;
     log_line("rate: %d fps requested (%d passes per 29.97 Hz logic tick)%s", g_fps, g_mult_cfg,
-             g_mult_cfg > 2 ? "; needs RATE-001 and V-Sync off in the game's Config page" : "");
+             g_mult_cfg > 2 ? "; needs RATE-001 and V-Sync off in the launcher (GameSetting.ini VSync=Off)" : "");
 }
 
 // Runtime change, game thread. The limiter is re-applied at the new rate before the multiplier follows, so the

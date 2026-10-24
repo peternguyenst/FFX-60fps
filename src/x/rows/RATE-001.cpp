@@ -15,7 +15,7 @@
 // K is written from the game thread between Sg_MainLoop invocations, so the limiter - which runs on the same
 // thread, between those invocations - can never read a half-written double.
 //
-// Above 60 fps the game must also present without V-Sync (its own Config page, [Graphics] VSync), or the swap
+// Above 60 fps the game must also present without V-Sync (launcher setting, GameSetting.ini VSync=Off), or the swap
 // chain holds the loop at the monitor's refresh rate however short the period is. The limiter Sleeps in whole
 // milliseconds, so PERF-001's timeBeginPeriod(1) matters more the shorter the period gets (4.17 ms at 240).
 // Details: docs/fps60/rows/RATE-001.md
@@ -91,7 +91,7 @@ static bool install() {
     log_line("  RATE-001: limiter period gva=0x%08X = %.9f s (%.4f Hz); %d fps asks for %.9f s (%.4f Hz)",
              rt_to_gva_exe(k), v, hz, rate_fps(), period_for(g_mult), 1.0 / period_for(g_mult));
     if (g_mult > 2)
-        log_line("  RATE-001: above 60 fps the game must present without V-Sync (its Config page), or the swap "
+        log_line("  RATE-001: above 60 fps the game must present without V-Sync (launcher, GameSetting.ini VSync=Off), or the swap "
                  "chain holds the loop at the monitor's refresh rate");
     return true;
 }
