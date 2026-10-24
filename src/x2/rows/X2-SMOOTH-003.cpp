@@ -45,6 +45,7 @@
 // XFADE-BLINK.md (PEEL), KEYHOLD-X2.md; signatures tools/sigs_x2_smooth3.txt (ffx2-fps60 repo).
 #include "x2_smooth.h"
 #include <math.h>
+#include <share.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -1747,7 +1748,8 @@ static void poselog_post() {
             DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
             while (len && path[len - 1] != '\\') len--;
             _snprintf_s(path + len, MAX_PATH - len, _TRUNCATE, "fps60x2-poselog.csv");
-            if (fopen_s(&g_poselog, path, "a") != 0 || !g_poselog) { g_poselog_failed = true; log_line("X2-SMOOTH-003-POSELOG: cannot open %s - off", path); return; }
+            g_poselog = _fsopen(path, "a", _SH_DENYNO);        // shared: readable while the game runs
+            if (!g_poselog) { g_poselog_failed = true; log_line("X2-SMOOTH-003-POSELOG: cannot open %s - off", path); return; }
             SYSTEMTIME t; GetLocalTime(&t);
             fprintf(g_poselog, "# run %02d:%02d:%02d id 0x%04X clocks %d..%d, %d bones\n", t.wHour, t.wMinute, t.wSecond,
                     g_poselog_id, g_poselog_from, g_poselog_to, nb);
