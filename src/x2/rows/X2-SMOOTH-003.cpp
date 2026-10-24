@@ -901,6 +901,8 @@ static volatile LONG g_cloth_jump_lines = 0, g_cloth_jumps = 0;
 enum { MAX_CLOTH_SNAPS = 128 };
 static ClothSnap g_cloth_snaps[MAX_CLOTH_SNAPS];
 static thread_local uint16_t tl_deform_actor_id = 0;       // MESHCHECK: actor whose cloth this thread is deforming
+static thread_local char tl_deform_by = '?';               // MESHCHECK: who deforms: 'G' the game's job, 'C' ours at the
+                                                           // latest result, 'H' ours half way back, 'X' ours other
 static SRWLOCK g_cloth_snaps_lock = SRWLOCK_INIT;
 
 // Finds (or, with create, makes) the snap of a mesh. Jobs run on several worker threads at once, hence the lock. A new
@@ -991,7 +993,9 @@ static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
             for (int c = 0; c < 3; c++) vtex[v + c] = s->cur[v + c] + k * (s->cur[v + c] - s->prev[v + c]);
     });
     tl_deform_actor_id = *(const uint16_t*)a;
+    tl_deform_by = k == 0.0f ? 'C' : k == -0.5f ? 'H' : 'X';
     if (*g_cloth_deform_gate == 0) g_cloth_deform(a);
+    tl_deform_by = '?';
     for_dyn_mesh(a, [&](uint8_t*, float* vtex, uint32_t n) {
         ClothSnap* s = snap_get(vtex, a, n, false);
         memcpy(vtex, s->cur, n * 16);
@@ -1082,7 +1086,9 @@ static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     tl_deform_actor_id = *count > 0 ? *(const uint16_t*)list[0] : 0;
+    tl_deform_by = 'G';
     g_cloth_job_orig(list, count);
+    tl_deform_by = '?';
     __try {
         for (int k = 0; k < n; k++) {
             cloth_snap_after_step(list[k], reset[k]);
@@ -1310,15 +1316,18 @@ struct MeshTrack {
     float* out;                        // the game's vertex buffer (key)
     uint16_t actor_id; uint32_t n;
     float* frames[3]; int kind[3]; uint32_t inv[3]; int head, count;
+    uint8_t builds[3]; char by[8 * 3]; LONG tick[3];   // per frame: builds in the invocation, who built them, logic tick
     LONG odd[2], odd_verts[2]; float worst[2];   // this window: [render-only, logic]
 };
 static MeshTrack g_mesh[MESH_TRACKS];
+static const int MESH_DETAIL_LINES = 12;                   // full lines per summary window
+static int g_mesh_lines = 0;
 static SRWLOCK g_mesh_lock = SRWLOCK_INIT;
 static uint8_t* g_upload_setter = nullptr;
 
 
 // Middle frame m against f0 and t: odd vertices and the largest offset as a share of the mesh size.
-static int mesh_odd(const float* v0, const float* v1, const float* v2, uint32_t n, float* worst_share) {
+static int mesh_odd(const float* v0, const float* v1, const float* v2, uint32_t n, float* worst_share, uint32_t* worst_vertex = nullptr) {
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
     for (uint32_t v = 0; v < n; v++)
         for (int c = 0; c < 3; c++) { float x = v1[v * 4 + c]; if (x < lo[c]) lo[c] = x; if (x > hi[c]) hi[c] = x; }
@@ -1332,7 +1341,10 @@ static int mesh_odd(const float* v0, const float* v1, const float* v2, uint32_t 
             e += (b - mid) * (b - mid); span += (d - a) * (d - a);
         }
         e = sqrtf(e);
-        if (e > MESH_MIN_ODD * size && e > sqrtf(span)) { odd++; if (e / size > worst) worst = e / size; }
+        if (e > MESH_MIN_ODD * size && e > sqrtf(span)) {
+            odd++;
+            if (e / size > worst) { worst = e / size; if (worst_vertex) *worst_vertex = v; }
+        }
     }
     *worst_share = worst;
     return odd;
@@ -1357,21 +1369,43 @@ static void mesh_record(uint8_t* rec, int kind) {
     if (t && t->n) {
         t->actor_id = tl_deform_actor_id;
         int last = (t->head + 2) % 3;
-        if (t->count && t->inv[last] == g_inv) memcpy(t->frames[last], out, n * 16);   // rebuilt again: the later one is drawn
-        else {
+        if (t->count && t->inv[last] == g_inv) {                       // rebuilt again: the later one is drawn
+            memcpy(t->frames[last], out, n * 16);
+            if (t->builds[last] < 8) t->by[last * 8 + t->builds[last]] = tl_deform_by;
+            if (t->builds[last] < 255) t->builds[last]++;
+        } else {
             // the newest frame is complete: judge the one before it against its neighbours
             if (t->count >= 3) {
                 int m = (t->head + 1) % 3, f0 = t->head;
                 float worst = 0;
-                int odd = mesh_odd(t->frames[f0], t->frames[m], t->frames[last], n, &worst);
+                uint32_t wv = 0;
+                int odd = mesh_odd(t->frames[f0], t->frames[m], t->frames[last], n, &worst, &wv);
                 if (odd) {
                     int k = t->kind[m] == INV_RENDER_ONLY ? 0 : 1;
                     t->odd[k]++; t->odd_verts[k] += odd;
                     if (worst > t->worst[k]) t->worst[k] = worst;
+                    if (worst > 0.10f && g_mesh_lines < MESH_DETAIL_LINES) {
+                        g_mesh_lines++;
+                        const int fr[3] = { f0, m, last };
+                        char by[3][9];
+                        for (int j = 0; j < 3; j++) {
+                            int b = t->builds[fr[j]] < 8 ? t->builds[fr[j]] : 8;
+                            memcpy(by[j], t->by + fr[j] * 8, b); by[j][b] = 0;
+                        }
+                        const float* a0 = t->frames[f0] + wv * 4; const float* a1 = t->frames[m] + wv * 4; const float* a2 = t->frames[last] + wv * 4;
+                        log_line("X2-SMOOTH-003-DRAWCHECK: cloth id 0x%04X (%u vertices) %s frame odd, %d vertices, worst %u by %.1f%%: "
+                                 "(%.2f %.2f %.2f) (%.2f %.2f %.2f) (%.2f %.2f %.2f); frames kind %s/%s/%s inv %u/%u/%u tick %ld/%ld/%ld built by %s/%s/%s",
+                                 t->actor_id, n, k == 0 ? "render-only" : "logic", odd, wv, 100.0f * worst,
+                                 a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2],
+                                 t->kind[f0] == INV_RENDER_ONLY ? "R" : "L", t->kind[m] == INV_RENDER_ONLY ? "R" : "L",
+                                 t->kind[last] == INV_RENDER_ONLY ? "R" : "L", t->inv[f0], t->inv[m], t->inv[last],
+                                 t->tick[f0], t->tick[m], t->tick[last], by[0], by[1], by[2]);
+                    }
                 }
             }
             memcpy(t->frames[t->head], out, n * 16);
-            t->kind[t->head] = kind; t->inv[t->head] = g_inv;
+            t->kind[t->head] = kind; t->inv[t->head] = g_inv; t->tick[t->head] = g_logic_tick;
+            t->builds[t->head] = 1; t->by[t->head * 8] = tl_deform_by;
             t->head = (t->head + 1) % 3;
             if (t->count < 3) t->count++;
         }
@@ -1419,6 +1453,7 @@ static void meshcheck_report() {
         }
         t.odd[0] = t.odd[1] = t.odd_verts[0] = t.odd_verts[1] = 0; t.worst[0] = t.worst[1] = 0;
     }
+    g_mesh_lines = 0;
     ReleaseSRWLockExclusive(&g_mesh_lock);
     if (g_upload_setter)
         log_line("X2-SMOOTH-003-DRAWCHECK: last %d drawn frames, cloth meshes (render-only/logic): %s", g_dc_window,
