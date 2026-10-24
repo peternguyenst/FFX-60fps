@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-SR-003 (feature, port of FFX SR-003 + SR-008): soft reset. Holding L1+L2+R1+R2+Start+Select returns to the title.
-// Field: the game's own "return to title" request DAT_016bc51c = 1 (the pause screen's item writes it); the next
-// Sg_MainLoop calls the game-over return to title FUN_00728340 (FFX FUN_0086da10 shape: stops sound/events, forces the
-// event context flag, stages map 0x17) at 0x605182 and sets it to 2.
-// Battle: the fight is ended as a defeat through the game's own path: bit 0x200 ("loss allowed") of DAT_0119347c is
-// cleared and the pending result DAT_00df84b5 = 1 (what the party check FUN_0061ef70 returns when the party is wiped);
-// the battle tears itself down (state 0x26, FUN_00607c70) and the result handler FUN_0071b640 calls FUN_00728340.
-// FFX-2 needs no state 1 -> 2 kick (case 1 re-reads the result every battle tick). The bit is held clear until the
-// battle is gone. Never result 6 (quits the app).
-// ini (fps60x2.ini, as FFX fps60.ini [fps60]): [x2] soft_reset=<buttons joined by +> or 0/off; default
-// L1+L2+R1+R2+START+SELECT. Names: L1 L2 R1 R2 L3 R3 START SELECT TRIANGLE CIRCLE CROSS SQUARE UP DOWN LEFT RIGHT, or a
-// raw mask 0x090F. FFX-2 pad bits as FFX (SOFTRESET-X2.md: L2 1, R2 2, L1 4, R1 8, Select 0x100, Start 0x800, S;
-// the face/d-pad names by PS2 layout, H).
-// Evidence: outer repo re/ledger/SOFTRESET-X2.md (S unless tagged H). Every data address comes from a signature
-// operand; the few without one are used only when every signature sits at its expected VA (this build, S).
+// X2-SR-003: soft reset. Hold L1+L2+R1+R2+Start+Select (or the [x2] soft_reset buttons) to return to the title.
+//
+// Everything goes through the game's own paths:
+//   field   set the game's "return to title" request (the pause screen's item writes the same flag); the next main
+//           loop calls the game-over return to title (FUN_00728340) and marks the request done
+//   battle  end the fight as a defeat: clear the battle's "loss allowed" bit and set the pending result to "party
+//           wiped"; the battle tears itself down and its result handler returns to the title. The bit is kept clear
+//           until the battle is gone. (Never result 6: that quits the game.)
+// The reset is refused while something else is in flight (a battle starting or ending, a menu, a pause, a map change,
+// a movie, the title itself; see reset_blocked_by). One reset per press: release the buttons to arm it again.
+// ini: [x2] soft_reset = button names joined by + (L1 L2 R1 R2 L3 R3 START SELECT TRIANGLE CIRCLE CROSS SQUARE UP DOWN
+// LEFT RIGHT), or a raw mask like 0x090F, or 0 / off. A single button is refused.
+// Most addresses come from signature operands; the few that have none are used only when every signature sits at its
+// expected address (this exact game build). Evidence: re/ledger/SOFTRESET-X2.md (it also keeps the earlier header).
 #include "../x2.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -67,7 +66,7 @@ static uint16_t pad_held() {
     return *(volatile uint16_t*)(g_pad + (idx & 3) * 0x20 + 4);
 }
 
-// FFX SR-005 equivalents (SOFTRESET-X2.md "Port plan"): 0 = may reset, else the first blocking condition.
+// Why a reset may not happen now: null = it may, else the first blocking condition (for the log).
 static const char* reset_blocked_by() {
     int8_t bs = *g_battle_state;
     if (bs != 0 && bs != 1)                              return "battle starting or ending";
@@ -83,6 +82,7 @@ static const char* reset_blocked_by() {
     return nullptr;
 }
 
+// While a battle reset is under way (logic ticks): keep the loss bit clear until the battle is gone.
 static void battle_reset_tick() {
     int8_t bs = *g_battle_state;
     if (bs == 0) { log_line("X2-SR-003: battle torn down after %d ticks (title load follows)", g_battle_reset_ticks); g_battle_reset_ticks = 0; return; }
@@ -93,6 +93,7 @@ static void battle_reset_tick() {
     if (g_battle_reset_ticks > 1800) { log_line("X2-SR-003: battle did not end in 60 s (state 0x%02X) - given up", (uint8_t)bs); g_battle_reset_ticks = 0; }
 }
 
+// After every logic invocation: watch the button chord and start the reset.
 static void post() {
     if (g_disabled || pacing_kind() == INV_RENDER_ONLY) return;
     if (g_battle_reset_ticks) { battle_reset_tick(); return; }
