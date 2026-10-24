@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-016 (port of FFX MAG-016): the "R" magic overlays (79 magic_*.dll, magic_0221 shape) run their phase-0
-// record driver from the draw, so the record clocks run 2x at 60 fps: start delay +0x194, age +0x198, callbacks
-// +0x184 (every call) / +0x180 (age == +0x19C) / +0x18C (+0x288 arg), the SE script on +0x190 (wait +0x2C, PC +0x28,
-// sound +0x37C/+0x64C) and the phase-0 end node's countdown +0x14 before the end signal +0x360.
-// On render-only invocations the driver still runs (matrices, draw), with those fields held / skipped:
-//   - delay/age saved and written back (records still live after the call);
-//   - +0x184/+0x180/+0x18C/+0x190 set to 0 for the call, then restored (a skipped SE script also skips its position
-//     copy, which only its own +0x688 pan reads: H);
-//   - the end node FUN_10001EE0 (74 of the 79) returns at once; its countdown and +0x360 run on logic invocations.
-// The PPP step +0xB00 inside the driver stays as X2-MAG-006 has it (paused on render-only).
-// FFX had two driver shapes (A list-in-ecx, B global list). FFX-2 has one: B, a global list, the same 1132-byte
-// driver in all 79 DLLs (S, offline scan of magicFiles/FFX-2, 13/10/2026). No variant A is hooked.
-// Evidence: outer repo re/ledger/MAG-X2.md §2/§4 (S); magic_0221 export FUN_100016c0/FUN_10001070/FUN_10001ee0 (S).
-// H: that holding_now these on render-only fixes what the user sees (FFX: U, Ifrit timing; FFX-2: not yet played).
+// X2-MAG-016: "record" spell DLLs keep their timing at 60 fps.
+//
+// Background. 79 spell DLLs (magic_0221's family) keep their effect parts as "records" in a list. A driver function in
+// the DLL walks the list from the DLL's draw, so every drawn frame: it counts each record's start delay and age down
+// / up, calls its callbacks, steps its sound-effect (SE) script, and counts down the end node before the effect's
+// end signal. At 60 fps all of that ran at double speed.
+// The fix. On render-only invocations the driver still runs (it also builds matrices and draws), but:
+//   mask 1     start delay and age are saved before the call and written back after it
+//   mask 2/4/0x10  the per-call, at-age and +0x18C callbacks are cleared for the call, then restored
+//   mask 8     the SE script is cleared the same way
+//   mask 0x20  the end node (74 of the 79 DLLs) returns at once; its countdown runs on logic invocations
+// (X2-MAG-016-MASK, default 0x3F = all). The particle step inside the driver is X2-MAG-006's (paused).
+// The driver is the same 1132 bytes in all 79 DLLs; each part is found by signature in the loaded DLL (one hit) and
+// checked against the others before anything is hooked. F10 switches the hold off and on (X2-MAG-016-HOLD).
+// Not yet confirmed in play that it fixes something visible in FFX-2 (it did in FFX).
+// History and evidence: re/ledger/MAG-X2.md §2/§4 (it also keeps this file's earlier header).
 #include "../x2.h"
 #include "../../../third_party/minhook/include/MinHook.h"
 #include <string.h>
@@ -21,7 +23,7 @@ namespace x2 {
 
 extern Row row_MAG016;
 
-// ---------------------------------------------------------------- signatures (magic_0221 Ghidra VAs, base 0x10000000)
+// --- Driver signatures (addresses are magic_0221's, DLL base 0x10000000) ----------------------------------------------
 // Each must hit exactly once in the DLL's executable sections; the offsets from the driver entry are fixed (S, all 79).
 // Driver FUN_100016C0: no stack args, ecx/edx not read, single plain RET (C3) at +0x46B, eax = (no live record) ? 1 : 0.
 static const char SIG_GATE[] =      // 0x1000177A = entry+0xBA: delay test, +0x184 call, +0x180 trigger test
@@ -41,7 +43,7 @@ static const char PRO_EPI[] =       // entry+0x458: eax = (edi == 0); cookie che
     "33 C0 85 FF 0F 94 C0 5F 33 CD 5E E8 ?? ?? ?? ?? 8B E5 5D C3";
 enum { OFF_GATE = 0xBA, OFF_AGE = 0x40C, OFF_SECALL = 0x401, OFF_EPI = 0x458, OFF_HEAD = 0x14, OFF_CURSOR = 0x20 };
 
-// ---------------------------------------------------------------- local scanner (DLL executable sections)
+// --- A small signature scanner for loaded spell DLLs (same as X2-MAG-030's) ---------------------------------------------
 struct BytePattern { uint8_t b[64]; uint8_t m[64]; int len; };
 
 static int hex_digit(char c) {
@@ -103,7 +105,7 @@ static bool matches_at(const uint8_t* at, const char* pattern) {
     return parse_pattern(pattern, &p) && pattern_matches(at, p);
 }
 
-// ---------------------------------------------------------------- per-DLL slots
+// --- Hooked drivers (one slot per loaded record DLL) ---------------------------------------------------------------------
 typedef uint32_t(__fastcall* driver_fn)(void* ecx, void* edx);   // no stack args, plain RET (regs passed through)
 typedef void(__cdecl* end_node_fn)(void* node);                        // cdecl(node), plain RET
 
@@ -135,7 +137,8 @@ enum { MAX_RECS = 256 };
 
 static bool holding_now() { return g_opt_hold && row_MAG016.on && !g_disabled && render_only(); }
 
-// Clears the masked pointers; false = fault while walking (nothing to restore_records beyond n entries).
+// Saves every record's fields and clears the masked callback pointers; false = a fault while walking the list (the n
+// entries saved so far are still restored).
 static bool save_and_clear(uint8_t* list, LONG mask, SavedRecord* sv, int* n) {
     __try {
         for (uint8_t* node = *(uint8_t**)list; node; node = node_next(node)) {
@@ -202,7 +205,7 @@ static void* const DRIVER_HOOKS[MAX_SLOTS] = { (void*)&hook_driver<0>, (void*)&h
 static void* const END_NODE_HOOKS[MAX_SLOTS] = { (void*)&hook_end_node<0>, (void*)&hook_end_node<1>, (void*)&hook_end_node<2>, (void*)&hook_end_node<3>,
                                        (void*)&hook_end_node<4>, (void*)&hook_end_node<5>, (void*)&hook_end_node<6>, (void*)&hook_end_node<7> };
 
-// ---------------------------------------------------------------- load / unload (loader lock)
+// --- DLL load / unload (runs under the Windows loader lock) ---------------------------------------------------------------
 // Hooks: hook_entry (x2_hooks.cpp, MinHook create+enable, initialises MinHook); unhook: MH_RemoveHook.
 static uint8_t* find_one(uint8_t* mod, uint32_t size, const char* name, const char* what, const char* sig, int* hits) {
     uint8_t* at = nullptr;
@@ -275,7 +278,7 @@ static bool install() {
     return true;
 }
 
-// ---------------------------------------------------------------- F10 toggle + first-use log
+// --- Every invocation: F10 toggle, first-use log lines ----------------------------------------------------------------------
 static void pre() {
     static bool down_prev = false;
     bool down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
