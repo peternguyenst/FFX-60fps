@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-026 (port of FFX MAG-026): family-X effect records (0x510-byte nodes, FUN_007ea5b0) step inside their own
-// draw callback FUN_007ea5e0: position integration FUN_007e9e90, the record's particle program FUN_007e93e0 (+0x280,
-// a direct EXE call of Ppp_ProgramStep, which X2-MAG-006 does not pause), model anim FUN_007e9840 (+0x3B0) and sprite
-// FUN_007e9ac0 (+0x440). X2-MAG-020 keeps the state handlers at logic rate but still calls each record's draw on
-// render-only invocations, so (FFX: Vorban's Mortar) programs, flights and animations ran 2x. On render-only
-// invocations:
-//   X2-MAG-026-PPP: the Ppp_ProgramStep call 0x7E9587 (return 0x7E958C) is paused through X2-MAG-006's EXE caller list;
-//   X2-MAG-026-REC: each record's fields +0x0C..+0x280 and +0x3B0..+0x510 are put back after its draw (X2-MAG-020
-//                   calls mag026_draw_record); the program block +0x280..+0x3B0 is left to the pause.
-// FFX layout differences: record 0x510 (FFX 0x490), program block +0x280..+0x3B0 (FFX ..+0x330).
-// Evidence: outer repo re/ledger/FAMX.md (S); sigs tools/sigs_x2_famx.txt.
+// X2-MAG-026: "family X" effect records move and animate at their normal speed.
+//
+// Family-X effect records (0x510-byte nodes) step inside their own draw callback: position, their particle program,
+// model animation and sprite. X2-MAG-020 keeps the state handlers at logic rate but still calls each record's draw on
+// render-only invocations, so flights and animations ran at double speed. On render-only invocations:
+//   X2-MAG-026-PPP  the record's particle step (return address 0x7E958C) is paused through X2-MAG-006's list of game
+//                   call sites to pause
+//   X2-MAG-026-REC  each record's fields (+0x0C..+0x280 and +0x3B0..+0x510) are put back after its draw (X2-MAG-020
+//                   calls mag026_draw_record); the particle block in between is left to the pause
+// Evidence: re/ledger/FAMX.md; signatures tools/sigs_x2_famx.txt.
 #include "../x2.h"
 #include <string.h>
 

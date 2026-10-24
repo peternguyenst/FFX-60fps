@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-020 (port of FFX MAG-020): family-X magic DLLs walk their effect nodes from the draw (FUN_007dead0, FFX
-// FUN_00925440), so node state handlers (waits, spawns, the "walk complete" battle signal FUN_00616810) run twice per
-// logic tick at 60 fps (FFX: Bad Breath soft-lock). On render-only invocations the walk only calls each live node's
-// draw callback node[0x2C] (flag 4 clear); state handlers and the removal of done nodes run on logic invocations.
-// The CALL of the node walk FUN_007ea8d0 at 0x7DEB36 goes to the wrapper (patched on the game thread).
-// Evidence: outer repo re/ledger/FAMX.md (S); sigs tools/sigs_x2_famx.txt.
+// X2-MAG-020: "family X" spells step their effect nodes once per tick (no soft-locks or double-speed effects).
+//
+// These spell DLLs walk their effect nodes from their draw. The walk runs each node's state handler (waits, spawns,
+// and the "walk complete" signal the battle waits for), so at 60 fps every handler ran twice per tick (in FFX this
+// soft-locked Bad Breath). On render-only invocations the walk only calls each live node's draw callback; state
+// handlers and the removal of finished nodes run on logic invocations. The CALL of the node walk (gva 0x7DEB36) goes
+// to our wrapper, patched on the game thread. Evidence: re/ledger/FAMX.md; signatures tools/sigs_x2_famx.txt.
 #include "../x2.h"
 
 namespace x2 {

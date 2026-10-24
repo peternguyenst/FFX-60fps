@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-FX-012: the particle op pppop_flash FUN_008435a0 (calc slot +8, no draw op) queues the full-screen tint render
-// command (FUN_0067f210 -> FUN_00449290 -> FUN_004d0e10, executed by the HD frame, whose FUN_004aec60 zeroes the tint
-// alpha again after every frame). Its whole body sits behind `if (pause == 0)`, so on render-only invocations, where
-// X2-MAG-006 steps DLL programs paused, no tint is queued: the white wash shows on logic frames only (30 Hz flicker).
-// U 17/10/2026: Full Throttle (magic_0681) "light flash" from Paine, screenshots of alternate frames; D: X2-DIAG-FLASH,
-// tint alpha at the HD frame non-zero on logic invocations only. Fix: NOP the JNE, so paused steps queue the same tint
-// (the colour comes from particle data +0xA0..+0xA6, which paused steps do not change). The op writes nothing else that
-// lasts except the draw slot pointer [0xD67F48] = FUN_0067f210's return, which is what a logic step writes too.
-// Evidence: outer repo re/ledger/LENS-GLOW.md §5 (S + D).
+// X2-FX-012: full-screen flashes (white washes from particle effects) show on every frame, not every second one.
+//
+// The particle op pppop_flash queues the full-screen tint for the frame, but only when particles are not paused. On
+// render-only invocations X2-MAG-006 steps spell particles paused, so the tint showed on logic frames only: a 30 Hz
+// flicker (Full Throttle's light flash). The fix removes that one test (the JNE is NOPed), so paused steps queue the
+// same tint; its colour comes from particle data that paused steps do not change, and the op writes nothing else that
+// a logic step would not write too. Evidence: re/ledger/LENS-GLOW.md §5.
 #include "../x2.h"
 
 namespace x2 {

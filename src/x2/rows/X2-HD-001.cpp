@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-HD-001 (FFX-2 only): the HD frame's pass order flips between logic and render-only frames.
-// Ultima (magic_0106) sphere glow blink, U 22-23/10/2026, fixed U 23/10/2026 21:03; outer repo
-// re/ledger/ULTIMA-0106.md (capture 20:49 texture means, REA decompiles).
-// Hd_FrameRender 0x47B880 orders its passes by hdframe+0xE920: 0 -> Hd_ModelPass, then the post chain FUN_004aaa00
-// (depth / glow chain added over the screen) sees the models; != 0 -> the chain first (on a scene without them),
-// FUN_0045f6b0 draws the models after. Hd_ModelListReset 0x468DC0 (every invocation) sets the flag when no pass marker
-// was pushed since the last reset; magic service +0xEBC Hd_PassOrderModelsFirst FUN_0044d260 (-> FUN_0046ac50, list
-// switch back, flag 0) clears it. 0106's task calls +0xEBC on every logic tick (`if (task+0x74) svc[0xEBC]()`), and
-// render-only invocations do not run the task: their render keeps the flag the reset set, so the glow chain blurs a
-// black scene on every second frame (D 21:03: +0xEBC LOGIC 505 / RENDER 0).
-// Fix: when an invocation made no +0xEBC call and the previous one did, the row calls it once after Sg_MainLoop returns
-// (post, before Sg_AppRender), so the render-only frame renders with the logic frame's pass order. Generic: any DLL or
-// OPU op (0x86AD10) that calls +0xEBC on logic ticks only is covered. D 21:03: frame L-R gap +5.3 / +5.7 -> +0.1 / +0.4.
-// (A first version also replayed pass markers, FUN_00449eb0: none was ever pushed during Ultima, removed.)
-// Evidence: FUN_0044d260 sig tools/sigs_x2_capture.txt (`MOV ECX,[g_dwHdFrame]; JMP FUN_0046ac50`, 1 hit); REA
-// ev_a04d1f01 (0x468DC0), ev_bf6828d4 (0x4676F0).
+// X2-HD-001: the HD renderer draws its passes in the same order on logic and render-only frames (fixed Ultima's
+// blinking sphere glow).
+//
+// The HD frame render (Hd_FrameRender) draws the models either before or after its post-processing chain (depth and
+// glow), depending on a flag (hdframe+0xE920). The game sets that flag at every invocation, and magic service +0xEBC
+// (Hd_PassOrderModelsFirst) clears it. Ultima's effect calls +0xEBC from its logic step only, so render-only frames
+// kept the flag set: the glow was drawn over a black scene on every second frame.
+// The fix: when an invocation made no +0xEBC call but the one before did, this row makes the call once at the end of
+// the invocation (before the frame is rendered), so render-only frames use the logic frame's pass order. It covers any
+// spell or script op that calls +0xEBC on logic ticks only. Evidence: re/ledger/ULTIMA-0106.md;
+// signature tools/sigs_x2_capture.txt.
 #include "../x2.h"
 
 namespace x2 {

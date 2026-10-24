@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-032 (FFX-2 only): 37 magic DLLs (the dressphere-change "ky" DLLs 0896-0901 0908-0913 0917-0919 0926-0931,
-// and 0771 0836-0840 0845 0847 0849-0851 0947 0959-0961 0977) read a PS2 frame buffer back as a texture: the draw
-// calls service slot +0xCB4 (FUN_005e92b0, cdecl, plain RET, returns the TEX0 of buffer 0 / 1 / ...) with
-// (frame counter & 1), the counter read through slot +0xC08. Sg_MainLoop flips the GS draw buffer by the raw counter
-// parity each invocation (FUN_00606240(fc) at 0x605908). X2-MAG-009 points +0xC08 at a logic-rate counter, so at
-// 60 fps the DLL's parity matches the buffer flip on every second frame only and samples the wrong buffer on the
-// others (U 18/10/2026: dressphere change, glowing body and outfit swap every frame). Fix: slot +0xCB4 -> stub that
-// passes the raw counter parity for arguments 0/1 (every DLL caller passes only the parity; the EXE calls
-// FUN_005e92b0 directly, not through the table). Evidence: outer repo re/ledger/XFADE-BLINK.md (S).
+// X2-MAG-032: dressphere-change and similar effects read the right frame buffer (no blinking body and outfit).
+//
+// 37 spell DLLs (the dressphere-change "ky" DLLs and a few others) copy the previous frame back as a texture. They ask
+// the game for buffer 0 or 1 through service slot +0xCB4 with (frame counter & 1), while the main loop flips the draw
+// buffer by the raw frame counter every invocation. X2-MAG-009 gives DLLs a logic-rate counter, so at 60 fps their
+// parity matched the buffer flip only every second frame and they sampled the wrong buffer on the others.
+// The fix: slot +0xCB4 points at a hook that passes the raw counter's parity (every DLL passes only the parity; the
+// game itself calls the function directly, not through the table). Evidence: re/ledger/XFADE-BLINK.md.
 #include "../x2.h"
 
 namespace x2 {

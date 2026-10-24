@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-W2A-002 (port of FFX W2A-002): the FMV step (playing check, skip check FUN_00437dc0, frame advance
-// FUN_00435600) is inlined in FUN_00466ef0, which animate runs once per host frame after the backlog runner, so at a
-// 60 Hz host a movie plays 2x and drifts from its audio.
-// Mode 2 (default, as FFX): the CALL of the FMV manager getter at 0x4672E7 goes to a stub that returns a zeroed
-// dummy manager (playing flag 0, both calls skipped) unless a logic invocation ran since the last FMV step, so the
-// movie advances once per logic tick. Mode 1: hold stock pacing while [mgr]+0x6CC is set.
-// Evidence: outer repo re/ledger/PORT-A.md §6 (S).
+// X2-W2A-002: movies (FMV) play at their normal speed and stay in sync with their sound.
+//
+// The movie step is inlined in a function the game runs once per host frame, so at 60 Hz a movie played twice as fast
+// and drifted from its audio.
+//   Mode 2 (default): the call that fetches the movie manager (gva 0x4672E7) goes to a hook that returns an empty
+//   manager ("not playing": the step is skipped) unless a logic invocation ran since the last movie step, so the movie
+//   advances once per logic tick.
+//   Mode 1: hold stock pacing while a movie plays.
+// Evidence: re/ledger/PORT-A.md §6.
 #include "../x2.h"
 
 namespace x2 {

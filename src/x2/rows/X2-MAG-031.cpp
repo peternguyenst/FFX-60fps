@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-031: magic DLLs that write the particle pause flag 0x1CF579C from their draw as (exec == 0) leave it at 1 when
-// their last draw before the unload is a render-only invocation (exec 0 under 60 Hz pacing); at stock exec is never 0 at
-// a draw, so the flag ends at 0. Nothing else clears it: every later particle program steps paused, the next effect
-// never finishes and the battle waits forever. S: magic_0424 FUN_10001760 `*[svc+0xBF0] = (svc+0x400() == 0)` on every
-// draw (magic_0718 has the same shape). U 17/10/2026: battle simulator soft-lock twice (Seymour vs Tidus, auto battle),
-// both right after magic_0424 unloaded; D: flag = 1 at the end of every invocation, no pppFpStopStatus call, X2-MAG-006
-// not inside a paused step (outer repo re/ledger/HANG-0073.md).
-// 18/10/2026: magic_0840 FUN_100012a0 writes `*[svc+0xBF0] = (svc+0x400() != 0) - 1`, i.e. -1 when exec is 0 (S); U
-// 18/10 soft-lock in the same battle after 0840 unloaded and magic_0010 loaded, D: live read flag = 0xFFFFFFFF, every
-// particle op paused, the first build (clears 1 only) left it. Every reader tests != 0, so any non-zero value is cleared.
-// Fix: when a magic DLL unloads, the next invocation start (game thread) puts a non-zero flag back to 0, unless a battle
-// script set it through pppFpStopStatus FUN_00810ef0 after that unload (its own value is kept).
+// X2-MAG-031: a spell cannot leave all particles paused behind it (fixes battle soft-locks).
+//
+// Some spell DLLs write the global particle pause flag from their draw, from the exec flag: magic_0424 writes 1 when
+// exec is 0, magic_0840 writes -1. In the stock game exec is never 0 at a draw, so the flag ends at 0. At 60 fps the
+// DLL's last draw before it unloads can be a render-only one, which leaves the flag set; nothing else clears it, so
+// every later particle effect stays paused, the next effect never finishes and the battle waits forever.
+// The fix: after a spell DLL unloads, the next invocation (on the game thread) puts a non-zero flag back to 0, unless
+// a battle script set it on purpose (pppFpStopStatus) after that unload. Evidence: re/ledger/HANG-0073.md.
 #include "../x2.h"
 
 namespace x2 {
