@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-RATE (diagnostic, default 0): which code steps how often per second. Every ~5 s it logs the rate of
-// Sg_MainLoop invocations by kind, plus calls of a few functions counted by naked entry hooks (any convention):
-//   actor update FUN_006e10a0 (exec loop, expected LOGIC), battle process FUN_00790f00 (its own entry counter
-//   [0x016E782C] is read too), system layer FUN_00466ef0 and FUN_0042f8d0 (once per host frame, outside Sg_MainLoop).
-// Used for the title-screen / battle 2x report (U 12/10/2026). Each target is checked against its prologue bytes
-// (decomp export) before it is hooked; a mismatch skips that target.
+// X2-DIAG-RATE (diagnostic, off): how often per second each part of the game runs.
+//
+// Every ~5 s it logs the main loop's invocations per second by kind, and the calls of a few functions counted by entry
+// hooks: the actor update (should run at logic rate), the battle process (its own counter is read too), and two
+// system-layer functions that run once per host frame outside the main loop. Each target's first bytes are checked
+// before it is hooked; a mismatch skips that target. Written to find what ran at double speed on the title screen and
+// in battle.
 #include "../x2.h"
 #include <stdio.h>
 

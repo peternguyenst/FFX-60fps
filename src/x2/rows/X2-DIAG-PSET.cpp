@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-PSET (diagnostic, default 0): logs every call of pppFpStopStatus FUN_00810ef0 (the particle pause flag
-// 0x1CF579C = value; callers: battle-script command FUN_00734b90 and the debug menu) with the invocation kind and three
-// return addresses, and once when the flag has stayed set for 5 s. U 17/10/2026: battle soft-lock in the simulator
-// (Seymour vs Tidus, auto battle) with the flag stuck at 1 and magic_0073 loaded (outer repo re/ledger/HANG-0073.md).
+// X2-DIAG-PSET (diagnostic, off): logs who sets the global particle pause flag.
+//
+// Every call of pppFpStopStatus (it sets the flag to its argument; callers: a battle-script command and the debug
+// menu) is logged with the invocation kind and three return addresses, and one line when the flag has stayed set for
+// 5 s. Written for the battle soft-lock that X2-MAG-031 fixes (re/ledger/HANG-0073.md).
 #include "../x2.h"
 
 namespace x2 {

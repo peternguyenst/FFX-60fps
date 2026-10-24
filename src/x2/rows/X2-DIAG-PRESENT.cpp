@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-PRESENT (diagnostic, default 0): times IDXGISwapChain::Present, the moment a frame actually goes to the
-// screen. U 13/10/2026: a 60 fps screen recording shows the camera "move, move, pause, move, pause" while every
-// game-thread frame and every app render call is evenly spaced (D: X2-DIAG-RATE, F9 traces), so the unevenness is
-// after the game logic. Every ~5 s: presents per second, interval min/avg/max, intervals over 20 ms, the SyncInterval
-// and Flags values seen. Present is found through a throwaway device + swap chain on a hidden window (the vtable is
-// shared by every swap chain), entry-hooked with MinHook; the game's own swap chain is not touched otherwise.
-// X2-VSYNC (default 0, own row in this file: one Present hook serves both): the game presents with SyncInterval 0 (D
-// 21:46 and every X2-DIAG-PRESENT line since), so frames are not tied to the refresh. U 18/10/2026: tearing ("split
-// line") in FFX-2 on the Steam Deck, not on Windows; U 13/10 Windows: a "ghost" double image when walking left/right
-// (tearing). While the row is on, Present gets SyncInterval 1 (wait for the next refresh). Off at startup: the hook is
-// still not installed (Config menu choice applies at the next start).
+// X2-DIAG-PRESENT (diagnostic, off) and X2-VSYNC (V-Sync, off; Config page row): both live on the D3D11 Present hook.
+//
+// X2-DIAG-PRESENT times IDXGISwapChain::Present, the moment a frame really goes to the screen: every ~5 s, presents per
+// second, the interval min / avg / max, intervals over 20 ms, and the SyncInterval and Flags values seen. (Written
+// when a screen recording showed uneven camera motion although every game frame was evenly spaced.)
+// X2-VSYNC: the game presents with SyncInterval 0, so frames are not tied to the screen refresh, which tears (a
+// "split line", seen on the Steam Deck). While on, Present gets SyncInterval 1 (wait for the next refresh). When off
+// at startup the hook is not installed; the Config page choice applies at the next start.
+// Present is found through a throwaway device and swap chain on a hidden window (every swap chain shares the vtable)
+// and hooked with MinHook; the game's swap chain is not otherwise touched.
 #include "../x2.h"
 #include <d3d11.h>
 #include <dxgi.h>

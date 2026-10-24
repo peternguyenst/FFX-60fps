@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-HIT (diagnostic, default 0): logs every battle hit check FUN_006423d0(attacker, target, cmd, mode) with the
-// invocation kind, the target's hit counters (cmd+0x50+t done / cmd+0x6f+t total, cmd+0x31+t miss state), and the
-// results of its two inner tests: FUN_00643110 (CALLs at +0x5C / +0x8E) and the angle / distance / height test
-// FUN_0063f010 (CALL at +0x7A). A failed check before any hit uses up every remaining hit of that target in
-// FUN_00642090 (no number, no reaction). U 17/10/2026: Tidus's Blitz Ace on Seymour (battle simulator) loses hits with
-// both, not changed by X2-SMOOTH-003=0 or X2-MAG-008-PASS=1 (outer repo re/ledger/DMGNUM.md 2.3-2.5, 4.2). Max 3000 lines.
+// X2-DIAG-HIT (diagnostic, off): logs every battle hit check, to find hits that get lost.
+//
+// For every call of the hit check (FUN_006423d0: attacker, target, command, mode) it logs the invocation kind, the
+// target's hit counters (done / total / missed) and the results of the check's two inner tests (FUN_00643110, and the
+// angle / distance / height test FUN_0063f010). A failed check before any hit uses up all remaining hits on that
+// target (no number, no reaction). At most 3000 lines. Written for Blitz Ace's lost hits (fixed by X2-MAG-030-DMG);
+// re/ledger/DMGNUM.md.
 #include "../x2.h"
 
 namespace x2 {

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-LUMA (diagnostic, default 0, observe only): measures a visible blink from the pixels instead of a user's eye.
-// U 23/10/2026: Ultima (magic_0106) background grey / black on consecutive 60 fps frames, not at stock; every state
-// probe (light / BG colour, tint, bloom, post-process) and the F7 / F8 bisect found nothing (outer repo
-// re/ledger/ULTIMA-0106.md). While an X2-DIAG-FTBLINK-DLL magic DLL is loaded (X2-DIAG-FTBLINK on), every Present
-// (hooked by X2-DIAG-PRESENT's hook, tap before the original) copies three 16x16 patches of the back buffer (at 6% / 40%,
-// 94% / 40%, 30% / 25% of the width / height: background in the Ultima screenshots) to a staging texture, maps it and
-// logs the mean luma (0-255) of each patch with the invocation kind (max 1200 lines per load). 8-bit RGBA / BGRA back
-// buffers without MSAA only (logged otherwise). The map stalls the GPU each frame: test use only.
-// X2-DIAG-LUMA-DUMP (default 0; user 23/10/2026: too many Ultima casts, the rim-patch alternation flips sign between
-// casts): N > 0 = the first time patch T reaches luma N after the DLL loads, the next 4 frames are saved as half-size
-// 24-bit BMPs <game>\fps60x2-dump-<load>-<k>-<LOGIC|RENDER>.bmp (once per load, max 4 loads per run).
+// X2-DIAG-LUMA (diagnostic, off, observe only): measures a blink from the pixels instead of by eye.
+//
+// While an X2-DIAG-FTBLINK-DLL spell DLL is loaded (X2-DIAG-FTBLINK on), every present copies three 16 x 16 patches of
+// the back buffer (left edge, right edge, upper middle: background areas) to the CPU and logs each patch's mean
+// brightness (0-255) with the invocation kind (at most 1200 lines per load). The copy stalls the GPU every frame: for
+// tests only. 8-bit RGBA / BGRA back buffers without MSAA only.
+// X2-DIAG-LUMA-DUMP=N: the first time a patch reaches brightness N after the DLL loads, the next 4 frames are saved as
+// half-size BMPs (<game>\fps60x2-dump-<load>-<k>-<LOGIC|RENDER>.bmp; once per load, at most 4 loads).
+// X2-DIAG-AUTOBLINK does this automatically and without the stall. History: re/ledger/ULTIMA-0106.md.
 #include "../x2.h"
 #include <d3d11.h>
 #include <dxgi.h>

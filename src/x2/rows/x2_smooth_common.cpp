@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// x2 copy of the FFX mod's SMOOTH helpers (rows/smooth_common.cpp there; see x2_smooth.h).
+// The SMOOTH rows' shared helpers (x2 copy of the FFX mod's smooth_common.cpp; interface and timebase in x2_smooth.h):
+// the X2-SMOOTH master switch, the F6 / F7 hotkeys, and the matrix maths used to draw cameras and actors half way
+// between two ticks (inverse, multiply, interpolation with cut tests). Tested by tests/x2/test_smooth_math.cpp.
 #include "x2_smooth.h"
 #include <math.h>
 #include <string.h>

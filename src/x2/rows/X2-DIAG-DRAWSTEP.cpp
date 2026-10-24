@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-DRAWSTEP (port of FFX DIAG-DRAWSTEP, diagnostic, default 0): compares each magic DLL's writable sections
-// before and after every render-only invocation and reports the ranges a draw changed (draw-side stepping that runs
-// 2x: U 12/10/2026 "combat effects seem twice as fast"). Observe only. Addresses are DLL Ghidra VAs (base 0x10000000).
+// X2-DIAG-DRAWSTEP (diagnostic, off, observe only): finds spell DLLs that advance their own state while drawing.
+//
+// It compares each loaded spell DLL's writable memory before and after every render-only invocation and logs the
+// ranges that changed: whatever changes there was stepped by a draw, which runs at double speed at 60 fps. Addresses
+// are given as DLL Ghidra addresses (base 0x10000000).
 #include "../x2.h"
 #include <string.h>
 #include <stdlib.h>

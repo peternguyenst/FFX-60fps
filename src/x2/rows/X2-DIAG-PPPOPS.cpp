@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-PPPOPS (diagnostic, default 0): counts the calls of every particle draw op (descriptor slot +0xC, the
-// pppDraw* / pppKe* ops) with the particle pause flag set (render-only steps, X2-MAG-006) and clear, and logs the
-// ops that ran every 10 s. Which op a blinking effect uses (U 16/10/2026: mission-start hex grid, magic_0718) decides
-// which pause gate needs the DRAWOPS treatment. Observe only: each op is entry-hooked and forwarded unchanged.
-// Descriptor records {char* name; +4 group op; +8 calc op; +0xC draw op; ...} (0x28 bytes, .data, two copies of one
-// table), found from the record that names "pppDrawShapeCamera" (outer repo re/ledger/DRAWCAM.md D1, S).
+// X2-DIAG-PPPOPS (diagnostic, off, observe only): which particle draw ops run while particles are paused.
+//
+// Each particle draw op (the pppDraw* / pppKe* functions) is hooked and counted with the particle pause flag set
+// (render-only steps, X2-MAG-006) and clear; the ops that ran are logged every 10 s. A blinking effect's op tells
+// which pause test needs X2-FX-010-DRAWOPS's treatment. The ops are found in the game's particle-op table (0x28-byte
+// records: name, group / calc / draw op, ...), starting from the record named "pppDrawShapeCamera". Every hook calls
+// the original. Also: the step notes and the UNPAUSE-OPS test X2-MAG-006 offers (pppops_prog_marked).
+// Evidence: re/ledger/DRAWCAM.md.
 #include "../x2.h"
 #include <string.h>
 #include <stdio.h>
