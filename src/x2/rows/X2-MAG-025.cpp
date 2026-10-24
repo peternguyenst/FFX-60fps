@@ -60,124 +60,124 @@
 
 namespace x2 {
 
-typedef void(__cdecl* walk_t)(uint32_t unit_ctx, uint32_t pass);
+typedef void(__cdecl* walker_fn)(uint32_t unit_ctx, uint32_t pass);
 
 // Walker sites (Ghidra VAs; all resolved from the stream-loop head signature and verified)
-static uint8_t* g_entry = nullptr;               // FUN_006bbca0
-static uint8_t* g_head = nullptr;                // 0x6BC170 stream-loop head
-static uint8_t* g_sentry = nullptr;              // 0x6BC1D2 stream handler entry (after the latch tests)
-static uint8_t* g_hcall = nullptr;               // 0x6BC239 push esi / push ebx / call eax (handler) / add esp,8
-static uint8_t* g_dec = nullptr;                 // 0x6BC2C6 WAIT > 0 path: dec al / mov [ecx+edi+0x10],al
-static void*    g_next = nullptr;                // 0x6BC2CC next stream
-static void*    g_skip = nullptr;                // 0x6BC2E1 after the 4-stream loop (sweep-2 test, then integration)
-static uint8_t* g_gate = nullptr;                // 0x6BC2FC cmp word [ebx+0x212],0 (position integration gate)
-static void*    g_hcall_after = nullptr;         // 0x6BC240 yield test
-static void*    g_gate_held = nullptr;           // 0x6BC406 after the integration (the gate's jnz target)
-static walk_t   g_walk_tramp = nullptr;
-static void*    g_head_tramp = nullptr;
-static void*    g_sentry_tramp = nullptr;
-static void*    g_hcall_tramp = nullptr;
-static void*    g_dec_tramp = nullptr;
-static void*    g_next_tramp = nullptr;
-static void*    g_gate_tramp = nullptr;
-static uint8_t* g_exe_ret = nullptr;             // return address of the EXE pass-1 walk call (0x6A5D85)
-static uint8_t* g_exe0_ret = nullptr;            // return address of the EXE pass-0 walk call (0x6A5D0D)
-static bool     g_patched = false;
+static uint8_t* g_walker = nullptr;               // FUN_006bbca0
+static uint8_t* g_site_loop_head = nullptr;                // 0x6BC170 stream-loop head
+static uint8_t* g_site_stream_entry = nullptr;              // 0x6BC1D2 stream handler entry (after the latch tests)
+static uint8_t* g_site_handler_call = nullptr;               // 0x6BC239 push esi / push ebx / call eax (handler) / add esp,8
+static uint8_t* g_site_wait_dec = nullptr;                 // 0x6BC2C6 WAIT > 0 path: dec al / mov [ecx+edi+0x10],al
+static void*    g_site_next_stream = nullptr;                // 0x6BC2CC next stream
+static void*    g_site_after_streams = nullptr;                // 0x6BC2E1 after the 4-stream loop (sweep-2 test, then integration)
+static uint8_t* g_site_integration_gate = nullptr;                // 0x6BC2FC cmp word [ebx+0x212],0 (position integration gate)
+static void*    g_site_after_handler = nullptr;         // 0x6BC240 yield test
+static void*    g_site_after_integration = nullptr;           // 0x6BC406 after the integration (the gate's jnz target)
+static walker_fn   g_walker_orig = nullptr;
+static void*    g_loop_head_orig = nullptr;
+static void*    g_stream_entry_orig = nullptr;
+static void*    g_handler_call_orig = nullptr;
+static void*    g_wait_dec_orig = nullptr;
+static void*    g_next_stream_orig = nullptr;
+static void*    g_integration_gate_orig = nullptr;
+static uint8_t* g_exe_pass1_ret = nullptr;             // return address of the EXE pass-1 walk call (0x6A5D85)
+static uint8_t* g_exe_pass0_ret = nullptr;            // return address of the EXE pass-0 walk call (0x6A5D0D)
+static bool     g_hooks_installed = false;
 extern Row row_MAG025;
 
 // FOLLOWGUARD: follow call 0x6BC446 (movzx eax,al / push esi / mov eax,[eax*4+0xD50120] / push ebx / call eax)
-typedef uint8_t*(__cdecl* find_unit_t)(uint8_t* ctx, uint8_t* obj, uint16_t id);
-static uint8_t*    g_fcall = nullptr;            // 0x6BC446
-static void*       g_fcall_after = nullptr;      // 0x6BC457 inc word [ebx+0x218]
-static void*       g_fcall_tramp = nullptr;
-static uint8_t**   g_ftable = nullptr;           // 0xD50120 follow handler table (13 entries)
-static uint8_t*    g_fattach = nullptr;          // FUN_006c2cd0
-static find_unit_t g_find_unit = nullptr;        // FUN_006ac1f0
-static int         g_followguard = 1;            // X2-MAG-025-FOLLOWGUARD
-static volatile uint8_t g_fskip = 0;
-static volatile LONG g_fskipped = 0;
+typedef uint8_t*(__cdecl* find_unit_fn)(uint8_t* ctx, uint8_t* obj, uint16_t id);
+static uint8_t*    g_site_follow_call = nullptr;            // 0x6BC446
+static void*       g_site_after_follow = nullptr;      // 0x6BC457 inc word [ebx+0x218]
+static void*       g_follow_call_orig = nullptr;
+static uint8_t**   g_follow_table = nullptr;           // 0xD50120 follow handler table (13 entries)
+static uint8_t*    g_follow_attach = nullptr;          // FUN_006c2cd0
+static find_unit_fn g_find_unit = nullptr;        // FUN_006ac1f0
+static int         g_opt_followguard = 1;            // X2-MAG-025-FOLLOWGUARD
+static volatile uint8_t g_follow_skip = 0;
+static volatile LONG g_follow_skipped = 0;
 
 // [rows]
-static int g_mode_exe = 3;                       // X2-MAG-025-MODE: EXE pass-1 walk (0 = untouched)
-static int g_mode_dll = 3;                       // X2-MAG-025-DLLMODE: DLL-called walks (0 = untouched)
-static int g_mode_list = 2;                      // X2-MAG-025-LISTMODE: DLL-called walks under the list profile
-static int g_mode_pass0 = 1;                     // X2-MAG-025-PASS0MODE: held EXE pass-0 walk (0 = as MODE)
-static int g_mode_dllpass0 = 0;                  // X2-MAG-025-DLLPASS0MODE: held DLL pass-0 walks (0 = as the DLL mode)
-static int g_pass0 = 0;                          // X2-MAG-025-PASS0: hold DLL pass-0 walks too
-static uint8_t g_hold_pos = 1;                   // X2-MAG-025-POS
-static bool g_deny[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
-static int  g_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
-static int  g_loop1f = 1;                        // X2-MAG-025-LOOP1F
-static int  g_attach_deny = 0;                   // X2-MAG-025-ATTACHDENY
+static int g_opt_mode_exe = 3;                       // X2-MAG-025-MODE: EXE pass-1 walk (0 = untouched)
+static int g_opt_mode_dll = 3;                       // X2-MAG-025-DLLMODE: DLL-called walks (0 = untouched)
+static int g_opt_mode_list = 2;                      // X2-MAG-025-LISTMODE: DLL-called walks under the list profile
+static int g_opt_mode_exe_pass0 = 1;                     // X2-MAG-025-PASS0MODE: held EXE pass-0 walk (0 = as MODE)
+static int g_opt_mode_dll_pass0 = 0;                  // X2-MAG-025-DLLPASS0MODE: held DLL pass-0 walks (0 = as the DLL mode)
+static int g_opt_hold_dll_pass0 = 0;                          // X2-MAG-025-PASS0: hold DLL pass-0 walks too
+static uint8_t g_opt_hold_position = 1;                   // X2-MAG-025-POS
+static bool g_held_opcode[512];                         // X2-MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
+static int  g_opt_opdiag = 0;                        // X2-MAG-025-OPDIAG: held-walk handler counts every 30 invocations
+static int  g_opt_loop1f = 1;                        // X2-MAG-025-LOOP1F
+static int  g_opt_attach_deny = 0;                   // X2-MAG-025-ATTACHDENY
 static volatile LONG g_attach_held = 0;
-static volatile LONG g_optrace = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
+static volatile LONG g_optrace_left = 0;              // X2-MAG-025-OPTRACE=n: log the first n held-walk handlers after a 0x1F loop
 static bool g_trace_on = false;
-static int  g_slow = 0;                          // X2-MAG-025-SLOWTEST=N: list profile only, chosen walks step 1 logic frame in N
-static int  g_slow_src = 1;                      // X2-MAG-025-SLOWSRC: bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1
-static uint32_t g_slow_n[3];
+static int  g_opt_slowtest = 0;                          // X2-MAG-025-SLOWTEST=N: list profile only, chosen walks step 1 logic frame in N
+static int  g_opt_slowtest_src = 1;                      // X2-MAG-025-SLOWSRC: bit 0 EXE pass 0, bit 1 DLL pass 0, bit 2 DLL pass 1
+static uint32_t g_slowtest_walks[3];
 
-static volatile uint8_t g_hold = 0;              // mode of the held walk running now (0 = none)
-static uint8_t g_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
-static volatile LONG g_held[2] = {0, 0};         // held walks: EXE, DLL
-static volatile LONG g_ro_run = 0, g_ro_blocked = 0;   // mode 3: WAIT-0 streams on held walks
-static volatile LONG g_opcnt[3][512], g_opden[3][512];   // EXE, DLL pass 1, DLL pass 0
-static uint8_t g_dsrc = 0;                       // opdiag / DLL0DENY source: 0 EXE, 1 DLL pass 1, 2 DLL pass 0
-static bool g_deny_dll0[512];                    // X2-MAG-025-DLL0DENY=hex,hex: also held on DLL pass-0 walks
+static volatile uint8_t g_held_mode = 0;              // mode of the held walk running now (0 = none)
+static uint8_t g_walk_src = 0;                        // 0 = EXE walk, 1 = DLL walk (diagnostic)
+static volatile LONG g_held_walks[2] = {0, 0};         // held walks: EXE, DLL
+static volatile LONG g_wait0_ran = 0, g_wait0_held = 0;   // mode 3: WAIT-0 streams on held walks
+static volatile LONG g_op_ran[3][512], g_op_held[3][512];   // EXE, DLL pass 1, DLL pass 0
+static uint8_t g_walk_kind = 0;                       // opdiag / DLL0DENY source: 0 EXE, 1 DLL pass 1, 2 DLL pass 0
+static bool g_held_opcode_dll0[512];                    // X2-MAG-025-DLL0DENY=hex,hex: also held on DLL pass-0 walks
 
 // Mode 3: per stream, did its last logic walk run handlers (WAIT 0 at entry) and yield at the PC it started from?
 // Keyed by unit record; 4 stream bits each.
-struct RepeatSlot { uint8_t* rec; uint8_t mask; };
-static RepeatSlot g_rep[4096];
-static RepeatSlot* rep_slot(uint8_t* rec, bool add) {
+struct RepeatEntry { uint8_t* rec; uint8_t mask; };
+static RepeatEntry g_repeat_table[4096];
+static RepeatEntry* repeat_entry(uint8_t* rec, bool add) {
     uint32_t h = ((uint32_t)rec >> 8) & 4095;
     for (int i = 0; i < 4096; i++, h = (h + 1) & 4095) {
-        if (g_rep[h].rec == rec) return &g_rep[h];
-        if (!g_rep[h].rec) {
+        if (g_repeat_table[h].rec == rec) return &g_repeat_table[h];
+        if (!g_repeat_table[h].rec) {
             if (!add) return nullptr;
-            g_rep[h].rec = rec;
-            g_rep[h].mask = 0;
-            return &g_rep[h];
+            g_repeat_table[h].rec = rec;
+            g_repeat_table[h].mask = 0;
+            return &g_repeat_table[h];
         }
     }
     return nullptr;
 }
-static struct { uint8_t* rec; int s; uint32_t pc; uint8_t wait; bool valid; } g_cur;
+static struct { uint8_t* rec; int s; uint32_t pc; uint8_t wait; bool valid; } g_stream_start;
 static volatile uint8_t g_skip_stream = 0;
-static volatile uint8_t g_deny_now = 0;
-static volatile uint8_t g_loop_now = 0;
-static uint32_t g_loop_pc = 0;
+static volatile uint8_t g_hold_this_op = 0;
+static volatile uint8_t g_loop_jump_now = 0;
+static uint32_t g_loop_target = 0;
 static volatile LONG g_loop_runs = 0;
 // LOOP1F guard: the uncounted jump-backs of the held walk running now. A loop whose body does not yield reaches the
 // same 0x1F again in the same walk; jumping back uncounted would never end (U 19/10/2026: Power Break hang, magic_0021
 // inner loop 0x99 / 0x1F counter 0 at file VA 0x1000553E, no WAIT in the body).
-static uint8_t* g_loop_unit = nullptr;
-static uint8_t* g_loop_at = nullptr;
-static int      g_loop_walk_n = 0;
+static uint8_t* g_loop1f_unit = nullptr;
+static uint8_t* g_loop1f_at = nullptr;
+static int      g_loop1f_jumps = 0;
 static volatile LONG g_loop_repeats = 0;
 
 static void __cdecl on_stream_entry(uint8_t* scr, uint8_t* rec) {
     int st = *(int16_t*)(scr + 0x216) & 3;
     uint8_t wait = rec[0x10 + st];
     g_skip_stream = 0;
-    g_cur.valid = false;
-    if (!g_hold) {
-        g_cur.rec = rec; g_cur.s = st; g_cur.pc = *(uint32_t*)(rec + st * 4); g_cur.wait = wait; g_cur.valid = true;
+    g_stream_start.valid = false;
+    if (!g_held_mode) {
+        g_stream_start.rec = rec; g_stream_start.s = st; g_stream_start.pc = *(uint32_t*)(rec + st * 4); g_stream_start.wait = wait; g_stream_start.valid = true;
         return;
     }
-    if (wait || g_hold != 3) return;             // counting streams: the WAIT hook keeps them
-    RepeatSlot* r = rep_slot(rec, false);
-    if (r && (r->mask >> st & 1)) { InterlockedIncrement(&g_ro_run); return; }
-    InterlockedIncrement(&g_ro_blocked);
+    if (wait || g_held_mode != 3) return;             // counting streams: the WAIT hook keeps them
+    RepeatEntry* r = repeat_entry(rec, false);
+    if (r && (r->mask >> st & 1)) { InterlockedIncrement(&g_wait0_ran); return; }
+    InterlockedIncrement(&g_wait0_held);
     g_skip_stream = 1;                           // sweep-2 latch: side map, the test left it set (no put-back)
 }
 
 static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
-    if (!g_cur.valid) return;
-    g_cur.valid = false;
+    if (!g_stream_start.valid) return;
+    g_stream_start.valid = false;
     int st = *(int16_t*)(scr + 0x216) & 3;
-    if (g_cur.rec != rec || g_cur.s != st) return;
-    bool repeat = g_cur.wait == 0 && *(uint32_t*)(rec + st * 4) == g_cur.pc;
-    RepeatSlot* r = rep_slot(rec, repeat);
+    if (g_stream_start.rec != rec || g_stream_start.s != st) return;
+    bool repeat = g_stream_start.wait == 0 && *(uint32_t*)(rec + st * 4) == g_stream_start.pc;
+    RepeatEntry* r = repeat_entry(rec, repeat);
     if (!r) return;
     if (repeat) r->mask |= (uint8_t)(1 << st);
     else r->mask &= (uint8_t)~(1 << st);
@@ -186,70 +186,70 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
 static void __cdecl on_handler(uint8_t* scr, uint8_t* pc) {
     uint16_t word = *(uint16_t*)(scr + 0x21A);
     int op = word & 0x1FF;
-    if (g_optrace > 0 && (g_trace_on || op == 0x1F)) {
+    if (g_optrace_left > 0 && (g_trace_on || op == 0x1F)) {
         g_trace_on = true;
         uint8_t* u = *(uint8_t**)(scr + 0x220);
-        if (InterlockedDecrement(&g_optrace) >= 0)
+        if (InterlockedDecrement(&g_optrace_left) >= 0)
             log_line("X2-MAG-025 optrace %s scr %p stream %d pc %p word %04X op %03X unit %p +18 %02X +B4 %02X +B5 %02X",
-                     g_src ? "DLL" : "EXE", scr, *(int16_t*)(scr + 0x216) & 3, pc, word, op, u,
+                     g_walk_src ? "DLL" : "EXE", scr, *(int16_t*)(scr + 0x216) & 3, pc, word, op, u,
                      u ? u[0x18] : 0, u ? u[0xB4] : 0, u ? u[0xB5] : 0);
     }
-    g_deny_now = (g_deny[op] || (g_dsrc == 2 && g_deny_dll0[op])) ? 1 : 0;
-    if (!g_deny_now && g_attach_deny && op == 0xDC && ((word >> 12) == 0 || (word >> 12) == 6)) {
-        g_deny_now = 1;                          // particle program attach: logic walks only
+    g_hold_this_op = (g_held_opcode[op] || (g_walk_kind == 2 && g_held_opcode_dll0[op])) ? 1 : 0;
+    if (!g_hold_this_op && g_opt_attach_deny && op == 0xDC && ((word >> 12) == 0 || (word >> 12) == 6)) {
+        g_hold_this_op = 1;                          // particle program attach: logic walks only
         LONG n = InterlockedIncrement(&g_attach_held);
         if (n <= 3 || n % 1000 == 0)
             log_line("X2-MAG-025-ATTACHDENY: 0xDC attach held on a %s walk (unit %p, #%ld) - runs on the next logic walk",
-                     g_src ? "DLL" : "EXE", *(uint8_t**)(scr + 0x220), n);
+                     g_walk_src ? "DLL" : "EXE", *(uint8_t**)(scr + 0x220), n);
     }
-    g_loop_now = 0;
-    if (op == 0x1F && g_deny_now && g_loop1f && g_dsrc != 2) {   // not on DLL pass-0 (update) walks: CRASH-0946
+    g_loop_jump_now = 0;
+    if (op == 0x1F && g_hold_this_op && g_opt_loop1f && g_walk_kind != 2) {   // not on DLL pass-0 (update) walks: CRASH-0946
         uint8_t* unit = *(uint8_t**)(scr + 0x220);
         uint8_t* ctr = unit ? unit + 0xB4 + ((word & 0x200) ? 0 : (uint8_t)(word >> 12)) : nullptr;
         if (ctr && (uint8_t)(*ctr - 1) != 0) {
-            if ((unit == g_loop_unit && pc == g_loop_at) || g_loop_walk_n >= 64) {
+            if ((unit == g_loop1f_unit && pc == g_loop1f_at) || g_loop1f_jumps >= 64) {
                 // non-yielding body: stay denied (the stream yields here; the next logic walk counts the loop)
                 LONG n = InterlockedIncrement(&g_loop_repeats);
                 if (n <= 5 || n % 600 == 0)
                     log_line("X2-MAG-025-LOOP1F: 0x1F at %p reached again in one held %s walk (unit %p, #%ld) - yields "
-                             "instead", pc, g_src ? "DLL" : "EXE", unit, n);
+                             "instead", pc, g_walk_src ? "DLL" : "EXE", unit, n);
             } else {
-                g_loop_unit = unit;
-                g_loop_at = pc;
-                g_loop_walk_n++;
-                g_loop_pc = (uint32_t)(uintptr_t)(pc + *(int16_t*)(pc + 2));
-                g_loop_now = 1;
-                g_deny_now = 0;
+                g_loop1f_unit = unit;
+                g_loop1f_at = pc;
+                g_loop1f_jumps++;
+                g_loop_target = (uint32_t)(uintptr_t)(pc + *(int16_t*)(pc + 2));
+                g_loop_jump_now = 1;
+                g_hold_this_op = 0;
                 InterlockedIncrement(&g_loop_runs);
             }
         }
     }
-    if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_dsrc][op] : &g_opcnt[g_dsrc][op]);
+    if (g_opt_opdiag) InterlockedIncrement(g_hold_this_op ? &g_op_held[g_walk_kind][op] : &g_op_ran[g_walk_kind][op]);
 }
 
 // Mode 1: skip the whole stream loop.
-__declspec(naked) static void h_head() {
+__declspec(naked) static void hook_loop_head() {
     __asm {
-        cmp byte ptr [g_hold], 1
+        cmp byte ptr [g_held_mode], 1
         je held
-        jmp dword ptr [g_head_tramp]
+        jmp dword ptr [g_loop_head_orig]
     held:
-        jmp dword ptr [g_skip]
+        jmp dword ptr [g_site_after_streams]
     }
 }
 
 // Modes 2/3: a counting stream keeps its count.
-__declspec(naked) static void h_dec() {
+__declspec(naked) static void hook_wait_dec() {
     __asm {
-        cmp byte ptr [g_hold], 2
+        cmp byte ptr [g_held_mode], 2
         jb pass
-        jmp dword ptr [g_next]
+        jmp dword ptr [g_site_next_stream]
     pass:
-        jmp dword ptr [g_dec_tramp]
+        jmp dword ptr [g_wait_dec_orig]
     }
 }
 
-__declspec(naked) static void h_sentry() {
+__declspec(naked) static void hook_stream_entry() {
     __asm {
         pushad
         push edi                                 // unit record
@@ -259,13 +259,13 @@ __declspec(naked) static void h_sentry() {
         popad
         cmp byte ptr [g_skip_stream], 0
         jne skip
-        jmp dword ptr [g_sentry_tramp]
+        jmp dword ptr [g_stream_entry_orig]
     skip:
-        jmp dword ptr [g_next]
+        jmp dword ptr [g_site_next_stream]
     }
 }
 
-__declspec(naked) static void h_next() {
+__declspec(naked) static void hook_next_stream() {
     __asm {
         pushad
         push edi
@@ -273,15 +273,15 @@ __declspec(naked) static void h_next() {
         call on_stream_next
         add esp, 8
         popad
-        jmp dword ptr [g_next_tramp]
+        jmp dword ptr [g_next_stream_orig]
     }
 }
 
 // Modes 2/3: count the handler; a denied one does not run and the stream yields at it (PC kept, WAIT 0), so the
 // next logic walk runs it.
-__declspec(naked) static void h_hcall() {
+__declspec(naked) static void hook_handler_call() {
     __asm {
-        cmp byte ptr [g_hold], 2
+        cmp byte ptr [g_held_mode], 2
         jb pass
         pushad
         push esi                                 // PC of the opcode
@@ -289,53 +289,53 @@ __declspec(naked) static void h_hcall() {
         call on_handler
         add esp, 8
         popad
-        cmp byte ptr [g_loop_now], 0
+        cmp byte ptr [g_loop_jump_now], 0
         jne loop1f
-        cmp byte ptr [g_deny_now], 0
+        cmp byte ptr [g_hold_this_op], 0
         je pass
         mov eax, esi
         mov byte ptr [ebx + 0x210], 1
-        jmp dword ptr [g_hcall_after]
+        jmp dword ptr [g_site_after_handler]
     loop1f:
-        mov eax, dword ptr [g_loop_pc]           // 0x1F jump-back target, count untouched, no yield
-        jmp dword ptr [g_hcall_after]
+        mov eax, dword ptr [g_loop_target]           // 0x1F jump-back target, count untouched, no yield
+        jmp dword ptr [g_site_after_handler]
     pass:
-        jmp dword ptr [g_hcall_tramp]
+        jmp dword ptr [g_handler_call_orig]
     }
 }
 
 // Held walk: take the gate's "paused" branch (as when the walker's own +0x212 is set) without writing +0x212: spawn
 // handlers read it too and would drop their spawn while the PC advances. AL (unit+0xB2) is left as loaded.
-__declspec(naked) static void h_gate() {
+__declspec(naked) static void hook_integration_gate() {
     __asm {
-        cmp byte ptr [g_hold], 0
+        cmp byte ptr [g_held_mode], 0
         je pass
-        cmp byte ptr [g_hold_pos], 0
+        cmp byte ptr [g_opt_hold_position], 0
         je pass
-        jmp dword ptr [g_gate_held]
+        jmp dword ptr [g_site_after_integration]
     pass:
-        jmp dword ptr [g_gate_tramp]
+        jmp dword ptr [g_integration_gate_orig]
     }
 }
 
 static void __cdecl on_follow(uint32_t type, uint8_t* scr) {
-    g_fskip = 0;
-    if (type >= 13 || g_ftable[type] != g_fattach) return;
+    g_follow_skip = 0;
+    if (type >= 13 || g_follow_table[type] != g_follow_attach) return;
     uint8_t* obj = *(uint8_t**)(scr + 0x220);
     uint16_t id = *(uint16_t*)(obj + 0xA0);
     uint8_t* base = *(uint8_t**)(scr + 0x320);
     uint8_t* t = g_find_unit(scr + 0x300, obj, id);
     if (*(void**)(t + 0xBC)) return;
-    g_fskip = 1;
-    LONG n = InterlockedIncrement(&g_fskipped);
+    g_follow_skip = 1;
+    LONG n = InterlockedIncrement(&g_follow_skipped);
     if (n <= 20 || n % 600 == 0)
         log_line("X2-MAG-025-FOLLOWGUARD: follow skipped (#%ld): target +0xBC NULL; kind %d hold %d src %s, unit #%d "
                  "id 0x%04X, target id 0x%04X -> #%d%s, group %d/%d",
-                 n, pacing_kind(), g_hold, g_src ? "DLL" : "EXE", (int)((obj - base) >> 8), *(uint16_t*)(obj + 0x1A),
+                 n, pacing_kind(), g_held_mode, g_walk_src ? "DLL" : "EXE", (int)((obj - base) >> 8), *(uint16_t*)(obj + 0x1A),
                  id, (int)((t - base) >> 8), t == base ? " (not found)" : "", obj[0x1E], t[0x1E]);
 }
 
-__declspec(naked) static void h_fcall() {
+__declspec(naked) static void hook_follow_call() {
     __asm {
         pushad
         push ebx                                 // scratch
@@ -344,52 +344,52 @@ __declspec(naked) static void h_fcall() {
         call on_follow
         add esp, 8
         popad
-        cmp byte ptr [g_fskip], 0
+        cmp byte ptr [g_follow_skip], 0
         jne skip
-        jmp dword ptr [g_fcall_tramp]
+        jmp dword ptr [g_follow_call_orig]
     skip:
-        jmp dword ptr [g_fcall_after]
+        jmp dword ptr [g_site_after_follow]
     }
 }
 
 static void held_walk(int mode, uint8_t src, uint32_t unit_ctx, uint32_t pass) {
-    InterlockedIncrement(&g_held[src]);
-    uint8_t saved = g_hold, saved_src = g_src, saved_dsrc = g_dsrc;
-    uint8_t* saved_unit = g_loop_unit;
-    uint8_t* saved_at = g_loop_at;
-    int saved_n = g_loop_walk_n;
-    g_hold = (uint8_t)mode;
-    g_src = src;
-    g_dsrc = src == 0 ? 0 : (uint8_t)pass == 0 ? 2 : 1;
-    g_loop_unit = nullptr;
-    g_loop_at = nullptr;
-    g_loop_walk_n = 0;
-    g_walk_tramp(unit_ctx, pass);
-    g_hold = saved;
-    g_src = saved_src;
-    g_dsrc = saved_dsrc;
-    g_loop_unit = saved_unit;
-    g_loop_at = saved_at;
-    g_loop_walk_n = saved_n;
+    InterlockedIncrement(&g_held_walks[src]);
+    uint8_t saved = g_held_mode, saved_src = g_walk_src, saved_dsrc = g_walk_kind;
+    uint8_t* saved_unit = g_loop1f_unit;
+    uint8_t* saved_at = g_loop1f_at;
+    int saved_n = g_loop1f_jumps;
+    g_held_mode = (uint8_t)mode;
+    g_walk_src = src;
+    g_walk_kind = src == 0 ? 0 : (uint8_t)pass == 0 ? 2 : 1;
+    g_loop1f_unit = nullptr;
+    g_loop1f_at = nullptr;
+    g_loop1f_jumps = 0;
+    g_walker_orig(unit_ctx, pass);
+    g_held_mode = saved;
+    g_walk_src = saved_src;
+    g_walk_kind = saved_dsrc;
+    g_loop1f_unit = saved_unit;
+    g_loop1f_at = saved_at;
+    g_loop1f_jumps = saved_n;
 }
 
-static void h_walk_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret);
+static void walker_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret);
 
 // Walk running now, for diagnostics (X2-DIAG-PPPSLOT): 1 + pass, 0 = none; nested walks restore it.
 static volatile int g_walk_pass = 0;
-int mag025_walk_info() { return g_hold | (g_walk_pass << 8); }
+int mag025_walk_info() { return g_held_mode | (g_walk_pass << 8); }
 
-static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
+static void __cdecl hook_walker(uint32_t unit_ctx, uint32_t pass) {
     int saved = g_walk_pass;
     g_walk_pass = (uint8_t)pass + 1;
-    h_walk_body(unit_ctx, pass, (uint8_t*)_ReturnAddress());
+    walker_body(unit_ctx, pass, (uint8_t*)_ReturnAddress());
     g_walk_pass = saved;
 }
 
-static void h_walk_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
-    if (g_slow > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
-        int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe0_ret && ret == g_exe0_ret) ? 0 : -1;
-        if (k >= 0 && (g_slow_n[k]++ % (uint32_t)g_slow) != 0 && (g_slow_src >> k & 1)) {
+static void walker_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
+    if (g_opt_slowtest > 1 && row_MAG025.on && !g_disabled && !render_only() && mag008_list_active()) {
+        int k = !in_image(ret) ? ((uint8_t)pass == 0 ? 1 : 2) : (g_exe_pass0_ret && ret == g_exe_pass0_ret) ? 0 : -1;
+        if (k >= 0 && (g_slowtest_walks[k]++ % (uint32_t)g_opt_slowtest) != 0 && (g_opt_slowtest_src >> k & 1)) {
             held_walk(1, k ? 1 : 0, unit_ctx, pass);
             return;
         }
@@ -397,19 +397,19 @@ static void h_walk_body(uint32_t unit_ctx, uint32_t pass, uint8_t* ret) {
     if (row_MAG025.on && !g_disabled && render_only()) {
         uint8_t p = (uint8_t)pass;
         if (!in_image(ret)) {
-            bool prof = g_mode_list && mag008_list_active();
-            int m = prof ? g_mode_list : g_mode_dll;
-            if (m && p == 0 && g_mode_dllpass0) m = g_mode_dllpass0;
-            if (m && (p == 1 || (p == 0 && (g_pass0 || prof)))) { held_walk(m, 1, unit_ctx, pass); return; }
-        } else if (g_mode_exe && ret == g_exe_ret) {
-            held_walk(g_mode_exe, 0, unit_ctx, pass);
+            bool prof = g_opt_mode_list && mag008_list_active();
+            int m = prof ? g_opt_mode_list : g_opt_mode_dll;
+            if (m && p == 0 && g_opt_mode_dll_pass0) m = g_opt_mode_dll_pass0;
+            if (m && (p == 1 || (p == 0 && (g_opt_hold_dll_pass0 || prof)))) { held_walk(m, 1, unit_ctx, pass); return; }
+        } else if (g_opt_mode_exe && ret == g_exe_pass1_ret) {
+            held_walk(g_opt_mode_exe, 0, unit_ctx, pass);
             return;
-        } else if (g_mode_exe && g_exe0_ret && ret == g_exe0_ret) {
-            held_walk(g_mode_pass0 ? g_mode_pass0 : g_mode_exe, 0, unit_ctx, pass);
+        } else if (g_opt_mode_exe && g_exe_pass0_ret && ret == g_exe_pass0_ret) {
+            held_walk(g_opt_mode_exe_pass0 ? g_opt_mode_exe_pass0 : g_opt_mode_exe, 0, unit_ctx, pass);
             return;
         }
     }
-    g_walk_tramp(unit_ctx, pass);
+    g_walker_orig(unit_ctx, pass);
 }
 
 static const char* mode_name(int m) {
@@ -418,46 +418,46 @@ static const char* mode_name(int m) {
 }
 
 static bool install() {
-    g_entry = sig_find("X2-MAG-025 walker FUN_006bbca0",
+    g_walker = sig_find("X2-MAG-025 walker FUN_006bbca0",
         "55 8B EC 81 EC 18 08 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC 53 56 0F B7 75 08 57 89 B5 F4 F7 FF FF 83 FE 01 75 06 "
         "89 35 ?? ?? ?? ?? E8", 0x6BBCA0);
-    if (!g_entry) return false;
+    if (!g_walker) return false;
     // cmp byte [ebx+0x21F],0 / jz / cmp byte [ebx+0x21D],0 / jz +0x168 (integration block) / movsx eax,[ebx+0x216] /
     // mov esi,[edi+eax*4]
-    g_head = sig_find("X2-MAG-025 stream-loop head",
+    g_site_loop_head = sig_find("X2-MAG-025 stream-loop head",
         "80 BB 1F 02 00 00 00 74 0D 80 BB 1D 02 00 00 00 0F 84 68 01 00 00 0F BF 83 16 02 00 00 8B 34 87", 0x6BC170);
-    if (!g_head) return false;
+    if (!g_site_loop_head) return false;
     struct { uint8_t* at; const char* sig; const char* what; } checks[] = {
-        { g_head + 0x62,  "0F BF 8B 16 02 00 00 8A 44 39 10 84 C0 0F 85", "stream entry" },
-        { g_head + 0xC9,  "56 53 FF D0 83 C4 08 80 BB 10 02 00 00 00 8B F0", "handler call" },
-        { g_head + 0x156, "FE C8 88 44 39 10 66 FF 83 16 02 00 00", "WAIT decrement" },
+        { g_site_loop_head + 0x62,  "0F BF 8B 16 02 00 00 8A 44 39 10 84 C0 0F 85", "stream entry" },
+        { g_site_loop_head + 0xC9,  "56 53 FF D0 83 C4 08 80 BB 10 02 00 00 00 8B F0", "handler call" },
+        { g_site_loop_head + 0x156, "FE C8 88 44 39 10 66 FF 83 16 02 00 00", "WAIT decrement" },
         // inc word [ebx+0x216] / cmp word [ebx+0x216],4 / jl head / cmp byte [ebx+0x21D],0 / jnz
-        { g_head + 0x15C, "66 FF 83 16 02 00 00 66 83 BB 16 02 00 00 04 0F 8C 8F FE FF FF 80 BB 1D 02 00 00 00 0F 85",
+        { g_site_loop_head + 0x15C, "66 FF 83 16 02 00 00 66 83 BB 16 02 00 00 04 0F 8C 8F FE FF FF 80 BB 1D 02 00 00 00 0F 85",
           "stream-loop tail" },
         // mov al,[edi+0xB2] / test al,2 / jnz / cmp word [ebx+0x212],0 / jnz
-        { g_head + 0x17E, "8A 87 B2 00 00 00 A8 02 0F 85 ?? ?? ?? ?? 66 83 BB 12 02 00 00 00 0F 85", "integration gate" },
+        { g_site_loop_head + 0x17E, "8A 87 B2 00 00 00 A8 02 0F 85 ?? ?? ?? ?? 66 83 BB 12 02 00 00 00 0F 85", "integration gate" },
     };
     for (auto& c : checks)
         if (!sig_match(c.at, c.sig)) {
             log_line("  X2-MAG-025: %s at gva 0x%08X does not match - row off", c.what, rt_to_gva(c.at));
             return false;
         }
-    g_sentry = g_head + 0x62;
-    g_hcall = g_head + 0xC9;
-    g_hcall_after = g_hcall + 7;
-    g_dec = g_head + 0x156;
-    g_next = g_head + 0x15C;
-    g_skip = g_head + 0x171;
-    g_gate = g_head + 0x18C;
-    uint8_t* held = g_gate + 8 + 6 + *(int32_t*)(g_gate + 10);   // the gate's jnz rel32 target
+    g_site_stream_entry = g_site_loop_head + 0x62;
+    g_site_handler_call = g_site_loop_head + 0xC9;
+    g_site_after_handler = g_site_handler_call + 7;
+    g_site_wait_dec = g_site_loop_head + 0x156;
+    g_site_next_stream = g_site_loop_head + 0x15C;
+    g_site_after_streams = g_site_loop_head + 0x171;
+    g_site_integration_gate = g_site_loop_head + 0x18C;
+    uint8_t* held = g_site_integration_gate + 8 + 6 + *(int32_t*)(g_site_integration_gate + 10);   // the gate's jnz rel32 target
     if (!sig_match(held, "A8 04 75")) {                          // test al,4 / jnz (follow skip)
         log_line("  X2-MAG-025: gate target gva 0x%08X is not 'test al,4' - row off", rt_to_gva(held));
         return false;
     }
-    g_gate_held = held;
+    g_site_after_integration = held;
 
-    g_followguard = config_row("X2-MAG-025-FOLLOWGUARD", 1);
-    if (g_followguard) {
+    g_opt_followguard = config_row("X2-MAG-025-FOLLOWGUARD", 1);
+    if (g_opt_followguard) {
         // test al,al / jz / movzx eax,al / push esi / mov eax,[eax*4+table] / push ebx / call eax / add esp,8 /
         // inc word [ebx+0x218]
         uint8_t* site = sig_find("X2-MAG-025-FOLLOWGUARD follow call",
@@ -470,58 +470,58 @@ static bool install() {
         uint8_t* table = site ? abs_operand("X2-MAG-025-FOLLOWGUARD follow table", site + 0xB) : nullptr;
         if (!site || !find || !table || !sig_match(find, "55 8B EC 56 8B 75 0C 57 66 8B 7D 10 66 85 FF 79 4F")) {
             log_line("  X2-MAG-025-FOLLOWGUARD: sites not found - guard off");
-            g_followguard = 0;
+            g_opt_followguard = 0;
         } else {
-            g_fcall = site + 4;
-            g_fcall_after = site + 0x15;
-            g_ftable = (uint8_t**)table;
-            g_fattach = fn;
-            g_find_unit = (find_unit_t)find;
+            g_site_follow_call = site + 4;
+            g_site_after_follow = site + 0x15;
+            g_follow_table = (uint8_t**)table;
+            g_follow_attach = fn;
+            g_find_unit = (find_unit_fn)find;
             log_line("  X2-MAG-025-FOLLOWGUARD: follow call gva=0x%08X, table gva=0x%08X, attach handler gva=0x%08X, "
-                     "unit lookup gva=0x%08X", rt_to_gva(g_fcall), rt_to_gva(table), rt_to_gva(fn), rt_to_gva(find));
+                     "unit lookup gva=0x%08X", rt_to_gva(g_site_follow_call), rt_to_gva(table), rt_to_gva(fn), rt_to_gva(find));
         }
     }
-    g_mode_exe = config_row("X2-MAG-025-MODE", 3);
-    g_mode_dll = config_row("X2-MAG-025-DLLMODE", 3);
-    if (g_mode_exe < 0 || g_mode_exe > 3) g_mode_exe = 3;
-    if (g_mode_dll < 0 || g_mode_dll > 3) g_mode_dll = 3;
-    g_mode_pass0 = config_row("X2-MAG-025-PASS0MODE", 1);
-    if (g_mode_pass0 < 0 || g_mode_pass0 > 3) g_mode_pass0 = 1;
-    g_mode_dllpass0 = config_row("X2-MAG-025-DLLPASS0MODE", 0);
-    if (g_mode_dllpass0 < 0 || g_mode_dllpass0 > 3) g_mode_dllpass0 = 0;
-    g_mode_list = config_row("X2-MAG-025-LISTMODE", 2);
-    if (g_mode_list < 0 || g_mode_list > 3) g_mode_list = 2;
-    if (config_row("X2-MAG-025-EXE", 1) == 0) g_mode_exe = 0;
-    if (g_mode_exe) {
+    g_opt_mode_exe = config_row("X2-MAG-025-MODE", 3);
+    g_opt_mode_dll = config_row("X2-MAG-025-DLLMODE", 3);
+    if (g_opt_mode_exe < 0 || g_opt_mode_exe > 3) g_opt_mode_exe = 3;
+    if (g_opt_mode_dll < 0 || g_opt_mode_dll > 3) g_opt_mode_dll = 3;
+    g_opt_mode_exe_pass0 = config_row("X2-MAG-025-PASS0MODE", 1);
+    if (g_opt_mode_exe_pass0 < 0 || g_opt_mode_exe_pass0 > 3) g_opt_mode_exe_pass0 = 1;
+    g_opt_mode_dll_pass0 = config_row("X2-MAG-025-DLLPASS0MODE", 0);
+    if (g_opt_mode_dll_pass0 < 0 || g_opt_mode_dll_pass0 > 3) g_opt_mode_dll_pass0 = 0;
+    g_opt_mode_list = config_row("X2-MAG-025-LISTMODE", 2);
+    if (g_opt_mode_list < 0 || g_opt_mode_list > 3) g_opt_mode_list = 2;
+    if (config_row("X2-MAG-025-EXE", 1) == 0) g_opt_mode_exe = 0;
+    if (g_opt_mode_exe) {
         // FUN_006a5d30: push / call FUN_0064f580 / push 1 / push 0 / call walker / mov esi,[..] / push 0 / mov [..],0
         uint8_t* site = sig_find("X2-MAG-025 EXE pass-1 walk call",
             "68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 6A 01 6A 00 E8 ?? ?? ?? ?? 8B 35 ?? ?? ?? ?? 6A 00 C7 05", 0x6A5D72);
-        if (!site || call_target(site + 0xE) != g_entry) {
+        if (!site || call_target(site + 0xE) != g_walker) {
             log_line("  X2-MAG-025: EXE pass-1 walk call not found - EXE walks untouched");
-            g_mode_exe = 0;
+            g_opt_mode_exe = 0;
         } else {
-            g_exe_ret = site + 0x13;
+            g_exe_pass1_ret = site + 0x13;
         }
     }
-    if (g_mode_exe && config_row("X2-MAG-025-EXEPASS0", 1)) {
+    if (g_opt_mode_exe && config_row("X2-MAG-025-EXEPASS0", 1)) {
         // Fx_OpuUpdate: mov [0x1b41b9c],eax / push 0 / push 0 / call walker / add esp,8 / cmp [esi+0x58],0 / jnz +8
         uint8_t* s0 = sig_find("X2-MAG-025 EXE pass-0 walk call",
             "A3 ?? ?? ?? ?? 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 08 83 7E 58 00 75 08", 0x6A5CFF);
-        if (s0 && call_target(s0 + 9) == g_entry) g_exe0_ret = s0 + 0xE;
+        if (s0 && call_target(s0 + 9) == g_walker) g_exe_pass0_ret = s0 + 0xE;
         else log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk call not found - untouched");
     }
-    g_pass0 = config_row("X2-MAG-025-PASS0", 0);
-    g_hold_pos = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
-    g_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
-    g_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
-    g_attach_deny = config_row("X2-MAG-025-ATTACHDENY", 0);
-    g_optrace = config_row("X2-MAG-025-OPTRACE", 0);
-    g_slow = config_row("X2-MAG-025-SLOWTEST", 0);
-    g_slow_src = config_row("X2-MAG-025-SLOWSRC", 1);
-    if (g_slow > 1)
+    g_opt_hold_dll_pass0 = config_row("X2-MAG-025-PASS0", 0);
+    g_opt_hold_position = config_row("X2-MAG-025-POS", 1) ? 1 : 0;
+    g_opt_opdiag = config_row("X2-MAG-025-OPDIAG", 0);
+    g_opt_loop1f = config_row("X2-MAG-025-LOOP1F", 1);
+    g_opt_attach_deny = config_row("X2-MAG-025-ATTACHDENY", 0);
+    g_optrace_left = config_row("X2-MAG-025-OPTRACE", 0);
+    g_opt_slowtest = config_row("X2-MAG-025-SLOWTEST", 0);
+    g_opt_slowtest_src = config_row("X2-MAG-025-SLOWSRC", 1);
+    if (g_opt_slowtest > 1)
         log_line("  X2-MAG-025-SLOWTEST: test, under the list profile walks%s%s%s step on 1 logic frame in %d",
-                 g_slow_src & 1 ? " EXE-pass0" : "", g_slow_src & 2 ? " DLL-pass0" : "", g_slow_src & 4 ? " DLL-pass1" : "",
-                 g_slow);
+                 g_opt_slowtest_src & 1 ? " EXE-pass0" : "", g_opt_slowtest_src & 2 ? " DLL-pass0" : "", g_opt_slowtest_src & 4 ? " DLL-pass1" : "",
+                 g_opt_slowtest);
     char deny[256];
     config_str("rows", "X2-MAG-025-DENY", deny, sizeof(deny), "1F,7F");   // loop counter, battle signal
     char line[256]; int k = 0; line[0] = 0;
@@ -529,7 +529,7 @@ static bool install() {
         char* e = nullptr;
         unsigned long op = strtoul(t, &e, 16);
         if (e == t) { t++; continue; }
-        if (op < 512) { g_deny[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
+        if (op < 512) { g_held_opcode[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
         t = e;
     }
     if (line[0]) log_line("  X2-MAG-025: opcodes held on render-only invocations (X2-MAG-025-DENY, modes 2/3):%s", line);
@@ -539,35 +539,35 @@ static bool install() {
         char* e = nullptr;
         unsigned long op = strtoul(t, &e, 16);
         if (e == t) { t++; continue; }
-        if (op < 512) { g_deny_dll0[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
+        if (op < 512) { g_held_opcode_dll0[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
         t = e;
     }
     if (line[0]) log_line("  X2-MAG-025-DLL0DENY: also held on render-only DLL pass-0 walks (modes 2/3):%s", line);
-    log_line("  X2-MAG-025-ATTACHDENY: %s", g_attach_deny ? "0xDC particle attach (sub-ops 0, 6) held on held walks (modes 2/3)" : "off");
-    log_line("  X2-MAG-025-LOOP1F: %s", g_loop1f && g_deny[0x1F] ? "0x1F loops jump back uncounted on held walks (last count yields)" : "off");
-    if (g_exe0_ret) log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk (return gva 0x%08X, expected 0x006A5D0D) held too",
-                             rt_to_gva(g_exe0_ret));
+    log_line("  X2-MAG-025-ATTACHDENY: %s", g_opt_attach_deny ? "0xDC particle attach (sub-ops 0, 6) held on held walks (modes 2/3)" : "off");
+    log_line("  X2-MAG-025-LOOP1F: %s", g_opt_loop1f && g_held_opcode[0x1F] ? "0x1F loops jump back uncounted on held walks (last count yields)" : "off");
+    if (g_exe_pass0_ret) log_line("  X2-MAG-025-EXEPASS0: EXE pass-0 walk (return gva 0x%08X, expected 0x006A5D0D) held too",
+                             rt_to_gva(g_exe_pass0_ret));
     log_line("  X2-MAG-025: EXE pass-1 walk (return gva 0x%08X, expected 0x006A5D85): mode %d, %s",
-             g_exe_ret ? rt_to_gva(g_exe_ret) : 0, g_mode_exe, mode_name(g_mode_exe));
+             g_exe_pass1_ret ? rt_to_gva(g_exe_pass1_ret) : 0, g_opt_mode_exe, mode_name(g_opt_mode_exe));
     log_line("  X2-MAG-025: DLL-called walks (pass 1%s): mode %d, %s; list profile (X2-MAG-008-PASS-LIST): mode %d, pass 0 held; "
-             "held pass-0 walks: EXE mode %d, DLL mode %d", g_pass0 ? " and 0" : "", g_mode_dll, mode_name(g_mode_dll), g_mode_list,
-             g_mode_pass0, g_mode_dllpass0);
+             "held pass-0 walks: EXE mode %d, DLL mode %d", g_opt_hold_dll_pass0 ? " and 0" : "", g_opt_mode_dll, mode_name(g_opt_mode_dll), g_opt_mode_list,
+             g_opt_mode_exe_pass0, g_opt_mode_dll_pass0);
     log_line("  X2-MAG-025: walker gva=0x%08X, stream head gva=0x%08X, held gate target gva=0x%08X (expected 0x006BC406); "
-             "position hold %s", rt_to_gva(g_entry), rt_to_gva(g_head), rt_to_gva(g_gate_held), g_hold_pos ? "ON" : "OFF");
+             "position hold %s", rt_to_gva(g_walker), rt_to_gva(g_site_loop_head), rt_to_gva(g_site_after_integration), g_opt_hold_position ? "ON" : "OFF");
     return true;
 }
 
 static void pre() {
-    if (g_patched) return;
-    g_patched = true;
+    if (g_hooks_installed) return;
+    g_hooks_installed = true;
     struct { const char* name; void* at; void* detour; void** tramp; } hooks[] = {
-        { "X2-MAG-025 head",    g_head,   (void*)&h_head,   &g_head_tramp },
-        { "X2-MAG-025 entry",   g_sentry, (void*)&h_sentry, &g_sentry_tramp },
-        { "X2-MAG-025 handler", g_hcall,  (void*)&h_hcall,  &g_hcall_tramp },
-        { "X2-MAG-025 dec",     g_dec,    (void*)&h_dec,    &g_dec_tramp },
-        { "X2-MAG-025 next",    g_next,   (void*)&h_next,   &g_next_tramp },
-        { "X2-MAG-025 gate",    g_gate,   (void*)&h_gate,   &g_gate_tramp },
-        { "X2-MAG-025",         g_entry,  (void*)&h_walk,   (void**)&g_walk_tramp },
+        { "X2-MAG-025 head",    g_site_loop_head,   (void*)&hook_loop_head,   &g_loop_head_orig },
+        { "X2-MAG-025 entry",   g_site_stream_entry, (void*)&hook_stream_entry, &g_stream_entry_orig },
+        { "X2-MAG-025 handler", g_site_handler_call,  (void*)&hook_handler_call,  &g_handler_call_orig },
+        { "X2-MAG-025 dec",     g_site_wait_dec,    (void*)&hook_wait_dec,    &g_wait_dec_orig },
+        { "X2-MAG-025 next",    g_site_next_stream,   (void*)&hook_next_stream,   &g_next_stream_orig },
+        { "X2-MAG-025 gate",    g_site_integration_gate,   (void*)&hook_integration_gate,   &g_integration_gate_orig },
+        { "X2-MAG-025",         g_walker,  (void*)&hook_walker,   (void**)&g_walker_orig },
     };
     int n = (int)(sizeof(hooks) / sizeof(hooks[0]));
     for (int i = 0; i < n; i++) {
@@ -578,14 +578,14 @@ static void pre() {
         return;
     }
     log_line("X2-MAG-025: walker entry and 6 inner sites hooked on the game thread");
-    if (g_followguard && hook_entry("X2-MAG-025-FOLLOWGUARD", g_fcall, (void*)&h_fcall, &g_fcall_tramp))
+    if (g_opt_followguard && hook_entry("X2-MAG-025-FOLLOWGUARD", g_site_follow_call, (void*)&hook_follow_call, &g_follow_call_orig))
         log_line("X2-MAG-025-FOLLOWGUARD: follow call hooked");
 }
 
 static void log_ops(int src) {
     char line[1024]; int k = 0; line[0] = 0;
     for (int op = 0; op < 512; op++) {
-        LONG n = InterlockedExchange(&g_opcnt[src][op], 0), d = InterlockedExchange(&g_opden[src][op], 0);
+        LONG n = InterlockedExchange(&g_op_ran[src][op], 0), d = InterlockedExchange(&g_op_held[src][op], 0);
         if (n) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " %02X:%ld", op, n);
         if (d) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " %02X:held%ld", op, d);
     }
@@ -594,27 +594,27 @@ static void log_ops(int src) {
 
 static void post() {
     static uint32_t tick = 0;
-    if (g_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); log_ops(2); }
-    if (g_slow > 1 && tick % 60 == 59) {
+    if (g_opt_opdiag && tick % 30 == 29) { log_ops(0); log_ops(1); log_ops(2); }
+    if (g_opt_slowtest > 1 && tick % 60 == 59) {
         static uint32_t seen[3] = {0, 0, 0};
-        if (g_slow_n[0] != seen[0] || g_slow_n[1] != seen[1] || g_slow_n[2] != seen[2]) {
+        if (g_slowtest_walks[0] != seen[0] || g_slowtest_walks[1] != seen[1] || g_slowtest_walks[2] != seen[2]) {
             log_line("X2-MAG-025-SLOWTEST: logic-frame walks seen so far (1 in %d stepped): EXE pass0 %lu, DLL pass0 %lu, "
-                     "DLL pass1 %lu", g_slow, (unsigned long)g_slow_n[0], (unsigned long)g_slow_n[1], (unsigned long)g_slow_n[2]);
-            for (int i = 0; i < 3; i++) seen[i] = g_slow_n[i];
+                     "DLL pass1 %lu", g_opt_slowtest, (unsigned long)g_slowtest_walks[0], (unsigned long)g_slowtest_walks[1], (unsigned long)g_slowtest_walks[2]);
+            for (int i = 0; i < 3; i++) seen[i] = g_slowtest_walks[i];
         }
     }
     static LONG reported[2] = {0, 0};
     for (int s = 0; s < 2; s++)
-        if (!reported[s] && g_held[s] > 0) {
+        if (!reported[s] && g_held_walks[s] > 0) {
             reported[s] = 1;
             log_line("X2-MAG-025: first held %s walk on a render-only invocation", s ? "DLL" : "EXE");
         }
     static LONG last = 0;
-    LONG total = g_held[0] + g_held[1];
+    LONG total = g_held_walks[0] + g_held_walks[1];
     if (++tick % 1800 == 0 && total != last) {
         last = total;
         log_line("X2-MAG-025: held walks so far: EXE %ld, DLL %ld; WAIT-0 streams on mode-3 walks: %ld ran, %ld held; "
-                 "0x1F loops run uncounted %ld", g_held[0], g_held[1], g_ro_run, g_ro_blocked, g_loop_runs);
+                 "0x1F loops run uncounted %ld", g_held_walks[0], g_held_walks[1], g_wait0_ran, g_wait0_held, g_loop_runs);
     }
 }
 
