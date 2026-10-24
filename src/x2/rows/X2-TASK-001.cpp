@@ -82,7 +82,7 @@ static void pre() {
     }
     if (g_disabled || !g_create) return;
     int kind = pacing_kind();
-    if (kind == INV_BUILD) {
+    if (kind == INV_RENDER_ONLY) {
         for (int i = 0; i < g_nrec; i++) {
             if (g_create(g_rec[i].fn, g_rec[i].a1, g_rec[i].a2, 1) < 0) InterlockedIncrement(&g_failed);
             else InterlockedIncrement(&g_replayed);

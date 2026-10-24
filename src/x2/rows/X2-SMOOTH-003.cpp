@@ -712,7 +712,7 @@ static void peel_draw(bool logic) {
 
 // Sg_MainLoop stub (E8 0x60586C -> Ch_NoSkelPass 0x6E1610, cdecl(void)).
 static void __cdecl h_noskel() {
-    if ((g_peel_draw || g_peel_skel) && row_SMOOTH003.on && !g_disabled && (g_kind == INV_LOGIC || g_kind == INV_BUILD)) {
+    if ((g_peel_draw || g_peel_skel) && row_SMOOTH003.on && !g_disabled && (g_kind == INV_LOGIC || g_kind == INV_RENDER_ONLY)) {
         static bool was = false;
         bool hold = peel_hold();
         if (hold) __try { peel_draw(g_kind == INV_LOGIC); } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -720,7 +720,7 @@ static void __cdecl h_noskel() {
                                   (LONG)g_peel_draw_n);
         was = hold;
     }
-    if (row_SMOOTH003.on && !g_disabled && g_kind == INV_BUILD && live3() && *g_freeze == 0) {
+    if (row_SMOOTH003.on && !g_disabled && g_kind == INV_RENDER_ONLY && live3() && *g_freeze == 0) {
         g_walks++;
         LONGLONG t0 = perf_on() ? perf_now() : 0;
         __try { walk(); }
@@ -1025,8 +1025,8 @@ static void pre() {
         __except (EXCEPTION_EXECUTE_HANDLER) { g_hold_base = nullptr; fault("hold restore", GetExceptionCode()); }
     }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
-    if (g_kind != INV_BUILD) InterlockedIncrement(&g_step_n);
-    bool want = !g_disabled && row_SMOOTH003.on && live3() && (g_kind == INV_LOGIC || g_kind == INV_BUILD);
+    if (g_kind != INV_RENDER_ONLY) InterlockedIncrement(&g_step_n);
+    bool want = !g_disabled && row_SMOOTH003.on && live3() && (g_kind == INV_LOGIC || g_kind == INV_RENDER_ONLY);
     if (peel_hold()) InterlockedIncrement(&g_peel_invs);
     *g_half = want ? 1 : 0;
     g_half_on = want;

@@ -232,8 +232,8 @@ static void analyse(const Sample& s) {
     const Sample &p = g_s[0], &n = g_s[1], &q = g_s[2];
     if (!p.ok || !n.ok || !q.ok) return;
     if (n.frame != p.frame + 1 || q.frame != n.frame + 1) return;
-    bool alt = (n.kind == INV_LOGIC || n.kind == INV_BUILD) && p.kind == q.kind && p.kind != n.kind &&
-               (p.kind == INV_LOGIC || p.kind == INV_BUILD);
+    bool alt = (n.kind == INV_LOGIC || n.kind == INV_RENDER_ONLY) && p.kind == q.kind && p.kind != n.kind &&
+               (p.kind == INV_LOGIC || p.kind == INV_RENDER_ONLY);
     if (!alt) return;
     double sg = n.kind == INV_LOGIC ? 1.0 : -1.0;
     auto zig = [](float a0, float a1, float a2) -> double {

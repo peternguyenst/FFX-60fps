@@ -111,7 +111,7 @@ static uint8_t* __cdecl h_op(uint8_t* scr, uint8_t* pc) {
     if (log) __try { pool_state(&i0, &w0); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     g_call = (pc > g_lastpc) ? g_call + 1 : 0;
     g_lastpc = pc;
-    bool render = pacing_kind() == INV_BUILD;
+    bool render = pacing_kind() == INV_RENDER_ONLY;
     bool drop = (*(uint16_t*)(scr + 0x21A) >> 12) == 1 &&
                 ((g_drop == 1 && render) || (g_drop == 2 && g_call == 0) || (g_drop == 3 && g_call == 1) || g_drop == 4);
     uint8_t* r = drop ? pc + 0x10 : g_orig(scr, pc);

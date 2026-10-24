@@ -60,7 +60,7 @@ static ULONGLONG g_base_t0 = 0;
 // more, "long" = above both. Animation noise gives about as many long as short (U/D 22/10/2026 23:46: no magic DLL,
 // 31-40% "short" against the previous logic window only); a blink gives short >> long.
 static void add_window(Stat& s, int kind, LONG n) {
-    if (kind == INV_BUILD) { s.ro_draws += n; s.ro_n++; }
+    if (kind == INV_RENDER_ONLY) { s.ro_draws += n; s.ro_n++; }
     else if (kind == INV_LOGIC) { s.logic_draws += n; s.logic_n++; }
 }
 static int size_bucket(LONG d) { return d < 4 ? 0 : d < 8 ? 1 : d < 16 ? 2 : d < 32 ? 3 : 4; }
@@ -100,7 +100,7 @@ static void pre() {
         for (Stat& s : g_dll) if (s.base) { add_window(s, kind, n); if (pair) add_pair(s, delta, size); }
         if (!any) { add_window(g_base_stat, kind, n); if (pair) add_pair(g_base_stat, delta, size); }
         if (kind == INV_LOGIC) { g_prev_logic_draws = n; g_pend_ro = -1; }
-        else if (kind == INV_BUILD) g_pend_ro = n;
+        else if (kind == INV_RENDER_ONLY) g_pend_ro = n;
         else { g_prev_logic_draws = -1; g_pend_ro = -1; }
     }
     g_prev_kind = pacing_kind();

@@ -69,7 +69,7 @@ static void post() {
     if (now - last >= 10000 && c != last_c) {
         last = now; last_c = c;
         log_line("X2-HD-001: svc +0xEBC calls LOGIC %ld RENDER %ld BACKLOG %ld STOCK %ld, replayed %ld", g_cleared[INV_LOGIC],
-                 g_cleared[INV_BUILD], g_cleared[INV_BACKLOG], g_cleared[INV_STOCK], g_clear_replays);
+                 g_cleared[INV_RENDER_ONLY], g_cleared[INV_BACKLOG], g_cleared[INV_STOCK], g_clear_replays);
     }
 }
 

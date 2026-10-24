@@ -143,7 +143,7 @@ static void render_hold(int vp) {
 }
 
 static void on_call(int vp) {
-    if (g_kind == INV_BUILD) { render_hold(vp); return; }        // render-only frames draw tick k
+    if (g_kind == INV_RENDER_ONLY) { render_hold(vp); return; }        // render-only frames draw tick k
     if (g_kind != INV_LOGIC && g_kind != INV_BACKLOG) return;
     CamHist& h = g_h[vp];
     int tag = src_tag();

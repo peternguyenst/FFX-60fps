@@ -30,7 +30,7 @@ extern Row row_CLK002;
 
 static bool paced_kind() {
     int k = pacing_kind();
-    return k == INV_LOGIC || k == INV_BUILD;     // backlog/stock invocations are 1/30 s each
+    return k == INV_LOGIC || k == INV_RENDER_ONLY;     // backlog/stock invocations are 1/30 s each
 }
 
 static uint32_t live(const ModClock& c) { return *c.src * c.mul; }

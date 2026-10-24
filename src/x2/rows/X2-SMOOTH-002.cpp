@@ -221,7 +221,7 @@ static void __cdecl h_draw() {
         applied = true;
         __try { apply_interp(); }
         __except (EXCEPTION_EXECUTE_HANDLER) { log_line("X2-SMOOTH-002: fault 0x%08lX in apply - row off", GetExceptionCode()); row_SMOOTH002.on = 0; }
-    } else if (g_renderhold && row_SMOOTH002.on && !g_disabled && !g_applied_inv && smooth_live(2) && g_kind == INV_BUILD) {
+    } else if (g_renderhold && row_SMOOTH002.on && !g_disabled && !g_applied_inv && smooth_live(2) && g_kind == INV_RENDER_ONLY) {
         g_applied_inv = true;
         applied = true;
         __try { apply_render_hold(); }

@@ -75,7 +75,7 @@ static void scan() {
 
 static void pre() {
     int k = pacing_kind();
-    if (k == INV_BUILD) return;                     // logic ticks only (render-only steps are SMOOTH-003's half steps)
+    if (k == INV_RENDER_ONLY) return;                     // logic ticks only (render-only steps are SMOOTH-003's half steps)
     __try { scan(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { row_CHR002.on = 0; log_line("X2-CHR-002: fault - row off"); }
 }

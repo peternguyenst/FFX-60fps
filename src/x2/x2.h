@@ -80,15 +80,23 @@ void reload_poll();                              // x2_reload.cpp: reload key = 
 void hooks_install_divider_on_game_thread();     // first pre()
 
 // ---------------------------------------------------------------- x2_pacing.cpp
-enum InvKind { INV_LOGIC = 0, INV_BUILD = 1, INV_BACKLOG = 2, INV_STOCK = 3 };
-void pacing_pre();
+// 60 Hz works by running the game's main loop (Sg_MainLoop) once per screen refresh instead of every second one, and
+// telling it on every other run to skip the game logic and only draw. Each run of the main loop is an "invocation";
+// pacing_kind() says what the current one is:
+enum InvKind {
+    INV_LOGIC = 0,         // runs the game logic and draws (the game's normal frame)
+    INV_RENDER_ONLY = 1,   // draws the same game state again, no logic: the extra frame that makes 60 fps
+    INV_BACKLOG = 2,       // the game is behind and catches up: logic, no draw
+    INV_STOCK = 3,         // 60 Hz is off right now (FMV, menu, load...): the game runs as it shipped
+};
+void pacing_pre();                               // before every invocation: picks its kind
 void pacing_post();
-bool pacing_divider_request(uint32_t req);       // true = swallow
+bool pacing_divider_request(uint32_t req);       // the game asks for a frame divider; true = swallowed (kept at 1)
 int  pacing_kind();
-inline bool render_only() { return pacing_kind() == INV_BUILD; }
-void pacing_hold_stock(const char* who, bool hold); // a row asks for stock pacing (e.g. FMV)
+inline bool render_only() { return pacing_kind() == INV_RENDER_ONLY; }
+void pacing_hold_stock(const char* who, bool hold); // a row asks for stock pacing (e.g. FMV); holds nest
 void pacing_set(bool on);                         // runtime 60 Hz on/off ([x2] pacing; X2-CFG-MENU)
-void pacing_leave_now(const char* why);
+void pacing_leave_now(const char* why);           // stock divider + exec 1 now (X2-LOAD-001: load mode)
 void pacing_turbo(bool on);                       // X2-PACE-TURBO: booster engaged -> logic on every invocation
 void pacing_flip_phase();                         // diagnostic: next invocation repeats the last kind (X2-DIAG-CAPTURE-PHASEFLIP)
 void pacing_inject_backlog();                     // diagnostic: one no-draw logic invocation (X2-DIAG-CAPTURE-BACKLOG)
@@ -100,7 +108,6 @@ bool load_idlehold_get();                         // X2-LOAD-001 holds (Config p
 void load_idlehold_set(bool on);
 bool load_battlehold_get();
 void load_battlehold_set(bool on);
-bool pacing_menu60();                             // a held PS2 menu runs at the game's divider 1 (X2-PACE-MENUDIV2=3)           // stock divider + exec 1 now (X2-LOAD-001: load mode)
 
 // ---------------------------------------------------------------- x2_magic_mods.cpp
 typedef void (*magic_load_fn)(uint8_t* base, uint32_t size, const char* name);   // loader lock
@@ -147,8 +154,10 @@ bool     pppops_prog_marked(void* prog);          // X2-MAG-006-UNPAUSE-OPS test
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb);   // X2-MAG-020 draw-only walk -> X2-MAG-026
 bool     mag008_list_active();                 // X2-MAG-008: a PASS-LIST DLL (or its chain) is loaded
 bool     mag008_pass_late(uint8_t* base, const char* name);   // X2-MAG-008: pass an already loaded DLL, no chain
-void     mag035_pair(uint8_t* base, int delta);
-int      mag025_walk_info();                     // X2-MAG-025: held mode (bits 0-7) | (1 + walk pass) << 8, 0 = no walk                // X2-MAG-035: +1 render-only frame below both logic neighbours, -1 above
+// X2-DIAG-BLINK -> X2-MAG-035, after each render-only frame: draw_diff > 0 = it drew fewer things than the logic frames
+// on both sides, < 0 = more, 0 = neither
+void     mag035_pair(uint8_t* base, int draw_diff);
+int      mag025_walk_info();                     // X2-MAG-025: held mode (bits 0-7) | (1 + walk pass) << 8, 0 = no walk
 
 // Rollback: a span is snapshotted at the start of every render-only invocation and written back at its end.
 typedef bool (*span_resolver_t)(void* ctx, uint8_t** base, uint32_t* len);

@@ -149,7 +149,7 @@ void pacing_pre() {
         if (InterlockedExchange(&g_flip, 0)) g_phase ^= 1;
         target = g_phase;
         g_phase ^= 1;
-        g_kind = target ? INV_LOGIC : INV_BUILD;
+        g_kind = target ? INV_LOGIC : INV_RENDER_ONLY;
     }
     if (*g_exec_byte != target) set_exec(target);
     g_count[g_kind]++;
@@ -159,7 +159,7 @@ void pacing_pre() {
 void pacing_post() {
     if ((g_inv % 36000) == 0) {                      // ~10 min at 60 Hz
         log_line("pacing stats: inv=%llu LOGIC=%llu BUILD=%llu BACKLOG=%llu STOCK=%llu", g_inv,
-                 g_count[INV_LOGIC], g_count[INV_BUILD], g_count[INV_BACKLOG], g_count[INV_STOCK]);
+                 g_count[INV_LOGIC], g_count[INV_RENDER_ONLY], g_count[INV_BACKLOG], g_count[INV_STOCK]);
     }
 }
 

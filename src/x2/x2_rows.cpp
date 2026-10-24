@@ -193,7 +193,7 @@ bool rollback_add_dynamic(const char* row_id, span_resolver_t fn, void* ctx, uin
 
 void rollback_pre() {
     for (int i = 0; i < g_nspans; i++) g_spans[i].saved_at = nullptr;
-    if (pacing_kind() != INV_BUILD) return;
+    if (pacing_kind() != INV_RENDER_ONLY) return;
     for (int i = 0; i < g_nspans; i++) {
         Span& s = g_spans[i];
         if (s.dead || !row_on(s.row_id)) continue;

@@ -94,7 +94,7 @@ static void battle_tick() {
 }
 
 static void post() {
-    if (g_disabled || pacing_kind() == INV_BUILD) return;
+    if (g_disabled || pacing_kind() == INV_RENDER_ONLY) return;
     if (g_btl_pending) { battle_tick(); return; }
     bool chord = (pad_held() & g_chord) == g_chord;
     if (!chord) { g_armed = true; return; }
