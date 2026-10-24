@@ -144,6 +144,7 @@
     <ClCompile Include="src\x2\rows\X2-MENU-002.cpp" />
     <ClCompile Include="src\x2\rows\X2-TITLE-001.cpp" />
     <ClCompile Include="src\x2\rows\X2-SAVE-001.cpp" />
+    <ClCompile Include="src\x2\rows\X2-SAVE-002.cpp" />
     <ClCompile Include="src\x2\rows\X2-SMOOTH-001.cpp" />
     <ClCompile Include="src\x2\rows\X2-SMOOTH-002.cpp" />
     <ClCompile Include="src\x2\rows\X2-SMOOTH-003.cpp" />
