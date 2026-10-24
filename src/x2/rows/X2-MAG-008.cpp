@@ -25,18 +25,18 @@
 
 namespace x2 {
 
-typedef void(__cdecl* dispatch_t)(int);         // cdecl int, plain RET 0x61675D (PORT-A §1)
+typedef void(__cdecl* effect_dispatch_fn)(int);         // cdecl int, plain RET 0x61675D (PORT-A §1)
 
-static dispatch_t g_dispatch = nullptr;
-static volatile LONG g_skipped = 0, g_passed = 0, g_ro_passed = 0;
-static int  g_pass_on = 1;                       // [rows] X2-MAG-008-PASS
-static volatile LONG g_pass_loaded = 0;          // cross-fade DLLs loaded now
+static effect_dispatch_fn g_effect_dispatch = nullptr;
+static volatile LONG g_dispatch_skipped = 0, g_dispatch_ran = 0, g_dispatch_ran_render_only = 0;
+static int  g_opt_pass = 1;                       // [rows] X2-MAG-008-PASS
+static volatile LONG g_passed_dlls_loaded = 0;          // cross-fade DLLs loaded now
 extern Row row_MAG008;
 
 // Families passed (strings in the DLL image): "kohno corss fade begin" (63 cross-fade DLLs, dressphere change) and
 // "ky: *** Chr Packet Size" (62 "ky" overlays that load their own character model, e.g. magic_0931 after the change:
 // model + fire effect still blinked with the first family alone, U 16/10/2026 20:41).
-static bool has_needle(const uint8_t* base, uint32_t size, const char* k) {
+static bool image_contains(const uint8_t* base, uint32_t size, const char* k) {
     const uint32_t n = (uint32_t)strlen(k);
     __try {
         for (uint32_t i = 0; i + n <= size; i++)
@@ -47,28 +47,28 @@ static bool has_needle(const uint8_t* base, uint32_t size, const char* k) {
 // X2-MAG-008-PASS=2 (test mode): also the 310-DLL effect template (magic_0938 / magic_0904 shape, FUN_10001330
 // prologue below), e.g. magic_0904 at the start of a second dressphere change (U 16/10/2026 23:10: still blinks).
 // The same template carries most battle effects, so this mode is expected to bring back 2x effects: test only.
-static const uint8_t TPL[] = {0x55, 0x8B, 0xEC, 0x53, 0x8B, 0x5D, 0x08, 0x56, 0x8B, 0x8B, 0xD0, 0x00, 0x00, 0x00, 0x57,
+static const uint8_t TEMPLATE_PROLOGUE[] = {0x55, 0x8B, 0xEC, 0x53, 0x8B, 0x5D, 0x08, 0x56, 0x8B, 0x8B, 0xD0, 0x00, 0x00, 0x00, 0x57,
     0x8B, 0x41, 0x14, 0xA3};
-static bool has_xfade(const uint8_t* base, uint32_t size) {
-    if (has_needle(base, size, "kohno corss fade begin") || has_needle(base, size, "ky: *** Chr Packet Size")) return true;
-    if (g_pass_on != 2) return false;
+static bool is_passed_family(const uint8_t* base, uint32_t size) {
+    if (image_contains(base, size, "kohno corss fade begin") || image_contains(base, size, "ky: *** Chr Packet Size")) return true;
+    if (g_opt_pass != 2) return false;
     __try {
-        for (uint32_t i = 0; i + sizeof(TPL) <= size; i++)
-            if (base[i] == 0x55 && memcmp(base + i, TPL, sizeof(TPL)) == 0) return true;
+        for (uint32_t i = 0; i + sizeof(TEMPLATE_PROLOGUE) <= size; i++)
+            if (base[i] == 0x55 && memcmp(base + i, TEMPLATE_PROLOGUE, sizeof(TEMPLATE_PROLOGUE)) == 0) return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return false;
 }
-static uint8_t* g_xbase[8];
-static bool     g_xown[8];                       // matched by string (only these start a chain: one hop)
-static bool     g_xlist[8];                      // listed, or chained from a listed DLL
-static volatile LONG g_list_loaded = 0;
-static bool     g_chain_list = false;            // the chain was started by a listed DLL
-bool mag008_list_active() { return g_list_loaded > 0; }
+static uint8_t* g_passed_base[8];
+static bool     g_passed_starts_chain[8];                       // matched by string (only these start a chain: one hop)
+static bool     g_passed_listed[8];                      // listed, or chained from a listed DLL
+static volatile LONG g_listed_dlls_loaded = 0;
+static bool     g_chain_from_listed = false;            // the chain was started by a listed DLL
+bool mag008_list_active() { return g_listed_dlls_loaded > 0; }
 // Chain: a DLL loaded within 500 ms of a passed DLL's unload is passed too (the dressphere change runs magic_0646 ->
 // magic_0938 -> magic_0931 back to back, 2-3 ms apart; 0938 has neither string; U 16/10/2026 20:45 still blinked).
-static volatile DWORD g_chain_until = 0;
-static int g_plist[32], g_nplist = 0, g_nochain[32], g_nnochain = 0;
-static int magic_no(const char* name) {
+static volatile DWORD g_chain_open_until = 0;
+static int g_pass_list[32], g_pass_list_count = 0, g_nochain_list[32], g_nochain_list_count = 0;
+static int dll_number(const char* name) {
     const char* p = strstr(name, "magic_");
     return p ? atoi(p + 6) : -1;
 }
@@ -76,7 +76,7 @@ static bool in_list(const int* l, int cnt, int n) {
     for (int i = 0; i < cnt; i++) if (l[i] == n) return true;
     return false;
 }
-static bool in_plist(const char* name) { return in_list(g_plist, g_nplist, magic_no(name)); }
+static bool in_pass_list(const char* name) { return in_list(g_pass_list, g_pass_list_count, dll_number(name)); }
 static void parse_list(const char* key, const char* def, int* l, int* cnt) {
     char buf[160];
     config_str("rows", key, buf, sizeof(buf), def);
@@ -87,21 +87,21 @@ static void parse_list(const char* key, const char* def, int* l, int* cnt) {
     }
 }
 static void on_load(uint8_t* base, uint32_t size, const char* name) {
-    bool chained = g_chain_until && (LONG)(GetTickCount() - g_chain_until) < 0;
-    bool listed = in_plist(name);
-    bool own = listed || has_xfade(base, size);
+    bool chained = g_chain_open_until && (LONG)(GetTickCount() - g_chain_open_until) < 0;
+    bool listed = in_pass_list(name);
+    bool own = listed || is_passed_family(base, size);
     if (listed) log_line("X2-MAG-008-PASS: %s is in X2-MAG-008-PASS-LIST", name);
     if (!own) {
         if (!chained) return;
         log_line("X2-MAG-008-PASS: %s loaded right after a passed DLL - passed too (chain)", name);
     }
-    bool prof = listed || (!own && chained && g_chain_list);
+    bool prof = listed || (!own && chained && g_chain_from_listed);
     for (int i = 0; i < 8; i++)
-        if (!g_xbase[i]) {
-            g_xbase[i] = base; g_xlist[i] = prof;
-            g_xown[i] = own && !(listed && in_list(g_nochain, g_nnochain, magic_no(name)));   // starts a chain
-            InterlockedIncrement(&g_pass_loaded);
-            if (prof) InterlockedIncrement(&g_list_loaded);
+        if (!g_passed_base[i]) {
+            g_passed_base[i] = base; g_passed_listed[i] = prof;
+            g_passed_starts_chain[i] = own && !(listed && in_list(g_nochain_list, g_nochain_list_count, dll_number(name)));   // starts a chain
+            InterlockedIncrement(&g_passed_dlls_loaded);
+            if (prof) InterlockedIncrement(&g_listed_dlls_loaded);
             break;
         }
     log_line("X2-MAG-008-PASS: %s is a cross-fade / ky model DLL - exec==0 dispatch runs on render-only invocations while loaded", name);
@@ -109,13 +109,13 @@ static void on_load(uint8_t* base, uint32_t size, const char* name) {
 // X2-MAG-035: pass a DLL that is already loaded, as a listed DLL that starts no chain (game thread). False if the
 // pass is off, the DLL is already passed, or no slot is free.
 bool mag008_pass_late(uint8_t* base, const char* name) {
-    if (!row_MAG008.on || !g_pass_on || !base) return false;
-    for (int i = 0; i < 8; i++) if (g_xbase[i] == base) return false;
+    if (!row_MAG008.on || !g_opt_pass || !base) return false;
+    for (int i = 0; i < 8; i++) if (g_passed_base[i] == base) return false;
     for (int i = 0; i < 8; i++)
-        if (InterlockedCompareExchangePointer((void* volatile*)&g_xbase[i], base, nullptr) == nullptr) {
-            g_xown[i] = false; g_xlist[i] = true;
-            InterlockedIncrement(&g_pass_loaded);
-            InterlockedIncrement(&g_list_loaded);
+        if (InterlockedCompareExchangePointer((void* volatile*)&g_passed_base[i], base, nullptr) == nullptr) {
+            g_passed_starts_chain[i] = false; g_passed_listed[i] = true;
+            InterlockedIncrement(&g_passed_dlls_loaded);
+            InterlockedIncrement(&g_listed_dlls_loaded);
             log_line("X2-MAG-008-PASS: %s passed late (X2-MAG-035), no chain", name);
             return true;
         }
@@ -123,22 +123,22 @@ bool mag008_pass_late(uint8_t* base, const char* name) {
 }
 static void on_unload(uint8_t* base) {
     for (int i = 0; i < 8; i++)
-        if (g_xbase[i] == base) {
-            g_xbase[i] = nullptr;
-            InterlockedDecrement(&g_pass_loaded);
-            if (g_xlist[i]) InterlockedDecrement(&g_list_loaded);
-            g_chain_until = g_xown[i] ? GetTickCount() + 500 : 0;
-            g_chain_list = g_xown[i] && g_xlist[i];
+        if (g_passed_base[i] == base) {
+            g_passed_base[i] = nullptr;
+            InterlockedDecrement(&g_passed_dlls_loaded);
+            if (g_passed_listed[i]) InterlockedDecrement(&g_listed_dlls_loaded);
+            g_chain_open_until = g_passed_starts_chain[i] ? GetTickCount() + 500 : 0;
+            g_chain_from_listed = g_passed_starts_chain[i] && g_passed_listed[i];
         }
 }
 
-static void __cdecl h_fallback_dispatch(int pass) {
+static void __cdecl hook_render_only_dispatch(int pass) {
     if (row_MAG008.on && !g_disabled && render_only()) {
-        if (!(g_pass_on && g_pass_loaded > 0)) { InterlockedIncrement(&g_skipped); return; }
-        InterlockedIncrement(&g_ro_passed);
+        if (!(g_opt_pass && g_passed_dlls_loaded > 0)) { InterlockedIncrement(&g_dispatch_skipped); return; }
+        InterlockedIncrement(&g_dispatch_ran_render_only);
     }
-    InterlockedIncrement(&g_passed);
-    g_dispatch(pass);
+    InterlockedIncrement(&g_dispatch_ran);
+    g_effect_dispatch(pass);
 }
 
 static bool install() {
@@ -156,14 +156,14 @@ static bool install() {
         log_line("  X2-MAG-008: CALL target %p is not the effect dispatch (prologue mismatch) - refused", target);
         return false;
     }
-    g_dispatch = (dispatch_t)target;
-    g_pass_on = config_row("X2-MAG-008-PASS", 1);
-    parse_list("X2-MAG-008-PASS-LIST", "885 937 906 212 330 386 283", g_plist, &g_nplist);
-    parse_list("X2-MAG-008-PASS-NOCHAIN", "386 283", g_nochain, &g_nnochain);
-    if (g_nplist) log_line("  X2-MAG-008-PASS-LIST: %d magic DLL(s) passed by number, %d of them start no chain", g_nplist,
-                           g_nnochain);
-    if (g_pass_on && !magic_mods_subscribe("X2-MAG-008", on_load, on_unload)) g_pass_on = 0;
-    if (!patch_call_rel32(site, target, (void*)&h_fallback_dispatch)) {
+    g_effect_dispatch = (effect_dispatch_fn)target;
+    g_opt_pass = config_row("X2-MAG-008-PASS", 1);
+    parse_list("X2-MAG-008-PASS-LIST", "885 937 906 212 330 386 283", g_pass_list, &g_pass_list_count);
+    parse_list("X2-MAG-008-PASS-NOCHAIN", "386 283", g_nochain_list, &g_nochain_list_count);
+    if (g_pass_list_count) log_line("  X2-MAG-008-PASS-LIST: %d magic DLL(s) passed by number, %d of them start no chain", g_pass_list_count,
+                           g_nochain_list_count);
+    if (g_opt_pass && !magic_mods_subscribe("X2-MAG-008", on_load, on_unload)) g_opt_pass = 0;
+    if (!patch_call_rel32(site, target, (void*)&hook_render_only_dispatch)) {
         log_line("  X2-MAG-008: patch failed");
         return false;
     }
@@ -174,12 +174,12 @@ static bool install() {
 
 static void post() {
     static LONG reported = 0;
-    if (!reported && g_skipped > 0) {
+    if (!reported && g_dispatch_skipped > 0) {
         reported = 1;
-        log_line("X2-MAG-008: first skip of the exec==0 dispatch (skipped=%ld passed=%ld)", g_skipped, g_passed);
+        log_line("X2-MAG-008: first skip of the exec==0 dispatch (skipped=%ld passed=%ld)", g_dispatch_skipped, g_dispatch_ran);
     }
     static LONG ro_seen = 0;
-    if (g_ro_passed && !ro_seen) {
+    if (g_dispatch_ran_render_only && !ro_seen) {
         ro_seen = 1;
         log_line("X2-MAG-008-PASS: first render-only dispatch run for a cross-fade DLL");
     }
