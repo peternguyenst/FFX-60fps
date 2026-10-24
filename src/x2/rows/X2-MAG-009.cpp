@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MAG-009 (port of FFX MAG-009): magic DLLs time effects off the global frame counter, which counts every
-// invocation (2x at 60 Hz). The service table they get from MagicFile_Start (0xD6E5A0) is pointed at a counter
-// that only advances on logic invocations: slot +0xC08 (&frame counter; every DLL copies it at start, 37 read it)
-// and slot +0x3E0 (frame-counter getter FUN_00604ae0; 12 DLLs call it). Patched at install, before any DLL starts.
-// Evidence: outer repo re/ledger/PORT-A.md §7 (S).
+// X2-MAG-009: spells that time themselves off the frame counter keep their timing.
+//
+// The game's frame counter counts every invocation, so twice per tick at 60 fps, and spell DLLs time their effects
+// with it. The service table spell DLLs receive when they start (gva 0xD6E5A0) is pointed at our own counter, which
+// advances only on logic invocations: slot +0xC08 (the counter's address; every DLL copies it, 37 read it) and slot
+// +0x3E0 (the counter getter; 12 DLLs call it). Patched at install, before any spell DLL starts.
+// Evidence: re/ledger/PORT-A.md §7.
 #include "../x2.h"
 
 namespace x2 {

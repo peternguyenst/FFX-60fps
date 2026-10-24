@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-TEXANIM-001 (port of FFX TEXANIM-001): the character texture-animation stepper FUN_0053b6f0 (UV scroll /
-// flipbook) is called from the skeleton job FUN_006e1830, which the no-skel pass runs on every invocation, so it
-// runs 2x. The CALL at 0x6E1924 goes to a stub that steps only on logic invocations.
-// Evidence: outer repo re/ledger/PORT-B.md §4 (S).
+// X2-TEXANIM-001: animated character textures (scrolling and flipbook textures) run at their normal speed.
+//
+// The texture animation step is called from the skeleton job, which runs on every invocation, so it ran twice per
+// tick. Its CALL (gva 0x6E1924) goes to h_step, which steps only on logic invocations. Evidence: re/ledger/PORT-B.md §4.
 #include "../x2.h"
 
 namespace x2 {

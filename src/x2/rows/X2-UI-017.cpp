@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-UI-017 (port of FFX UI-017): the pad latch FUN_007464d0 (ring index + press edges against the previous
-// sample, 2 pads) runs every invocation, so a press that lands on a render-only frame is lost. Both CALLs
-// (Sg_WaitFrameSync 0x606BFB, Sg_MainLoop 0x605224; there is no third caller) go to a stub that latches only on
-// logic invocations. Evidence: outer repo re/ledger/PORT-A.md §4 (S).
+// X2-UI-017: no button press is lost.
+//
+// The game reads the pad and works out which buttons were just pressed, by comparing with the previous read, on every
+// invocation. A press that arrived on a render-only invocation was "just pressed" only there, and that invocation runs
+// no game logic: the press was lost. Both calls of the pad read (in Sg_WaitFrameSync and Sg_MainLoop) go to a hook
+// that reads the pad only on logic invocations. Evidence: re/ledger/PORT-A.md §4.
 #include "../x2.h"
 
 namespace x2 {

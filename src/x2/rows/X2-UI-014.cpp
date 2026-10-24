@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-UI-014 (port of FFX UI-014): the minimap draw Ui_MinimapDraw FUN_007cb920 runs on every invocation and adds 1
-// to the player-arrow pulse counter obj+0x74 per call (0x7CCBCA), read as a 30-call triangle wave (0x7CC4CB): at
-// 60 Hz the arrow pulses 2x. On render-only invocations the draw still runs and the counter is put back afterwards
-// (read before the increment, so the phase holds). Evidence: outer repo re/ledger/PORT-B.md §3 (S).
+// X2-UI-014: the minimap's player arrow pulses at its normal speed.
+//
+// The minimap draw (Ui_MinimapDraw) runs on every invocation and adds 1 to the arrow's pulse counter each time, so the
+// arrow pulsed twice as fast. On render-only invocations the draw still runs and the counter is put back afterwards.
+// Evidence: re/ledger/PORT-B.md §3.
 #include "../x2.h"
 
 namespace x2 {

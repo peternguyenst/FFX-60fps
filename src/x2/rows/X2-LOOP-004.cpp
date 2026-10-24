@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-LOOP-004 (port of FFX LOOP-004): the viewport finalize FUN_0064fc10 steps camera tweens and the shake (3 times
-// per call, RNG stream 9) on every draw, so at 60 fps they run 2x. The 3 viewport blocks (0xE12A40, stride 0x1C0)
-// and the stream-9 seed are rolled back across render-only invocations.
-// Evidence: outer repo re/ledger/PORT-A.md §3 (S: base/stride in FUN_0064fc10, seed table in FUN_0061e270).
+// X2-LOOP-004: camera tweens and camera shake run at their normal speed.
+//
+// The viewport finalize steps the camera tweens and the shake (with its own random number stream) every time a frame
+// is drawn, so twice per tick at 60 fps. The 3 viewport camera blocks (gva 0xE12A40, 0x1C0 bytes each) and the random
+// seed are saved at the start of each render-only invocation and put back at its end (rollback, x2_rows.cpp).
+// Evidence: re/ledger/PORT-A.md §3.
 #include "../x2.h"
 
 namespace x2 {

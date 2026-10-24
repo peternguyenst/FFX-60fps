@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-LOOP-005 (port of FFX LOOP-005): Sg_MainLoop's exec==0 fallback eases the camera again (FUN_006ef4d0 +
-// battle camera FUN_00651fd0) when the debug byte 0xDF67E8 is set (retail 1), so on render-only invocations the
-// camera moves 2x. The byte is cleared for those invocations and restored after.
-// Evidence: outer repo re/ledger/PORT-A.md §2 (S: same xref shape as FFX DAT_012fbbb0).
+// X2-LOOP-005: the camera does not ease twice per tick.
+//
+// On invocations that skip logic (our render-only frames), the main loop eases the camera again when a debug byte
+// (gva 0xDF67E8) is set, which it is in the retail game. So the camera moved at double speed. The byte is cleared for
+// render-only invocations and put back after. Evidence: re/ledger/PORT-A.md §2.
 #include "../x2.h"
 
 namespace x2 {

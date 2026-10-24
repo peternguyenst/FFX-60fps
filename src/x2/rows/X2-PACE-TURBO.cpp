@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-PACE-TURBO: the game's booster (x2 / x4) at 60 Hz. Sg_MainLoop scales its delta by the booster factor
-// (Sg_TurboDeltaScale FUN_0051c1b0, 0x60514A) and Sg_WaitFrameSync FUN_00606900 turns the delta into the backlog count:
-// vblanks = (carry + delta) * 60, count 1 below 2 vblanks, else ftol(vblanks / 2) with the rest carried (S, MAINLOOP §5.1).
-// Stock (divider 2, delta 1/30 s): x2 -> count 2, x4 -> count 4 logic steps per host frame. At 60 Hz the delta is 1/60 s:
-// x2 -> count 1 (no backlog) and the exec alternation still runs logic on every second invocation = 1x; x4 -> count 2 =
-// 1 backlog + 1/2 = 1.5 per host frame = 3x (U 21/10/2026: "x2 no longer works, x4 is maybe x2"). The count is already
-// factor / 2 per 60 Hz host frame, so while the booster is engaged every invocation runs logic (no render-only ones):
-// x2 = 60 logic steps/s, x4 = 120/s, as stock. Engaged = [0xDEAF78] (set by the scale function while the booster is on
-// and allowed, S) or the X2-DEV-TURBO key held; read in pre(), used by the next invocation's pacing_pre().
+// X2-PACE-TURBO: the game's speed booster (x2 / x4) works at 60 fps.
+//
+// The booster makes the game run several logic steps per host frame (the backlog count): at stock 30 Hz, x2 gives 2 and
+// x4 gives 4 per frame. At 60 Hz each frame is half as long, so the count is halved too (x2: 1, x4: 2), and our
+// alternation still made every second invocation render-only: x2 played at normal speed and x4 at about x3. While the
+// booster is engaged (its flag at gva 0xDEAF78, or the X2-DEV-TURBO key) every invocation runs logic instead, which
+// gives exactly the stock speeds: 60 logic steps per second at x2, 120 at x4. Read in pre(), applied by the next
+// invocation's pacing. Evidence: re/MAINLOOP.md §5.1.
 #include "../x2.h"
 
 namespace x2 {

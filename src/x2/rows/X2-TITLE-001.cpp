@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-TITLE-001: the title screen ("New Game / Load") is a field map (id 0x17, special-cased by the HD layer at
-// 0x466FCD), not a PS2-layer menu: X2-MENU-001 never engages there (D 12/10/2026 23:17: menu flags 0 for 26 s) and the
-// user still sees it at 2x with X2-CLK-002 and X2-UI-001 on. Narrowest fix (MENU.md §8 F1): hold stock pacing while
-// the map id [0x00D61748] is 0x17. Every map-id change is logged (map ids for bug reports; confirms the title id).
-// Evidence: outer repo re/ledger/MENU.md §8 (S: the HD-layer test; H strong: 0x17 = title).
+// X2-TITLE-001: the title screen ("New Game / Load") runs at its normal speed.
+//
+// The title screen is not one of the game's menus but a field map (map id 0x17), so X2-MENU-001 never gives it stock
+// pacing and it ran at double speed. This row holds stock pacing while the map id (gva 0x00D61748) is 0x17. Every map
+// change is logged, which gives map ids for bug reports. Evidence: re/ledger/MENU.md §8.
 #include "../x2.h"
 
 namespace x2 {
