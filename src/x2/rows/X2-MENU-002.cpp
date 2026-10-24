@@ -1,19 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-MENU-002: the field main menu at 60 fps without running 2x. X2-MENU-001 holds stock pacing (30 fps) in every
-// PS2-layer menu; for the field main menu (mode 0 / 0x4000000) this row keeps the 60 Hz host and halves the menu
-// logic instead: Menu_CoroutineIterate 0x7645E0 alternates logic and render-only passes.
-//   render-only pass: the step gate CALL 0x51C100 (0x764824) returns 0x7FFFFFFF so the step block is skipped; the
-//     always-run task step CALL Menu_TasksStep(1) (0x764894) is skipped; the cursor counter INC [0x1CCE9B8]
-//     (0x76473A, before the gate) is undone at the gate, and so is INC byte [0x16BC586] (0x764734; X2-MENU-002-PARITY:
-//     the Items->Use item/target cursors blink and animate from it, U 16/10/2026 "blink twice as fast", ITEM-CURSOR.md); the fade ramp [0x16BDCE8] (0x7649BB, after the draws that read
-//     it) is put back after the pass.
-// Logic / render-only = the pacing core's alternation (render_only()), so X2-UI-017's pad latch lands on logic passes.
-//   logic pass: everything runs; the slides are 16-byte tween records stepped by Tween_Step 0x772EB0 (value +0xE,
-//     phase +0xA), read by the draws through Tween_GetValue 0x773010 / Tween_GetPhase 0x772FF0. Each step is recorded
-//     (before/after); in the draw part of the logic pass the getters return the midpoint, so the drawn sequence is
-//     k-0.5 (logic), k (render-only), k+0.5 ... A record whose value changed after the step (retarget) is not blended.
-// U 14/10/2026: "main menu animation seems 30fps, can we make it 60fps without speeding it up" - windows sliding first.
-// Evidence: outer repo re/ledger/MENU-SMOOTH.md, re/ledger/MENU.md §2/§5 (S).
+// X2-MENU-002: the field main menu draws at 60 fps without running twice as fast.
+//
+// Background. The game's menus run in their own loop, Menu_CoroutineIterate (gva 0x7645E0), once per invocation.
+// X2-MENU-001 gives every menu stock pacing (30 fps). For the field main menu this row instead keeps 60 Hz and runs
+// the menu's logic on every second pass only, following the pacing core's logic / render-only alternation (so
+// X2-UI-017's pad latch lands on the logic passes and no button press is lost).
+//
+// A render-only pass skips the menu's logic: the step gate (our hook returns a huge number, so the step block is
+// skipped) and the always-run task step. A few things that still run before or after the gate are undone: the cursor
+// counter and the parity byte (the Items -> Use cursors blink from it; X2-MENU-002-PARITY), and the fade ramp.
+// A logic pass runs everything; to make the slides smooth, its drawing then uses values half way between this pass's
+// step and the one before (drawn sequence k-0.5, k, k+0.5, as the other SMOOTH rows):
+//   TWEEN       the sliding windows: 16-byte tween records stepped by Tween_Step; the draws read them through
+//               Tween_GetValue / Tween_GetPhase, which we answer with the midpoint (not after a retarget)
+//   POINT       the screen point the menu eases toward (read straight from memory: midpoint written, then put back)
+//   BACKDROP    the backdrop ramp (position and colour bytes; same as POINT)
+//   DRAWREPLAY  some tasks draw a one-shot part only right after their step (the party panels' shadows); a
+//               render-only pass replays the draw phase the logic pass recorded
+// Not claimed: the battle pause menu (mode 0x4000000). Running it this way crashed, so until every menu is closed
+// after one, X2-MENU-001 holds stock pacing.
+// Hotkeys (game window in front, logged): Num 1 TWEEN, Num 2 DRAWREPLAY, Num 3 POINT, Num 4 BACKDROP; Num 9 the
+// whole row in release builds (dev builds use Num 9 for hot reload; there the Config page switches it).
+// History, measurements and evidence: re/ledger/MENU-SMOOTH.md (it also keeps this file's earlier comments),
+// re/ledger/MENU.md §2/§5, ITEM-CURSOR.md.
 #include "../x2.h"
 
 namespace x2 {
@@ -22,47 +31,42 @@ typedef int(__cdecl* step_gate_fn)();
 typedef void(__cdecl* tasks_step_fn)(uint32_t phase);
 typedef int(__cdecl* tween_step_fn)(uint8_t* t);
 
-static step_gate_fn       g_step_gate = nullptr;            // 0x51C100 turbo factor
-static tasks_step_fn      g_tasks_step = nullptr;           // 0x764170 Menu_TasksStep
-static tween_step_fn g_tween_step_orig = nullptr;      // trampoline of 0x772EB0
-static volatile int32_t*  g_cursor_counter = nullptr;   // 0x01CCE9B8 cursor / blink counter
-static volatile uint8_t*  g_parity_byte = nullptr;    // 0x016BC586 menu parity byte: item-use cursor clock (ITEM-CURSOR.md)
-static int                g_opt_parity = 1;        // [rows] X2-MENU-002-PARITY
-static volatile int32_t*  g_fade_ramp = nullptr;      // 0x016BDCE8 fade ramp value
-static volatile int32_t*  g_menu_up = nullptr;        // 0x016BC55C menu in progress
-static volatile int32_t*  g_menu_up2 = nullptr;       // 0x016BC560
-static volatile int32_t*  g_menu_request = nullptr;       // 0x00DF6870 request, -1 = none
-static volatile uint32_t* g_menu_mode = nullptr;      // 0x016BC5EC mode
+// --- Game functions and globals (found in install()) --------------------------------------------------------------------
+static step_gate_fn       g_step_gate = nullptr;        // the menu step gate (gva 0x51C100, returns the turbo factor)
+static tasks_step_fn      g_tasks_step = nullptr;       // Menu_TasksStep (gva 0x764170)
+static tween_step_fn g_tween_step_orig = nullptr;       // Tween_Step's original code (gva 0x772EB0)
+static volatile int32_t*  g_cursor_counter = nullptr;   // cursor / blink counter (gva 0x01CCE9B8)
+static volatile uint8_t*  g_parity_byte = nullptr;      // menu parity byte: the item-use cursors' clock (gva 0x016BC586)
+static int                g_opt_parity = 1;             // [rows] X2-MENU-002-PARITY
+static volatile int32_t*  g_fade_ramp = nullptr;        // fade ramp value (gva 0x016BDCE8)
+static volatile int32_t*  g_menu_up = nullptr;          // a menu is in progress (gva 0x016BC55C)
+static volatile int32_t*  g_menu_up2 = nullptr;         // (gva 0x016BC560)
+static volatile int32_t*  g_menu_request = nullptr;     // menu requested, -1 = none (gva 0x00DF6870)
+static volatile uint32_t* g_menu_mode = nullptr;        // mode of the open menu (gva 0x016BC5EC)
 
-static bool  g_claimed_now = false;     // this invocation: main menu claimed
+// --- State -------------------------------------------------------------------------------------------------------------
+static bool  g_claimed_now = false;                     // this invocation: we run the main menu
+// g_render_only_pass: this pass skips the menu logic; g_in_logic_draws: the draw part of a logic pass (the getters
+// answer midpoints)
 static bool  g_render_only_pass = false, g_in_logic_draws = false, g_fade_saved_valid = false;
 static int32_t g_fade_saved = 0;
-static uint32_t g_pass_serial = 1;
+static uint32_t g_pass_serial = 1;                      // changes every pass: tween records from older passes are stale
 static LONG  g_passes = 0, g_render_passes = 0, g_blended = 0, g_tween_table_full = 0;
 
+// One tween stepped in this logic pass: its value and phase before (v0, ph0) and after (v1, ph1) the step.
 struct TweenRecord { uint8_t* p; uint32_t serial; int16_t v0, v1, ph0, ph1; };
 static TweenRecord g_tweens[256];
 static int g_tween_count = 0;
 extern Row row_MENU002;
 
-// Field main menu = mode 0 (pad open, Sg_MenuRequestTest 0x604E67). Mode 0x4000000 is the BATTLE pause menu: requested
-// by FUN_0061e440 (0x61E5DA) on Start while battle state [0xDF68A0] == 1. Claiming it ran the pause menu at 60 Hz with
-// its logic halved and crashed (friend's log 16/10/2026 09:15, "crash when he pause the game in combat").
+// The field main menu is mode 0. Mode 0x4000000 is the battle pause menu, which crashed when run this way.
 static bool main_menu_mode(uint32_t m) { return (m & 0xFFFF0000u) == 0; }
 static bool g_battle_menu = false;   // a 0x4000000 request was seen; never claim until every menu is closed
 
-// Parts, each with an ini key and a numpad hotkey (game window focused, logged). U 14/10/2026: "hotkey to turn on/off
-// each of them mid game so i can choose what to keep".
-//   Num 9  X2-MENU-002           the whole row (off = X2-MENU-001 stock pacing, 30 fps menu)
-//   Num 1  X2-MENU-002-TWEEN     tween slides drawn half-way (Tween_GetValue / Tween_GetPhase)
-//   Num 2  X2-MENU-002-DRAWREPLAY task draw-phase replay (panel shadows)
-//   Num 3  X2-MENU-002-POINT     screen point [0x16BC550]/[0x16BC554] (eased by tweens 0x16BDA80/90 in FUN_00761f30,
-//                                read directly by Menu_DrawModules 0x764E07 and FUN_00762a20)
-//   Num 4  X2-MENU-002-BACKDROP  backdrop ramp [0x16BDC24..0x16BDC2E] (FUN_00761f80: position s16 x2, colour/alpha
-//                                u8 x5, stepped +0x124/step; read directly by FUN_007622f0 / FUN_00760d60)
-// POINT and BACKDROP: values read straight from memory. The logic pass writes the midpoint between the value before
-// the step (at the gate) and after it (task step) for the draws, and puts the stepped value back after the pass
-// (only if it still holds our midpoint).
+// --- Switches (ini keys and numpad hotkeys, see the header) ------------------------------------------------------------
+// POINT and BACKDROP values are read straight from memory by the draws: the logic pass writes the midpoint between the
+// value before the step (taken at the gate) and after it (after the task step), and post() puts the stepped value back
+// (only where our midpoint is still there).
 static int g_opt_on = 1, g_opt_tween = 1, g_opt_point = 1, g_opt_backdrop = 1;
 bool menu002_user_on() { return row_MENU002.on && g_opt_on; }
 void menu002_set_user(bool on) {                  // X2-CFG-MENU: same switch as Num 9 (needs the row installed)
@@ -71,6 +75,7 @@ void menu002_set_user(bool on) {                  // X2-CFG-MENU: same switch as
 }
 static int g_opt_drawreplay = 1;
 
+// One POINT / BACKDROP value: where it is, its size and sign, its switch, and this pass's before / after / midpoint.
 struct BlendVar { volatile uint8_t* p; int size; bool sgn; int* toggle; int32_t pre, post, mid; bool wrote; };
 static BlendVar g_blend_vars[9];
 static int g_blend_var_count = 0;
@@ -128,11 +133,14 @@ bool menu002_claims() {
     return req != -1 ? main_menu_mode((uint32_t)req) : main_menu_mode(*g_menu_mode);
 }
 
+// --- Hooks ---------------------------------------------------------------------------------------------------------------
 static TweenRecord* find_tween_this_pass(const uint8_t* p) {
     for (int i = 0; i < g_tween_count; i++) if (g_tweens[i].p == p) return g_tweens[i].serial == g_pass_serial ? &g_tweens[i] : nullptr;
     return nullptr;
 }
 
+// The step gate starts each pass. Logic pass: take the POINT / BACKDROP "before" values. Render-only pass: undo what
+// already ran before the gate, save the fade ramp, and return a value that makes the menu skip its step block.
 static int __cdecl hook_step_gate() {
     int n = g_step_gate();
     if (!g_claimed_now) return n;
@@ -153,11 +161,11 @@ static int __cdecl hook_step_gate() {
     return 0x7FFFFFFF;                                // CMP [0xDF6414],EAX; JL -> step block skipped
 }
 
-// X2-MENU-002-DRAWREPLAY: a task's step can arm a one-shot draw through its draw-phase byte +0x3E, e.g. the party
-// panels' step sets 5 (0x773A2E) and the draw FUN_00773b60 paints the 14 panel shadows only at 5, then sets 7. With
-// the step skipped, render-only passes lost the shadows (U 14/10/2026: "the shadow in the menu blink", 2 consecutive
-// frames). The logic pass records +0x3E of every task after the step; a render-only pass puts it back before the
-// draws, so both passes draw what the stock game draws every frame.
+// --- DRAWREPLAY ----------------------------------------------------------------------------------------------------------
+// A menu task's step can arm a one-shot draw through its draw-phase byte (+0x3E): the party panels' step sets 5, and
+// their draw paints the panel shadows only at 5, then sets 7. With the step skipped, render-only passes lost the
+// shadows (a blink). The logic pass records +0x3E of every task after the step; a render-only pass puts it back before
+// the draws, so both passes draw what the stock game draws every frame.
 static uint8_t*  g_task_table = nullptr;              // 0x016BC5F0, stride 0x9C, 16 slots (Menu_TasksStep loop)
 struct TaskDrawPhase { uint32_t step, draw; uint8_t ph; };
 static TaskDrawPhase g_task_draw_phase[16];
@@ -165,6 +173,8 @@ static bool g_task_draw_phase_valid = false;
 static LONG g_replays = 0, g_blend_var_mids = 0;
 static const int TASK_SIZE = 0x9C, TASK_COUNT = 16;
 
+// The always-run task step. Render-only pass: not run; replay the recorded draw phases instead (DRAWREPLAY). Logic
+// pass: run it, record the draw phases, and from here on the draws see midpoints (POINT / BACKDROP written now).
 static void __cdecl hook_tasks_step(uint32_t phase) {
     if (g_render_only_pass) {                              // the always-run task step: logic passes only
         if (!g_task_draw_phase_valid || !g_opt_drawreplay) return;
@@ -198,6 +208,7 @@ static void __cdecl hook_tasks_step(uint32_t phase) {
     }
 }
 
+// TWEEN: record each tween's value and phase before and after its step in a logic pass (value +0xE, phase +0xA).
 static int __cdecl hook_tween_step(uint8_t* t) {
     if (!g_claimed_now || g_render_only_pass) return g_tween_step_orig(t);
     int16_t v0 = *(int16_t*)(t + 0xE), ph0 = *(int16_t*)(t + 0xA);
@@ -216,6 +227,8 @@ static int __cdecl hook_tween_step(uint8_t* t) {
     return r;
 }
 
+// The draws read tweens through these two getters: in a logic pass's draws they answer the midpoint, unless the tween
+// was not stepped this pass or changed after its step (a retarget).
 static int __cdecl hook_tween_get_value(uint8_t* t) {
     int v = *(int16_t*)(t + 0xE);
     if (!g_in_logic_draws || !g_opt_tween) return v;
@@ -233,6 +246,7 @@ static int __cdecl hook_tween_get_phase(uint8_t* t) {
     return ((int)e->ph0 + (int)e->ph1) / 2;
 }
 
+// --- Every invocation ------------------------------------------------------------------------------------------------------
 static void pre() {
     poll_hotkeys();
     bool a = menu002_claims();
