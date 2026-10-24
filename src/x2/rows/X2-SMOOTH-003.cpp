@@ -1725,7 +1725,8 @@ bool smooth003_actor_clock(uint16_t id, int32_t* clock) {
 // that range one line goes to <game>\fps60x2-poselog.csv (appended; each run starts with a "#" line): frame kind (L
 // logic, R render-only, B backlog, S stock), motion clock, sample clock (+0x754), and per bone: damped byte (+0x144),
 // angles in turns (+0xE4..), target (+0x114..), local position (+0xF4..), scale (+0x104..) and drawn position (matrix
-// +0x88 translation minus bone 0's). A stock run and a 60 fps run of the same cutscene compare at equal clocks.
+// +0x88 translation minus bone 0's). Then "|" and per cloth mesh: vertex count and every vertex (the cloth job's
+// result, entry +0x08). A stock run and a 60 fps run of the same cutscene compare at equal sampled clocks.
 static int   g_poselog_id = 0, g_poselog_from = 0, g_poselog_to = 0;
 static FILE* g_poselog = nullptr;
 static bool  g_poselog_failed = false;
@@ -1769,6 +1770,10 @@ static void poselog_post() {
                     tgt[0] * TURNS_PER_RADIAN, tgt[1] * TURNS_PER_RADIAN, tgt[2] * TURNS_PER_RADIAN,
                     pos[0], pos[1], pos[2], scl[0], scl[1], scl[2], w[0] - r[0], w[1] - r[1], w[2] - r[2]);
         }
+        for_dyn_mesh((uint8_t*)a, [&](uint8_t*, float* vtex, uint32_t nv) {
+            fprintf(g_poselog, ",|,%u", nv);
+            for (uint32_t v = 0; v < nv; v++) fprintf(g_poselog, ",%.2f,%.2f,%.2f", vtex[v * 4], vtex[v * 4 + 1], vtex[v * 4 + 2]);
+        });
         fprintf(g_poselog, "\n");
         fflush(g_poselog);
         return;
