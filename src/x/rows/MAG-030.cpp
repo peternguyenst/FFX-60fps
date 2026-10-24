@@ -35,12 +35,64 @@ static uint32_t g_tick = 0;                       // logic ticks (logic + stock 
 static int      g_live_now = 0, g_live_peak[2];   // [0] mod, [1] stock
 static uint32_t g_ends[2], g_life_sum[2], g_life_max[2], g_new[2];
 
+// Walks of OppMain_EffectWalk (0x80BD50) per invocation, by return address, and units a handler saw twice in one
+// invocation (drawn twice). [0] mod logic, [1] mod render-only, [2] stock.
+enum { WSITES = 8 };
+static uint8_t* g_walk_entry = nullptr;
+static void*    g_walk_tramp = nullptr;
+static void*    g_wsite[WSITES];
+static uint32_t g_wcalls[3][WSITES], g_winv[3], g_dup[3];
+static uint32_t g_inv_serial = 0;
+static uint32_t g_seen_inv[LIFE_MAX];             // g_inv_serial when g_life[i] was last seen
+
+static int life_kind3() {
+    int k = pacing_kind();
+    return k == INV_STOCK ? 2 : k == INV_BUILD ? 1 : k == INV_LOGIC ? 0 : -1;
+}
+
+static void __cdecl walk_count(void* ra) {
+    int k = life_kind3();
+    if (k < 0) return;
+    for (int i = 0; i < WSITES; i++) {
+        if (g_wsite[i] == ra) { g_wcalls[k][i]++; return; }
+        if (!g_wsite[i]) { g_wsite[i] = ra; g_wcalls[k][i]++; return; }
+    }
+}
+
+// Entry detour: count, then the original with the caller's stack untouched (convention not needed).
+__declspec(naked) static void h_walk() {
+    __asm {
+        push eax
+        push ecx
+        push edx
+        push dword ptr [esp + 12]
+        call walk_count
+        add  esp, 4
+        pop  edx
+        pop  ecx
+        pop  eax
+        jmp  dword ptr [g_walk_tramp]
+    }
+}
+
 static void life_end(Life& e, int stock) {
     uint32_t t = e.last - e.born + 1;
     g_ends[stock]++;
     g_life_sum[stock] += t;
     if (t > g_life_max[stock]) g_life_max[stock] = t;
     e.rec = nullptr;
+}
+
+static void life_dup(uint8_t* rec) {
+    int k = life_kind3();
+    if (k < 0) return;
+    // Small open table keyed by the record address, cleared per invocation through the serial.
+    uint32_t h = ((uint32_t)(uintptr_t)rec >> 8) % LIFE_MAX;
+    static uint8_t* keys[LIFE_MAX];
+    for (int n = 0; n < 16; n++, h = (h + 1) % LIFE_MAX) {
+        if (g_seen_inv[h] != g_inv_serial) { g_seen_inv[h] = g_inv_serial; keys[h] = rec; return; }
+        if (keys[h] == rec) { g_dup[k]++; return; }
+    }
 }
 
 static void life_seen(uint8_t* rec, int op, bool ended) {
@@ -84,6 +136,7 @@ static void call_op(int op, uint8_t* scratch, uint8_t* ctx) {
         uint8_t* rec = nullptr;
         uint16_t f0 = 0, f1 = 0;
         bool have = safe_copy(&rec, scratch + 0x220, 4) && rec && safe_copy(&f0, rec + 0xB0, 2);
+        if (have) life_dup(rec);
         g_orig[op](scratch, ctx);
         if (have) {
             safe_copy(&f1, rec + 0xB0, 2);
@@ -92,6 +145,7 @@ static void call_op(int op, uint8_t* scratch, uint8_t* ctx) {
         return;
     }
     if (g_disabled || !row_MAG030.on || pacing_kind() != INV_BUILD) { g_orig[op](scratch, ctx); return; }
+    if (g_life_on) { uint8_t* r = nullptr; if (safe_copy(&r, scratch + 0x220, 4) && r) life_dup(r); }
     InterlockedIncrement(&g_calls[op]);
     uint8_t* rec = nullptr;
     if (!(g_restore_mask >> op & 1) || !safe_copy(&rec, scratch + 0x220, 4) || !rec) { g_orig[op](scratch, ctx); return; }
@@ -141,6 +195,11 @@ static bool install() {
     config_str("rows", "MAG-030-OPS", ops, sizeof(ops), "");
     if (ops[0]) g_restore_mask = parse_mask(ops);
     g_life_on = config_row("MAG-030-LIFE", 0);
+    if (g_life_on) {
+        g_walk_entry = sig_find_unique("MAG-030-LIFE OppMain_EffectWalk entry",
+            "55 8B EC 51 53 56 57 66 8B 7D 08 66 83 FF 01 75 0A C7 05", 0x80BD50);
+        if (!g_walk_entry) g_life_on = 0;
+    }
     // The handlers the ledger names (FX-004..006), checked so a shifted table is refused.
     static const struct { int op; uint32_t gva; } known[] = { {1, 0x811120}, {9, 0x8124B0}, {10, 0x811530}, {17, 0x811BC0} };
     for (auto& k : known) {
@@ -167,6 +226,29 @@ static void pre() {
         n++;
     }
     log_line("MAG-030: %d OPP table slots wrapped on the game thread", n);
+    if (g_life_on && !hook_entry("MAG-030-LIFE walk", g_walk_entry, (void*)&h_walk, &g_walk_tramp)) g_life_on = 0;
+}
+
+static void walk_post() {
+    int k3 = life_kind3();
+    if (k3 >= 0) g_winv[k3]++;
+    g_inv_serial++;
+    static uint32_t n = 0;
+    if (++n % (300 * (uint32_t)rate_mult())) return;
+    static const char* name[3] = { "mod logic", "mod render-only", "stock" };
+    for (int k = 0; k < 3; k++) {
+        if (!g_winv[k]) continue;
+        char line[384];
+        int m = 0;
+        for (int i = 0; i < WSITES && g_wsite[i]; i++)
+            if (g_wcalls[k][i])
+                m += _snprintf_s(line + m, sizeof(line) - m, _TRUNCATE, " rt %p (exe gva 0x%08X):%.2f", g_wsite[i], rt_to_gva_exe(g_wsite[i]),
+                                 (double)g_wcalls[k][i] / g_winv[k]);
+        log_line("MAG-030-LIFE walks per invocation, %s (%u inv; return:walks/inv):%s; units drawn twice/inv %.1f",
+                 name[k], g_winv[k], line, (double)g_dup[k] / g_winv[k]);
+        memset(g_wcalls[k], 0, sizeof(g_wcalls[k]));
+        g_winv[k] = g_dup[k] = 0;
+    }
 }
 
 static void life_post() {
@@ -191,7 +273,7 @@ static void life_post() {
 }
 
 static void post() {
-    if (g_life_on && !g_disabled) life_post();
+    if (g_life_on && !g_disabled) { walk_post(); life_post(); }
     static uint32_t tick = 0;
     if (++tick % (300 * (uint32_t)rate_mult()) != 0) return;
     char line[512];
