@@ -117,9 +117,15 @@ static void __cdecl on_stream_next(uint8_t* scr, uint8_t* rec) {
     else r->mask &= (uint8_t)~(1 << st);
 }
 
+// MAG-025-ALLOW (above 60 fps only, MAG-025-ALLOW-ON): held walks run only the listed opcodes, every other one waits
+// for the logic walk. At 4-8 passes a deny list leaked whatever it did not name (0xDC, 0x2B, ...: allocations, spawns,
+// counters that ran once per pass). No OPU handler draws (the OPP walk does), so holding one only delays a state change.
+static bool g_allow[512];
+static int  g_allow_on = 1;
+
 static void __cdecl on_handler(uint8_t* scr) {
     int op = *(uint16_t*)(scr + 0x21A) & 0x1FF;
-    g_deny_now = g_deny[op] ? 1 : 0;
+    g_deny_now = (g_deny[op] || (g_allow_on && rate_mult() > 2 && !g_allow[op])) ? 1 : 0;
     if (g_opdiag) InterlockedIncrement(g_deny_now ? &g_opden[g_src][op] : &g_opcnt[g_src][op]);
 }
 
@@ -361,6 +367,20 @@ static bool install() {
         t = e;
     }
     if (line[0]) log_line("  MAG-025: opcodes held on render-only invocations (MAG-025-DENY, modes 2/3):%s", line);
+    // Allow list above 60 fps: 02 jump, 09 yield (loop shape), 53 transform from target, 61 copy from a unit (both
+    // recompute from other state: the same result on every call).
+    g_allow_on = config_row("MAG-025-ALLOW-ON", 1);
+    config_str("rows", "MAG-025-ALLOW", deny, sizeof(deny), "02,09,53,61");
+    k = 0; line[0] = 0;
+    for (char* t = deny; *t;) {
+        char* e = nullptr;
+        unsigned long op = strtoul(t, &e, 16);
+        if (e == t) { t++; continue; }
+        if (op < 512) { g_allow[op] = true; k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " 0x%02lX", op); }
+        t = e;
+    }
+    log_line("  MAG-025: above 60 fps held walks run only (MAG-025-ALLOW%s):%s", g_allow_on ? "" : ", OFF by MAG-025-ALLOW-ON=0",
+             line);
     log_line("  MAG-025: EXE pass-1 walk (return gva 0x%08X): mode %d, %s", g_exe_ret ? rt_to_gva_exe(g_exe_ret) : 0,
              g_mode_exe, mode_name(g_mode_exe));
     log_line("  MAG-025: DLL-called walks (pass 1%s): mode %d, %s", g_pass0 ? " and 0" : "", g_mode_dll,
