@@ -24,6 +24,43 @@ static uint32_t g_restore_mask = (1u << 1) | (1u << 9) | (1u << 10) | (1u << 17)
 static bool     g_patched = false;
 static volatile LONG g_calls[SLOTS], g_restored[SLOTS], g_ended[SLOTS], g_toolarge = 0;
 
+// MAG-030-LIFE (diag, default 0): unit lifetimes in logic ticks, to compare stock (DEV-STOCK) with mod pacing.
+// A unit is a record seen by a handler on a logic/stock invocation; it ends at +0xB0 bit 0x8000 or when no handler
+// sees it for 2 ticks. Game thread only.
+enum { LIFE_MAX = 1024 };
+struct Life { uint8_t* rec; uint32_t born, last; uint8_t op; };
+static int      g_life_on = 0;
+static Life     g_life[LIFE_MAX];
+static uint32_t g_tick = 0;                       // logic ticks (logic + stock invocations)
+static int      g_live_now = 0, g_live_peak[2];   // [0] mod, [1] stock
+static uint32_t g_ends[2], g_life_sum[2], g_life_max[2], g_new[2];
+
+static void life_end(Life& e, int stock) {
+    uint32_t t = e.last - e.born + 1;
+    g_ends[stock]++;
+    g_life_sum[stock] += t;
+    if (t > g_life_max[stock]) g_life_max[stock] = t;
+    e.rec = nullptr;
+}
+
+static void life_seen(uint8_t* rec, int op, bool ended) {
+    int kind = pacing_kind();
+    if (kind != INV_LOGIC && kind != INV_STOCK) return;
+    int stock = kind == INV_STOCK, freei = -1;
+    for (int i = 0; i < LIFE_MAX; i++) {
+        if (g_life[i].rec == rec) {
+            if (g_life[i].last != g_tick) { g_life[i].last = g_tick; g_live_now++; }
+            if (ended) life_end(g_life[i], stock);
+            return;
+        }
+        if (!g_life[i].rec && freei < 0) freei = i;
+    }
+    if (freei < 0 || ended) return;
+    g_life[freei] = { rec, g_tick, g_tick, (uint8_t)op };
+    g_new[stock]++;
+    g_live_now++;
+}
+
 // The op's own buffer: op 9 sub-units (header 0x20, count at +0, 0x50 per entry), op 17 trail ring (count at +4,
 // data from +0x10, 0x20 per entry). Other ops keep their state in the record.
 static uint8_t* op_buffer(int op, uint8_t* rec, uint32_t* len) {
@@ -43,6 +80,17 @@ static uint8_t* op_buffer(int op, uint8_t* rec, uint32_t* len) {
 }
 
 static void call_op(int op, uint8_t* scratch, uint8_t* ctx) {
+    if (g_life_on && !g_disabled && pacing_kind() != INV_BUILD) {
+        uint8_t* rec = nullptr;
+        uint16_t f0 = 0, f1 = 0;
+        bool have = safe_copy(&rec, scratch + 0x220, 4) && rec && safe_copy(&f0, rec + 0xB0, 2);
+        g_orig[op](scratch, ctx);
+        if (have) {
+            safe_copy(&f1, rec + 0xB0, 2);
+            life_seen(rec, op, (f1 & 0x8000) && !(f0 & 0x8000));
+        }
+        return;
+    }
     if (g_disabled || !row_MAG030.on || pacing_kind() != INV_BUILD) { g_orig[op](scratch, ctx); return; }
     InterlockedIncrement(&g_calls[op]);
     uint8_t* rec = nullptr;
@@ -92,6 +140,7 @@ static bool install() {
     char ops[128];
     config_str("rows", "MAG-030-OPS", ops, sizeof(ops), "");
     if (ops[0]) g_restore_mask = parse_mask(ops);
+    g_life_on = config_row("MAG-030-LIFE", 0);
     // The handlers the ledger names (FX-004..006), checked so a shifted table is refused.
     static const struct { int op; uint32_t gva; } known[] = { {1, 0x811120}, {9, 0x8124B0}, {10, 0x811530}, {17, 0x811BC0} };
     for (auto& k : known) {
@@ -120,7 +169,29 @@ static void pre() {
     log_line("MAG-030: %d OPP table slots wrapped on the game thread", n);
 }
 
+static void life_post() {
+    int kind = pacing_kind();
+    if (kind != INV_LOGIC && kind != INV_STOCK) return;
+    int stock = kind == INV_STOCK;
+    if (g_live_now > g_live_peak[stock]) g_live_peak[stock] = g_live_now;
+    g_live_now = 0;
+    for (int i = 0; i < LIFE_MAX; i++)            // not seen for 2 ticks: ended without the flag (freed/reused)
+        if (g_life[i].rec && g_tick - g_life[i].last >= 2) life_end(g_life[i], stock);
+    g_tick++;
+    static uint32_t n = 0;
+    if (++n % 300) return;
+    for (int k = 0; k < 2; k++) {
+        if (!g_ends[k] && !g_new[k] && !g_live_peak[k]) continue;
+        log_line("MAG-030-LIFE %s: units new %u, ended %u, life avg %.1f max %u logic ticks, peak live %d",
+                 k ? "stock" : "mod", g_new[k], g_ends[k], g_ends[k] ? (double)g_life_sum[k] / g_ends[k] : 0.0,
+                 g_life_max[k], g_live_peak[k]);
+        g_new[k] = g_ends[k] = g_life_sum[k] = g_life_max[k] = 0;
+        g_live_peak[k] = 0;
+    }
+}
+
 static void post() {
+    if (g_life_on && !g_disabled) life_post();
     static uint32_t tick = 0;
     if (++tick % (300 * (uint32_t)rate_mult()) != 0) return;
     char line[512];
