@@ -1719,8 +1719,63 @@ bool smooth003_actor_clock(uint16_t id, int32_t* clock) {
     return false;
 }
 
+// --- POSELOG: one actor's drawn pose per frame, to a file (diagnostic, off) ---------------------------------------------
+// X2-SMOOTH-003-POSELOG-ID=<actor id> with -FROM / -TO (motion clock range, actor +0x750): after every invocation in
+// that range one line goes to <game>\fps60x2-poselog.csv (appended; each run starts with a "#" line): frame kind (L
+// logic, R render-only, B backlog, S stock), motion clock, sample clock (+0x754), and per bone: damped byte (+0x144),
+// angles in turns (+0xE4..), target (+0x114..), local position (+0xF4..), scale (+0x104..) and drawn position (matrix
+// +0x88 translation minus bone 0's). A stock run and a 60 fps run of the same cutscene compare at equal clocks.
+static int   g_poselog_id = 0, g_poselog_from = 0, g_poselog_to = 0;
+static FILE* g_poselog = nullptr;
+static bool  g_poselog_failed = false;
+
+static void poselog_post() {
+    uint8_t* base = *g_actor_table;
+    int n = *g_actor_count;
+    if (!base || n <= 0) return;
+    if (n > MAX_ACTORS) n = MAX_ACTORS;
+    for (int i = 0; i < n; i++) {
+        const uint8_t* a = base + (size_t)i * ACTOR_SIZE;
+        if (!a[OFF_ACTIVE] || *(const uint16_t*)a != g_poselog_id) continue;
+        int32_t clock = *(const int32_t*)(a + OFF_MOTION_CLOCK);
+        if (clock < g_poselog_from || clock > g_poselog_to) return;
+        const uint8_t* bones = *(uint8_t* const*)(a + OFF_BONES);
+        int nb = bone_count(a);
+        if (!bones || !nb) return;
+        if (!g_poselog) {
+            char path[MAX_PATH];
+            DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
+            while (len && path[len - 1] != '\\') len--;
+            _snprintf_s(path + len, MAX_PATH - len, _TRUNCATE, "fps60x2-poselog.csv");
+            if (fopen_s(&g_poselog, path, "a") != 0 || !g_poselog) { g_poselog_failed = true; log_line("X2-SMOOTH-003-POSELOG: cannot open %s - off", path); return; }
+            SYSTEMTIME t; GetLocalTime(&t);
+            fprintf(g_poselog, "# run %02d:%02d:%02d id 0x%04X clocks %d..%d, %d bones\n", t.wHour, t.wMinute, t.wSecond,
+                    g_poselog_id, g_poselog_from, g_poselog_to, nb);
+            log_line("X2-SMOOTH-003-POSELOG: writing id 0x%04X at clocks %d..%d to %s", g_poselog_id, g_poselog_from, g_poselog_to, path);
+        }
+        fprintf(g_poselog, "%c,%d,%d", "LRBS"[pacing_kind() & 3], clock, *(const int32_t*)(a + OFF_SAMPLED_CLOCK));
+        const float* r = (const float*)(bones + 0x88 + 0x30);
+        for (int b = 0; b < nb; b++) {
+            const uint8_t* hb = bones + b * BONE_SIZE;
+            const float* ang = (const float*)(hb + BONE_ANGLE[0]);
+            const float* tgt = (const float*)(hb + 0x114);
+            const float* pos = (const float*)(hb + 0xF4);
+            const float* scl = (const float*)(hb + 0x104);
+            const float* w = (const float*)(hb + 0x88 + 0x30);
+            fprintf(g_poselog, ",%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f", hb[0x144],
+                    ang[0] * TURNS_PER_RADIAN, ang[1] * TURNS_PER_RADIAN, ang[2] * TURNS_PER_RADIAN,
+                    tgt[0] * TURNS_PER_RADIAN, tgt[1] * TURNS_PER_RADIAN, tgt[2] * TURNS_PER_RADIAN,
+                    pos[0], pos[1], pos[2], scl[0], scl[1], scl[2], w[0] - r[0], w[1] - r[1], w[2] - r[2]);
+        }
+        fprintf(g_poselog, "\n");
+        fflush(g_poselog);
+        return;
+    }
+}
+
 // After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
 static void post() {
+    if (g_poselog_id && !g_poselog_failed) __try { poselog_post(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     // Unreadable actors are skipped one by one inside; a fault here (the actor table itself) drops the frames kept so
     // far and the check carries on; only DC_MAX_FAULTS in a row turn it off.
     if (g_opt_drawcheck && g_dc_ang && smooth_live(3)) {
@@ -1820,6 +1875,9 @@ static bool install() {
     g_opt_gates = config_row("X2-SMOOTH-003-GATES", 1);
     g_opt_hold = config_row("X2-SMOOTH-003-HOLD", 1);
     g_opt_damphold = config_row("X2-SMOOTH-003-DAMPHOLD", 1);
+    g_poselog_id = config_row("X2-SMOOTH-003-POSELOG-ID", 0);
+    g_poselog_from = config_row("X2-SMOOTH-003-POSELOG-FROM", 0);
+    g_poselog_to = config_row("X2-SMOOTH-003-POSELOG-TO", 0);
     g_opt_loopguard = config_row("X2-SMOOTH-003-LOOPGUARD", 1);
     g_opt_loopend = config_row("X2-SMOOTH-003-LOOPEND", 1);
     g_opt_endextrap = config_row("X2-SMOOTH-003-ENDEXTRAP", 1);
@@ -1937,6 +1995,7 @@ static bool install() {
 // Dev hot reload: held poses back (pre would restore them next) and the engine's half-rate switch off.
 static void stop() {
     __try { hold_restore(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (g_poselog) { fclose(g_poselog); g_poselog = nullptr; }
     if (g_we_set_half_rate) { *g_half_rate_switch = 0; g_we_set_half_rate = false; }
 }
 
