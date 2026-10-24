@@ -516,18 +516,28 @@ static bool short_loop(const uint8_t* a) {
 // 24/10/2026: Rikku's fringe pulled up for a tick, only in runs where logic samples were at clock % 256 == 128).
 // So the clock is noted after each logic step; an actor whose clock changed by the render-only walk takes no half
 // step that frame (it keeps its pose; the next logic step samples the new motion's first frame, as stock).
+// D 24/10/2026 23:17:53: every actor flipped at once 1.5 s after turbo (X2-DEV-TURBO, logic on every invocation), so
+// the phase also shifts in ways not tied to one motion. As the net, a logic step of a normal-speed motion (step value
+// 0x100) about to sample half way first takes the missing half frame (clock only, like a paid half step).
 static int g_opt_phase = 1;
 static int32_t g_clock_after_step[MAX_ACTORS];
 static volatile LONG g_phase_skips = 0, g_half_logic_samples = 0;
+static const uint16_t STEP_NORMAL_SPEED = 0x100;           // one animation frame per tick
+static const int32_t  HALF_FRAME = 0x80;                   // motion clock units (1/256 frame)
 
-// Logic step about to sample half way between frames (diagnostic: the phase got flipped somewhere).
-static void phase_check_logic(int i, const uint8_t* a) {
+// Logic step about to sample half way between frames: realign it to whole frames (see above). False if the step failed.
+static bool phase_realign(int i, uint8_t* a) {
     int32_t clock = *(const int32_t*)(a + OFF_MOTION_CLOCK);
-    if ((clock & 0xFF) != 0x80) return;
+    if ((clock & 0xFF) != HALF_FRAME || *(const uint16_t*)(a + OFF_STEP_VALUE) != STEP_NORMAL_SPEED) return true;
     LONG c = InterlockedIncrement(&g_half_logic_samples);
     if (c <= 8)
-        log_line("X2-SMOOTH-003-PHASE: logic step of slot=%d id=0x%04X samples half way (clock %d, step value %u)", i,
-                 *(const uint16_t*)a, clock, *(const uint16_t*)(a + OFF_STEP_VALUE));
+        log_line("X2-SMOOTH-003-PHASE: logic step of slot=%d id=0x%04X would sample half way (clock %d) - half frame added",
+                 i, *(const uint16_t*)a, clock);
+    int32_t old = *g_half_rate_switch;
+    *g_half_rate_switch = 1;
+    bool ok = safe_step(a, 0);                             // clock only, half a frame
+    *g_half_rate_switch = old;
+    return ok;
 }
 
 // --- The logic frame's step ---------------------------------------------------------------------------------------------
@@ -564,7 +574,9 @@ static void __cdecl hook_step_motion(uint8_t* a, int full) {
         if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
         return;
     }
-    if (i >= 0 && g_inv_kind == INV_LOGIC && *g_half_rate_switch != 0) phase_check_logic(i, a);
+    if (g_opt_phase && i >= 0 && g_inv_kind == INV_LOGIC && *g_half_rate_switch != 0 && !phase_realign(i, a)) {
+        *g_half_rate_switch = 0; g_we_set_half_rate = false; g_step_motion(a, full); return;
+    }
     g_step_motion(a, full);
     if (full && (g_opt_endextrap || g_opt_sanity)) __try { midcheck_judge(i, a); record_angles(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     if (i >= 0 && *g_half_rate_switch != 0) {
