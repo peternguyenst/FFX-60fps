@@ -143,6 +143,7 @@
     <ClCompile Include="src\x\rows\DIAG-DYNGEO.cpp" />
     <ClCompile Include="src\x\rows\UI-SPH-001.cpp" />
     <ClCompile Include="src\x\rows\UI-013.cpp" />
+    <ClCompile Include="src\x\rows\VSYNC.cpp" />
     <ClCompile Include="src\x\rows\UI-SPH-002.cpp" />
     <ClCompile Include="src\x\rows\UI-014.cpp" />
     <ClCompile Include="src\x\rows\PERF-001.cpp" />
