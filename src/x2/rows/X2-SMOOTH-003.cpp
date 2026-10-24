@@ -1,33 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-SMOOTH-003 (port of FFX SMOOTH-003, minimal first build): with X2-SMOOTH-002 the root moves at 60 Hz but the
-// skeleton pose still changes at 30 Hz. This row turns on the engine's half-rate motion switch and takes a second half
-// step of each actor's motion on render-only invocations, so limbs animate at 60 Hz at stock speed (needs X2-SMOOTH=1;
-// F7 toggles). Sub-switches as FFX: GATES, HOLD, LOOPGUARD, LOOPEND, SHORTLOOP, ENDEXTRAP (default 1), CLOTHHOLD (0 or 2,
-// default 2).
-// Ported since: ENDEXTRAP(-ONCE), CLOTHHOLD 3/4, SANITY and STOCK-ID(-END) (16/10). Not ported: KEYHOLD, BLEND, CLOTH, DIAG*/TRACE.
-// FFX-2 changes (PORT-SMOOTH3.md §1-§7): step CALL pushes EDI (actor), the tween loop after it is inlined (cross-check
-// windows sa+0x280); the render_only_walk writes no skeleton dirty flag (FFX-2 has none) and dispatches at >= 150 bones (FFX > 199);
-// Ch_NoSkelPass call site has a new shape (E8 at +0x13); actor stride 0x910 with per-block field shifts (low block +0xC,
-// motion block +0x10, 0x7F0+ block +0x14); hold regions re-mapped, the look-at block held whole (+0x418..+0x43B, H).
-// All CALL retargets and the cloth job entry hook are written on the game thread at the first pre().
-// X2-SMOOTH-003-PEEL (default 1): during a dressphere change this row runs as if off (stock motion, no half step), as
-// F6 (SMOOTH-003 alone off) did: with the half step the outfit peel's two models came apart (U 18/10/2026, F6 test
-// 17:18; holding X2-SMOOTH-002 over the whole change did not help, re/ledger/XFADE-BLINK.md). The change is found by
-// its middle DLL loading (X2-SMOOTH-003-PEEL-DLL, default "936 937 938") or by the OPU op 0x116 silhouette copy
-// (FUN_0085b3d0, DLL op table = magic service +0xC24, entry +0x58); the hold lasts until that DLL and the next one
-// (loaded within 120 invocations) unload, cap 1800 invocations per phase.
-// X2-SMOOTH-003-PEEL-DRAW (default 0, test): in that window the peel's actors (D 18/10 FTBLINK-ALT: ids 0x001F, 0x4005)
-// get +0x1A0 bit 0x1000000 on logic invocations only (actor update 0x6E137C; cleared every invocation at 0x605693), so
-// Ch_DrawMain loop 3 (lights FUN_006ddaa0, the flag-8 mesh pass FUN_00454d30, model-list add) runs on logic invocations
-// only; X2-CHR-001 re-lists the model on render-only ones without the rest (U 18/10: the outer model's weight alternates
-// per frame). On render-only invocations in the window this sets the bit again, before Ch_NoSkelPass, on the actors that
-// had it at the last logic invocation (same id), with no render_only_walk step: loop 3 runs with the held pose.
-// X2-SMOOTH-003-PEEL-SKEL (default 1): U 18/10/2026: PEEL-DRAW alone did not stop the outer-model blink, PEEL=0 did
-// (the blink appeared with PEEL, 17:22; F7 also blinks). PEEL removed the render-only render_only_walk, i.e. also its skeleton
-// jobs, and magic_0937's DressUpMelt models then draw a stale skinned copy on render-only frames (H: per-frame buffers).
-// This mode does what PEEL-DRAW does and then dispatches the skeleton jobs over those actors as render_only_walk() does, with no
-// half step (pose held at the logic tick, so the peel models stay aligned).
-// Evidence: outer repo G:\Work\ffx2-fps60 re/ledger/PORT-SMOOTH3.md (S unless tagged H), sigs tools/sigs_x2_smooth3.txt.
+// X2-SMOOTH-003: arms, legs and faces animate at 60 fps.
+//
+// The problem. At 60 fps the game logic still runs 30 times a second (logic frame, then a render-only frame that
+// draws the same state again; see x2.h). X2-SMOOTH-002 already moves each character's body at 60 Hz, but the pose of
+// its skeleton is only computed on logic frames, so limbs would still move in 30 Hz steps.
+//
+// The idea. The engine has a built-in "half-rate" switch: while it is on, each call of Ch_StepMotion (the function
+// that advances one actor's animation) moves the animation clock forward by half a frame instead of a whole one.
+// We turn it on, so the logic frame advances every actor by half a frame. On the render-only frame we take the
+// other half step ourselves (render_only_walk), so each logic tick still advances a whole frame (stock speed) but
+// the pose is computed twice as often. An actor that took a half step on a logic frame "owes" the second half
+// (g_owes_half_step); if the render-only walk does not run for it, the next logic step pays the debt first.
+//
+// Taking extra steps is not free: the step also runs things that must happen exactly once per tick, and sampling an
+// animation half way between frames goes wrong in a few places the stock game never samples. Each safety net below
+// is its own ini switch ([rows] X2-SMOOTH-003-<name>, all on by default unless noted):
+//   GATES       the per-actor script (Ch_SeqFrame) and motion events (Ch_MotevDispatch) are skipped on our extra steps
+//   HOLD        actor fields the extra step writes but game logic reads (look-at, face, reference points) are saved
+//               before the walk and put back at the start of the next frame
+//   LOOPGUARD   a half step past the end of a looping animation is wrapped the way the logic step would wrap it
+//   LOOPEND     ...and a half-frame sample inside the last frame of a loop holds the pose (it would read past the end)
+//   ENDEXTRAP   instead of holding, continue each bone's rotation half a tick (ENDEXTRAP-ONCE: also at the end of
+//               play-once animations, e.g. each stride of a run)
+//   SHORTLOOP   animations one frame long (hold poses) run exactly as stock: a half-frame sample twists them
+//   SANITY      a bone that jumps much further on the render-only frame than it moved over the last tick is put back
+//   KEYHOLD     a bone whose two animation keys are far apart (cutscene data can store one rotation two ways) keeps
+//               its pose: the half-way blend between them is a wrong pose
+//   CLOTHHOLD   hair and cloth (mode 4: drawn half a tick behind from the last two results; 2: 30 Hz; 3: extrapolated)
+//   PEEL        during a dressphere change everything runs as stock, or the outfit's two models come apart
+//               (PEEL-SKEL: still rebuild the skeletons on render-only frames, with the held pose)
+//   STOCK-ID    bisect switch: actor ids in a range take whole stock steps (find which actor causes a glitch)
+//   FREEZEDIAG  diagnostic, off: logs actors whose pose stops changing
+//
+// Needs X2-SMOOTH=1; F7 turns all SMOOTH rows off and on. The CALL patches and the cloth hook are written on the game
+// thread at the first pre(). Port of the FFX mod's SMOOTH-003 with FFX-2's actor layout (0x910 bytes per actor).
+// History, measurements and evidence: re/ledger/PORT-SMOOTH3.md (it also keeps this file's earlier header),
+// XFADE-BLINK.md (PEEL), KEYHOLD-X2.md; signatures tools/sigs_x2_smooth3.txt (ffx2-fps60 repo).
 #include "x2_smooth.h"
 #include <string.h>
 #include <stdlib.h>
@@ -43,50 +51,64 @@ typedef void(__cdecl* void_fn)(void);
 typedef void(__cdecl* dispatch_fn)(uint8_t* start, int mode, int span);
 typedef void(__cdecl* cloth_job_fn)(uint8_t** list, int* count);
 
+// --- The game's actors ----------------------------------------------------------------------------------------------
+// Actors (characters, monsters, props) live in one array of fixed-size records; "slot" = index in that array.
+// Offsets inside an actor record (re/ledger/PORT-SMOOTH3.md §5; the FFX value in brackets where it differs).
 static const int      MAX_ACTORS = 512;
-// Actor fields (PORT-SMOOTH3.md §5, all S).
-static const uint32_t ACTOR_SIZE   = 0x910;   // FFX 0x880
-static const uint32_t OFF_ACTIVE   = 0x2;     // unchanged
-static const uint32_t OFF_RANGE_SKIP  = 0x18F;   // FFX 0x180: range-skip byte
-static const uint32_t OFF_RANGE_KEEP  = 0x190;   // FFX 0x181
-static const uint32_t OFF_FLAGS    = 0x1A0;   // FFX 0x194 (bits 0x40, 0x1000000 unchanged)
-static const uint32_t OFF_PARENT   = 0x1A8;   // FFX 0x19C
-static const uint32_t OFF_MODEL_HEADER      = 0x1CC;   // FFX 0x1C0 (bone count u16 at +0xA)
-static const uint32_t MODEL_HEADER_BONE_COUNT = 0xA;    // unchanged
-// Keyframe clock fields (set by the motion start, wrapped by Ch_MotionLoopWrap, read by the sampler).
-static const uint32_t OFF_MOTION_SEQ    = 0x724;   // FFX 0x714
-static const uint32_t OFF_MOTION_START  = 0x728;   // FFX 0x718
-static const uint32_t OFF_MOTION_END    = 0x72C;   // FFX 0x71C
-static const uint32_t OFF_MOTION_LOOP_LEN    = 0x730;   // FFX 0x720
-static const uint32_t OFF_MOTION_LOOPS  = 0x734;   // FFX 0x724 (s16)
-static const uint32_t OFF_MOTION_CLOCK  = 0x750;   // FFX 0x740
-static const int      SKELETON_BATCH_BONES = 0x96; // FFX-2 dispatches at >= 150 bones (FFX > 199)
+static const uint32_t ACTOR_SIZE              = 0x910;  // bytes per actor (FFX 0x880)
+static const uint32_t OFF_ACTIVE              = 0x2;    // nonzero = slot in use
+static const uint32_t OFF_RANGE_SKIP          = 0x18F;  // the game skips an actor with RANGE_SKIP set and RANGE_KEEP not
+static const uint32_t OFF_RANGE_KEEP          = 0x190;
+static const uint32_t OFF_FLAGS               = 0x1A0;  // flag bits below (FFX 0x194)
+static const uint32_t OFF_PARENT              = 0x1A8;  // 0 = a root actor, else attached to another (FFX 0x19C)
+static const uint32_t OFF_MODEL_HEADER        = 0x1CC;  // pointer to the model header (FFX 0x1C0)
+static const uint32_t MODEL_HEADER_BONE_COUNT = 0xA;    // u16 in the model header
+// The animation ("motion") clock, in 1/256 frames: set when a motion starts, wrapped at the loop end by the game's
+// Ch_MotionLoopWrap, read by the pose sampler.
+static const uint32_t OFF_MOTION_SEQ      = 0x724;      // current motion, 0 = none (FFX 0x714)
+static const uint32_t OFF_MOTION_START    = 0x728;
+static const uint32_t OFF_MOTION_END      = 0x72C;
+static const uint32_t OFF_MOTION_LOOP_LEN = 0x730;
+static const uint32_t OFF_MOTION_LOOPS    = 0x734;      // s16: 1 = play once, 0 = loop forever, n = loop n times
+static const uint32_t OFF_MOTION_CLOCK    = 0x750;      // FFX 0x740
+// The game rebuilds skeletons in batches on worker threads, one batch per 150 bones (FFX: 200).
+static const int      SKELETON_BATCH_BONES = 0x96;
+// Flag bits: FLAG_SCRIPTED = motion driven by the actor's script, not by keyframes; FLAG_STEP_MOTION = "step this
+// actor's motion and rebuild its skeleton" (set by the game's actor update, cleared every frame)
 static const uint32_t FLAG_SCRIPTED = 0x40, FLAG_STEP_MOTION = 0x1000000;
 
-static step_motion_fn     g_step_motion = nullptr;
-static actor_fn g_seq_frame = nullptr, g_motion_events = nullptr;
-static void_fn  g_noskel_pass = nullptr, g_job_sync = nullptr;
-static dispatch_fn g_skeleton_dispatch = nullptr;
-static volatile int32_t*  g_half_rate_switch = nullptr;     // engine half-rate motion switch 0x0116E3D4
-static volatile int8_t*   g_actors_frozen = nullptr;   // actor freeze flag 0x00DF67F3
-static uint8_t* volatile* g_actor_table = nullptr;    // pointer to the actor array 0x01CC9604
-static volatile int32_t*  g_actor_count = nullptr;    // actor count 0x01CC9600
+// Game functions and globals (found by signature in install()).
+static step_motion_fn g_step_motion = nullptr;          // Ch_StepMotion(actor, full): advance one actor's animation
+static actor_fn g_seq_frame = nullptr, g_motion_events = nullptr;   // per-actor script step; motion event dispatch
+static void_fn  g_noskel_pass = nullptr, g_job_sync = nullptr;      // Ch_NoSkelPass (main loop); wait for worker jobs
+static dispatch_fn g_skeleton_dispatch = nullptr;       // start one skeleton batch on the workers
+static volatile int32_t*  g_half_rate_switch = nullptr; // the engine's half-rate motion switch (gva 0x0116E3D4)
+static volatile int8_t*   g_actors_frozen = nullptr;    // nonzero while the game freezes all actors (gva 0x00DF67F3)
+static uint8_t* volatile* g_actor_table = nullptr;      // pointer to the actor array (gva 0x01CC9604)
+static volatile int32_t*  g_actor_count = nullptr;      // number of slots in use (gva 0x01CC9600)
 
+// The four CALL instructions we point at our hooks (see apply_patches).
 static uint8_t* g_callsite_step = nullptr, *g_callsite_noskel = nullptr, *g_callsite_seq = nullptr, *g_callsite_motev = nullptr;
 static bool g_calls_patched = false;
 
+// ini switches (see the header)
 static int  g_opt_gates = 1, g_opt_hold = 1, g_opt_loopguard = 1, g_opt_shortloop = 1, g_opt_loopend = 1, g_opt_endextrap = 1, g_opt_endextrap_once = 1;
-static int  g_inv_kind = INV_STOCK;
-static bool g_we_set_half_rate = false;                   // we wrote 1 into the switch
-static volatile bool g_in_our_step = false;          // inside one of OUR Ch_StepMotion calls
-static volatile bool g_walk_ran = false;
 
+// --- State ----------------------------------------------------------------------------------------------------------
+static int  g_inv_kind = INV_STOCK;                     // kind of the current invocation (pacing_kind at pre)
+static bool g_we_set_half_rate = false;                 // we wrote 1 into the half-rate switch
+static volatile bool g_in_our_step = false;             // inside one of OUR Ch_StepMotion calls (GATES)
+static volatile bool g_walk_ran = false;                // the render-only walk stepped at least one actor this frame
+
+// Per slot: the actor took a half step on the logic frame and owes the second half (with the id it had then, so a
+// slot reused by another actor drops the debt). g_owed_table = actor array the debts belong to.
 static uint8_t* g_owed_table = nullptr;
 static uint8_t  g_owes_half_step[MAX_ACTORS];
 static uint16_t g_owed_actor_id[MAX_ACTORS];
-static volatile uint8_t g_walked_now[MAX_ACTORS];
+static volatile uint8_t g_walked_now[MAX_ACTORS];      // stepped by the render-only walk this frame
 
-// Hold buffer: per slot, common regions (all walked / range actors) then the face regions (parents).
+// --- HOLD: fields saved before the render-only walk and restored at the next pre() -----------------------------------
+// Per slot, the "always" regions (every stepped actor) and then, for root actors, the face regions.
 struct Region { uint32_t off, len; };
 static constexpr Region HOLD_ALWAYS[] = {
     { 0x15C, 4 },      // tilt ease, unchanged (S)
@@ -106,23 +128,24 @@ template <size_t N> static constexpr uint32_t region_len(const Region (&r)[N]) {
 }
 static constexpr uint32_t HOLD_BYTES = region_len(HOLD_ALWAYS) + region_len(HOLD_FACE);
 static_assert(HOLD_BYTES == 0x204, "hold layout");
-static uint8_t* g_held_bytes = nullptr;            // MAX_ACTORS * HOLD_BYTES
-static uint8_t  g_held_kind[MAX_ACTORS];                    // 0 = none, 1 = common, 2 = common + face
-static uint8_t* g_held_table = nullptr;
+static uint8_t* g_held_bytes = nullptr;                 // MAX_ACTORS * HOLD_BYTES
+static uint8_t  g_held_kind[MAX_ACTORS];                // 0 = nothing held, 1 = always regions, 2 = always + face
+static uint8_t* g_held_table = nullptr;                 // actor array the held bytes belong to (null = none held)
 static int      g_held_count = 0;
 
+// Counters for the periodic log line in post()
 static LONG g_loopend_holds = 0, g_stock_steps = 0, g_guard_wrap = 0, g_guard_clamp = 0, g_guard_hold = 0;
 static LONG g_walks = 0, g_stepped = 0, g_pays = 0, g_batches = 0, g_gated_seq = 0, g_gated_motev = 0;
 
-// CLOTHHOLD: the cloth job Ch_ClothJob 0x6DB500 (cdecl(actor**, int* count), worker threads) runs for walked actors on
-// render-only invocations too, so hair and cloth would swing 2x. Mode 2: skipped on render-only invocations (cloth 30 Hz,
-// one tick behind the 60 Hz body: U 13/10/2026 "ghost character when walking left/right", "maybe cloth is not
-// smooth"). Mode 4 (default, port of FFX's default): after each logic job the mesh is redeformed at the midpoint of
-// the last two job results, and a render-only invocation deforms the latest one, so cloth trails the body by half a
-// tick at 60 Hz, like everything else. Mode 3: extrapolation (FFX: overshoots). FFX-2 offsets (PORT-SMOOTH3.md, S):
-// mesh entries +0x1C8 (stride 0x38, desc +0 (vertex count u16 at +4), vertex array +0x08, +0x0C/+0x2C/+0x34 as FFX),
-// model header +0x1CC (entry count u16 at +6), reset counter +0x824, reset flag bit 0x800000 at +0x1A0, deform gate
-// CMP [0xDF6440],0 at job +0x27 and deform Ch_ClothDeform 0x6DAE00 at job +0x31.
+// CLOTHHOLD: hair and cloth are simulated by the game's cloth job (Ch_ClothJob, on worker threads) for every stepped
+// actor, so the render-only walk would swing them twice per tick. Modes:
+//   4 (default) after each logic job, redeform the mesh at the midpoint of the last two results; on render-only
+//     frames deform the latest result: cloth moves at 60 Hz, half a tick behind, like everything else
+//   3 extrapolate past the latest result (overshoots in FFX)
+//   2 skip the job on render-only frames: cloth at 30 Hz, one tick behind the body (looked like a ghost image)
+// Cloth layout (PORT-SMOOTH3.md): mesh entries at actor +0x1C8 (0x38 bytes each: descriptor with the vertex count u16
+// at +4, vertex array at +0x08), entry count u16 at model header +6, reset counter +0x824, reset flag 0x800000 in
+// the flags; the job only deforms while [0xDF6440] is 0 (job +0x27) and calls Ch_ClothDeform at job +0x31.
 static int      g_opt_cloth = 4;
 static uint8_t* g_cloth_job = nullptr;
 static cloth_job_fn   g_cloth_job_orig = nullptr;
@@ -133,6 +156,7 @@ static void fault(const char* where, DWORD code) {
     row_SMOOTH003.on = 0;
 }
 
+// Slot index of actor a in the array at base with n slots, or -1 if a is not an actor record of that array.
 static int slot_of(const uint8_t* a, uint8_t* base, int n) {
     if (!base || a < base) return -1;
     uintptr_t d = (uintptr_t)(a - base);
@@ -141,7 +165,7 @@ static int slot_of(const uint8_t* a, uint8_t* base, int n) {
     return (i < n && i < MAX_ACTORS) ? i : -1;
 }
 
-// ---------------------------------------------------------------- hold (save / restore)
+// --- HOLD: save before the walk, restore at the next pre() ------------------------------------------------------------
 static void hold_save(int i, uint8_t* a, bool face) {
     uint8_t* p = g_held_bytes + i * HOLD_BYTES;
     for (const Region& r : HOLD_ALWAYS) { memcpy(p, a + r.off, r.len); p += r.len; }
@@ -149,6 +173,7 @@ static void hold_save(int i, uint8_t* a, bool face) {
     g_held_kind[i] = face ? 2 : 1;
 }
 
+// Puts the held bytes back, unless the game has moved to another actor array since (then they are dropped).
 static void hold_restore() {
     if (!g_held_table) return;
     if (*g_actor_table == g_held_table) {
@@ -166,7 +191,8 @@ static void hold_restore() {
     g_held_table = nullptr;
 }
 
-// ---------------------------------------------------------------- our calls into game code (SEH)
+// --- Our calls into game code -----------------------------------------------------------------------------------------
+// Each catches a crash inside the game function and turns the row off instead of taking the game down.
 static bool safe_step(uint8_t* a, int full) {
     g_in_our_step = true;
     bool ok = true;
@@ -189,24 +215,24 @@ static bool safe_sync() {
     return true;
 }
 
-// ---------------------------------------------------------------- end extrapolation (X2-SMOOTH-003-ENDEXTRAP)
-// Port of FFX SMOOTH-003-ENDEXTRAP (U 11/10/2026 FFX: Tidus run/idle loop-end stutter). LOOPEND holds a loop's last
-// frame for one render-only frame, which repeats a pose once per loop cycle (U 13/10/2026 FFX-2: "character render_only_walk feel
-// stuttery"; D fps60x2.log 23:46: 55 LOOPEND holds per minute). Instead each bone rotation continues half a tick past
-// tick k from its last two logic values: k + (k - (k-1)) / 2. A channel that moved more than ENDX_MAX_TURN in the last
-// tick (flip, cut) keeps tick k. Play-once clamps are not extrapolated (FFX ENDEXTRAP-ONCE default 0: the next motion
-// is unknown). FFX-2 layout (PORT-SMOOTH3.md, S): bones ptr +0x334, bone stride 0x160, angles +0xE4/+0xE8/+0xEC,
-// mirror +0x30.
+// --- ENDEXTRAP: continue the motion at a loop end instead of holding it --------------------------------------------
+// LOOPEND holds a loop's last frame for one render-only frame, which repeats a pose once per loop cycle (a visible
+// hitch in walk cycles). Instead each bone rotation continues half a tick past the latest logic tick k from its last
+// two values: k + (k - (k-1)) / 2. A rotation that moved more than ENDX_MAX_TURN in the last tick (a flip or a cut)
+// keeps tick k. Angles are recorded after every logic step (record_angles) and kept in turns (1 turn = 360 degrees).
+// Bone layout: bone array pointer at actor +0x334, 0x160 bytes per bone, three rotation angles (radians) at
+// +0xE4/+0xE8/+0xEC and a mirror copy of each 0x30 bytes later.
 static const uint32_t OFF_BONES = 0x334, BONE_SIZE = 0x160;
 static const uint32_t BONE_ANGLE[3] = { 0xE4, 0xE8, 0xEC };
 static const int      MAX_BONES = 1024;
 static const float    TURNS_PER_RADIAN = 0.15915494f, ENDX_MAX_TURN = 0.08f;
-static float*   g_prev_ang = nullptr;            // MAX_ACTORS * MAX_BONES * 3, in turns: tick k-1
-static float*   g_cur_ang = nullptr;             // tick k
-static uint16_t g_angles_actor_id[MAX_ACTORS];
-static uint8_t  g_angles_ticks[MAX_ACTORS];
+static float*   g_prev_ang = nullptr;            // MAX_ACTORS * MAX_BONES * 3 angles, in turns: tick k-1
+static float*   g_cur_ang = nullptr;             // the same for tick k
+static uint16_t g_angles_actor_id[MAX_ACTORS];   // actor id the recorded angles belong to
+static uint8_t  g_angles_ticks[MAX_ACTORS];      // ticks recorded for that actor so far (2 = both k-1 and k valid)
 static volatile LONG g_endx = 0;
 
+// Bones in the actor's skeleton (0 = no model, or more than we keep room for).
 static int bone_count(const uint8_t* a) {
     const uint8_t* hdr = *(uint8_t* const*)(a + OFF_MODEL_HEADER);
     if (!hdr) return 0;
@@ -230,6 +256,7 @@ static void record_angles(int i, const uint8_t* a) {
     if (g_angles_ticks[i] < 2) g_angles_ticks[i]++;
 }
 
+// On a render-only frame whose pose was held at tick k: write k + half the last tick's change into every bone.
 static void end_extrapolate(int i, uint8_t* a) {
     if (!g_cur_ang || i < 0 || i >= MAX_ACTORS || g_angles_ticks[i] < 2 || g_angles_actor_id[i] != *(const uint16_t*)a) return;
     int nb = bone_count(a);
@@ -252,15 +279,15 @@ static void end_extrapolate(int i, uint8_t* a) {
         log_line("X2-SMOOTH-003: first loop-end half-tick extrapolation (ENDEXTRAP), id 0x%04X", *(const uint16_t*)a);
 }
 
-// ---------------------------------------------------------------- pose sanity (X2-SMOOTH-003-SANITY)
-// Port of FFX SMOOTH-003-SANITY (U 10/10/2026 FFX: twisted enemies; U 16/10/2026 FFX-2: one monster's limbs twist).
-// Keyframe pairs far apart (e.g. ~180 deg) that stock never samples between give a wrong half-frame sample. Per bone
-// channel: a render-only angle that moved more than max(0.06 turn, 3x its last tick delta + 0.01) from tick k keeps
-// the tick-k value. Same bone layout as ENDEXTRAP (PORT-SMOOTH3.md, S).
+// --- SANITY: undo a bone that jumps on the render-only frame --------------------------------------------------------
+// Two keyframes far apart (e.g. ~180 degrees) that the stock game never samples between give a wrong pose when we
+// sample half way (seen as twisted monster limbs). Per bone rotation: if the render-only step moved it more than
+// max(0.06 turn, 3 x its change over the last tick + 0.01) away from tick k, it goes back to its tick-k value.
 static int      g_opt_sanity = 1;
-static uint8_t  g_sanity_bone_save[MAX_BONES * BONE_SIZE];
+static uint8_t  g_sanity_bone_save[MAX_BONES * BONE_SIZE];   // the bones before the render-only step (tick k)
 static volatile LONG g_sanity_reverts = 0, g_sanity_lines = 0;
 
+// Size of the shortest turn between two angles given in turns (0 .. 0.5).
 static inline float turn_diff(float x, float y) {
     float d = x - y;
     d -= (float)(int)d;                                   // fractional part, sign kept
@@ -307,23 +334,22 @@ static void sanity_check(int i, uint8_t* a, int nb, int32_t c0) {
     }
 }
 
-// ---------------------------------------------------------------- key hold (X2-SMOOTH-003-KEYHOLD)
-// Port of FFX SMOOTH-003-KEYHOLD (FFX ledger SMOOTH-003-KEYDECODE.md). U 18/10/2026: Rikku's legs alternate between two
-// poses on consecutive frames in a cutscene (map 0xB3); D (FREEZEDIAG trace 05:49:37.65): 16 bones swing exactly
-// 0.785 rad between every logic and render-only frame for 4 frames at a motion start. The half-frame sample lerps each
-// rotation channel between the stream keys prev (+0x18) and value (+0x16) (shortest path, masked with res-1); cutscene
-// data can store one rotation as two Euler forms (or near gimbal lock) in consecutive keys, which stock never samples
-// between: the lerp is a wrong pose. A bone whose keys differ by more than KEYHOLD-D (scaled to the motion's key
-// resolution) on any rotation channel keeps the pre-step pose: nodes +0x1C/+0x20 and bone +0xE4..+0xEC / +0x114..+0x11C.
-// Stream cursors are untouched (the next logic decode is unchanged). FFX-2 layout (outer repo re/ledger/KEYHOLD-X2.md,
-// S): pose [a+0x758] = 9 nodes of 0x2C per entry (stride 0x18C), rotation nodes have byte +5 set, linked list head
-// [a+0x75C] (read fresh: 0x6E89D0 relocates it), key resolution res = [a+0x7F8] (0x1000..0x8000, one turn), sampled
-// clock +0x754, pose entry -> bone remap [a+0x768] (count u16 +2, bone u16 at +8+2c, 0xFFFF none; null = identity).
+// --- KEYHOLD: keep the pose where two animation keys are far apart --------------------------------------------------
+// A half-frame sample blends each rotation between two stored keys. Cutscene data sometimes stores one rotation in
+// two different forms in consecutive keys (or sits near gimbal lock); the stock game never samples between them, and
+// the blend is a wrong pose (seen as Rikku's legs flicking between two poses at a motion start). A bone whose keys
+// differ by more than X2-SMOOTH-003-KEYHOLD-D on any rotation (scaled to the motion's key resolution) keeps its
+// pre-step pose. The key streams are not touched, so the next logic step decodes exactly as stock.
+// Pose layout (re/ledger/KEYHOLD-X2.md): the pose at [actor+0x758] has one entry of 0x18C bytes per bone, made of 9
+// channel nodes of 0x2C bytes (rotation nodes have byte +5 set; keys at +0x16 (next) and +0x18 (previous); output
+// +0x1C, current +0x20). The nodes in use form a linked list from [actor+0x75C]. Key resolution [actor+0x7F8]
+// (0x1000..0x8000 = one turn); clock the pose was sampled at +0x754; pose entry -> bone remap [actor+0x768] (count u16
+// at +2, bone u16 at +8 + 2 * entry, 0xFFFF = none; null = entry n is bone n).
 static const uint32_t OFF_POSE = 0x758, OFF_POSE_LIST = 0x75C, OFF_SAMPLED_CLOCK = 0x754, OFF_POSE_REMAP = 0x768, OFF_KEY_RES = 0x7F8, POSE_NODE_SIZE = 0x2C, POSE_ENTRY_SIZE = 0x18C;
-static int      g_opt_keyhold = 1, g_opt_keyhold_limit = 0x300;
-static uint8_t  g_keyhold_pose_save[MAX_BONES * POSE_ENTRY_SIZE];
+static int      g_opt_keyhold = 1, g_opt_keyhold_limit = 0x300;            // limit = KEYHOLD-D, per 0x1000 key units
+static uint8_t  g_keyhold_pose_save[MAX_BONES * POSE_ENTRY_SIZE];          // pose and bones before the render-only step
 static uint8_t  g_keyhold_bone_save[MAX_BONES * BONE_SIZE];
-static uint8_t  g_keyhold_marked[MAX_BONES];
+static uint8_t  g_keyhold_marked[MAX_BONES];                               // pose entries to put back
 static volatile LONG g_keyholds = 0, g_keyhold_lines = 0;
 
 // Before the render-only step: save pose entries and bones. Returns the entry count (0 = no check).
@@ -338,6 +364,8 @@ static int keyhold_save(const uint8_t* a) {
     return nb;
 }
 
+// After the render-only step: find rotation nodes whose two keys are too far apart and put their entries' pose and
+// bones back to the saved (pre-step) values.
 static void keyhold_apply(int i, uint8_t* a, int nb) {
     if ((*(const int32_t*)(a + OFF_SAMPLED_CLOCK) & 0xFF) == 0) return;          // whole frame: no lerp between keys
     int32_t res = *(const int32_t*)(a + OFF_KEY_RES);
@@ -382,8 +410,9 @@ static void keyhold_apply(int i, uint8_t* a, int nb) {
     }
 }
 
-// X2-SMOOTH-003-STOCK-ID / -STOCK-ID-END (decimal, inclusive; bisect switch, port of FFX): actors in this id range
-// take whole stock steps (no half step), so which actor's half step causes a glitch can be found by halving.
+// --- Actors that run as stock -----------------------------------------------------------------------------------------
+// STOCK-ID / STOCK-ID-END (decimal actor ids, inclusive; a bisect switch): actors in this range take whole stock steps,
+// so the actor whose half step causes a glitch can be found by halving the range.
 static int g_stock_id = 0, g_stock_id_end = 0;
 static bool stock_id(const uint8_t* a) {
     if (!g_stock_id) return false;
@@ -391,15 +420,18 @@ static bool stock_id(const uint8_t* a) {
     return id >= (uint16_t)g_stock_id && id <= (uint16_t)(g_stock_id_end ? g_stock_id_end : g_stock_id);
 }
 
-// SHORTLOOP: a looping motion of at most one frame (e.g. an enemy hold pose) is only ever sampled at whole frames at
-// stock; a half-frame sample twists the body, so such actors run exactly as stock.
+// SHORTLOOP: a looping motion at most one frame long (e.g. an enemy's hold pose) is only ever sampled at whole frames
+// by the stock game; a half-frame sample twists the body, so such actors run exactly as stock.
 static bool short_loop(const uint8_t* a) {
     uint32_t fl = *(const uint32_t*)(a + OFF_FLAGS);
     if ((fl & FLAG_SCRIPTED) != 0 || *(const uint32_t*)(a + OFF_MOTION_SEQ) == 0) return false;
     return *(const int16_t*)(a + OFF_MOTION_LOOPS) != 1 && *(const int32_t*)(a + OFF_MOTION_LOOP_LEN) <= 0x100;
 }
 
-// Logic step stub (E8 0x6E1394 -> Ch_StepMotion 0x6E78F0, cdecl(actor, full)).
+// --- The logic frame's step ---------------------------------------------------------------------------------------------
+// Replaces the game's call of Ch_StepMotion in its actor update (CALL at gva 0x6E1394 -> 0x6E78F0). With the half-rate
+// switch on, the game's own step moves the actor half a frame; the actor then owes the other half to the render-only
+// walk. If it still owes one from the last frame (the walk skipped it), that half is paid first, clock only.
 static void __cdecl hook_step_motion(uint8_t* a, int full) {
     if (g_disabled || !row_SMOOTH003.on) {
         if (g_we_set_half_rate) { *g_half_rate_switch = 0; g_we_set_half_rate = false; }
@@ -413,7 +445,7 @@ static void __cdecl hook_step_motion(uint8_t* a, int full) {
     if (i >= 0 && g_owes_half_step[i]) {
         g_owes_half_step[i] = 0;
         if (g_owed_actor_id[i] == *(uint16_t*)a) {
-            // Pay the half step the render-only render_only_walk did not take: clock only, switch forced on.
+            // Pay the half step the render-only walk did not take: clock only, switch forced on.
             int32_t old = *g_half_rate_switch;
             *g_half_rate_switch = 1;
             bool ok = safe_step(a, 0);
@@ -435,8 +467,9 @@ static void __cdecl hook_step_motion(uint8_t* a, int full) {
     if (i >= 0 && *g_half_rate_switch != 0) { g_owes_half_step[i] = 1; g_owed_actor_id[i] = *(uint16_t*)a; }
 }
 
-// ---------------------------------------------------------------- gates (X2-SMOOTH-003-GATES)
-// Ch_SeqFrame is a per-call script VM and Ch_MotevDispatch fires motion events: neither may run twice per tick.
+// --- GATES: things that must run once per tick -----------------------------------------------------------------------
+// Ch_SeqFrame runs one step of the actor's script each time it is called, and Ch_MotevDispatch fires the motion's events
+// (sounds, effects): our extra steps must not run either of them a second time.
 static void __cdecl hook_seq_frame(uint8_t* a) {
     if (g_in_our_step && g_opt_gates && !g_disabled) { InterlockedIncrement(&g_gated_seq); return; }
     g_seq_frame(a);
@@ -450,10 +483,11 @@ static void __cdecl hook_motion_events(uint8_t* a) {
     g_motion_events(a);
 }
 
-// ---------------------------------------------------------------- loop guard (X2-SMOOTH-003-LOOPGUARD)
-// Returns the clock the stock logic step would sample at for clock c (the loop-wrap arithmetic of Ch_MotionLoopWrap
-// 0x6E8310, read-only; no loop count is decremented, the new FFX-2 wrap counter +0x803 is not touched). kind:
-// 0 = unchanged, 1 = wrapped, 2 = clamped (play once), 3 = no stock equivalent (hold).
+// --- LOOPGUARD / LOOPEND: the render-only step near the end of an animation ------------------------------------------
+// The clock the logic step would sample at for clock c: the loop-wrap arithmetic of the game's Ch_MotionLoopWrap
+// (gva 0x6E8310), computed without changing anything (no loop count decremented, the wrap counter at +0x803 untouched).
+// *kind: 0 = c unchanged, 1 = wrapped back into the loop, 2 = clamped at the last frame (play-once motion),
+// 3 = the stock game has no equivalent (the caller holds the pose).
 static int32_t guard_clock(const uint8_t* a, int32_t c, int* kind) {
     *kind = 0;
     int32_t end = *(const int32_t*)(a + OFF_MOTION_END);
@@ -478,7 +512,9 @@ static int32_t guard_clock(const uint8_t* a, int32_t c, int* kind) {
     return c;
 }
 
-// The render-only full step of one actor (bit 24 already set). Returns false on a fault (the render_only_walk aborts).
+// --- The render-only frame's step -------------------------------------------------------------------------------------
+// The owed half step of one actor (FLAG_STEP_MOTION already set), with every safety net around it. "Clock only" below
+// = Ch_StepMotion(actor, 0): the clock advances but the pose stays at tick k. Returns false on a crash (walk stops).
 static bool render_only_step(int i, uint8_t* a, uint32_t fl) {
     int32_t c0 = *(int32_t*)(a + OFF_MOTION_CLOCK);
     int kind = 0;
@@ -506,11 +542,10 @@ static bool render_only_step(int i, uint8_t* a, uint32_t fl) {
     bool ok = safe_step(a, 1);
     if (ok && kh) __try { keyhold_apply(i, a, kh); } __except (EXCEPTION_EXECUTE_HANDLER) { fault("keyhold", GetExceptionCode()); }
     if (ok && nb) __try { sanity_check(i, a, nb, c0); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    // X2-SMOOTH-003-ENDEXTRAP-ONCE (default 1 in FFX-2): a play-once motion clamped at its last frame (kind 2) repeats
-    // that pose on the render-only frame; walks/runs are chains of play-once strides (FFX: Tidus's run, 28 frames),
-    // so every stride end hitched (U 13/10/2026 "render_only_walk still stuttery" with LOOPEND extrapolation alone; D fps60x2.log
-    // 23:46: clamp=190 vs loopend 55 per 2 min). Extrapolate only when the logic tick already showed the last frame.
-    // FFX turned this off (Bahamut's hit-motion end guessed wrong): set 0 here if a motion end overshoots.
+    // ENDEXTRAP-ONCE: a play-once motion clamped at its last frame (kind 2) would repeat that pose on the render-only
+    // frame. Walks and runs are chains of play-once strides, so every stride end hitched; extrapolate instead, but only
+    // when the logic tick already showed the last frame. (The FFX mod has this off: one hit motion's end overshot.
+    // Set X2-SMOOTH-003-ENDEXTRAP-ONCE=0 if a motion end overshoots here.)
     if (ok && kind == 2 && g_opt_endextrap && g_opt_endextrap_once && c0 >= (*(int32_t*)(a + OFF_MOTION_END) & ~0xFF))
         __try { end_extrapolate(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     if (kind) {
@@ -521,9 +556,9 @@ static bool render_only_step(int i, uint8_t* a, uint32_t fl) {
     return ok;
 }
 
-// ---------------------------------------------------------------- render-only render_only_walk
-// Mirrors the logic render_only_walk of Ch_UpdateAllActors 0x6E10A0 for actors that owe a half step, then dispatches skeleton
-// jobs. FFX-2: no dirty-flag store, batch at >= 150 bones, next batch starts at a + 0x910.
+// --- The render-only walk -----------------------------------------------------------------------------------------------
+// Does for the actors that owe a half step what the game's actor update (Ch_UpdateAllActors, gva 0x6E10A0) does on a
+// logic frame: step each one, then hand the skeleton rebuilds to the worker threads in batches of 150 bones.
 static void render_only_walk() {
     uint8_t* base = *g_actor_table;
     int n = *g_actor_count;
@@ -537,8 +572,8 @@ static void render_only_walk() {
             uint8_t* a = base + i * ACTOR_SIZE;
             if (a[OFF_ACTIVE] == 0 || (a[OFF_RANGE_SKIP] != 0 && a[OFF_RANGE_KEEP] == 0)) continue;
             bool child = *(uint32_t*)(a + OFF_PARENT) != 0;
-            if (!child) hold_save(i, a, true);                  // mode-0 jobs touch every parent in range
-            else if (g_owes_half_step[i]) hold_save(i, a, false);         // children: only the rebuild state
+            if (!child) hold_save(i, a, true);                  // the skeleton jobs touch every root actor in range
+            else if (g_owes_half_step[i]) hold_save(i, a, false);         // attached actors: only what the step writes
         }
     }
     uint8_t* cursor = base;
@@ -573,17 +608,28 @@ static void render_only_walk() {
     if (bones != 0) safe_dispatch(cursor, span);
 }
 
-// ---------------------------------------------------------------- X2-SMOOTH-003-PEEL
+// --- PEEL: a dressphere change runs as stock --------------------------------------------------------------------------
+// In a dressphere change the old outfit "peels" off the new one: two models drawn on top of each other. With our half
+// step they came apart, so for the whole change this row runs as if it were off (stock motion, no half step).
+// How the change is found: one of its effect DLLs loads (X2-SMOOTH-003-PEEL-DLL, default "936 937 938"), or the effect
+// script runs op 0x116 (the silhouette copy). It ends when that DLL has unloaded and the one loaded right after it
+// (within 120 invocations) has unloaded too; each phase gives up after 1800 invocations.
+//   PEEL-SKEL (default on): with the walk off, the skeletons were no longer rebuilt on render-only frames and the
+//     change's own models drew a stale copy (a blink). This rebuilds them anyway, with the pose held at tick k.
+//   PEEL-DRAW (test, off): only re-sets FLAG_STEP_MOTION on render-only frames, without the rebuild.
+// More: re/ledger/XFADE-BLINK.md.
 static int g_opt_peel = 1;
 static int g_opt_peel_draw = 0;                      // X2-SMOOTH-003-PEEL-DRAW
 static int g_opt_peel_skel = 1;                      // X2-SMOOTH-003-PEEL-SKEL
-static volatile uint32_t g_inv = 0;
-static volatile LONG g_peel_phase = 0;           // 0 none, 1 change DLL / copy seen, 2 its DLL unloaded, 3 next DLL
-static volatile uint32_t g_peel_phase_inv = 0;
+static volatile uint32_t g_inv = 0;                  // invocation counter (pre)
+// 0 = no change; 1 = change seen (DLL loaded or op 0x116); 2 = that DLL unloaded, waiting for the next one;
+// 3 = the next DLL is loaded (g_peel_tail), stock until it unloads
+static volatile LONG g_peel_phase = 0;
+static volatile uint32_t g_peel_phase_inv = 0;       // invocation the current phase began at
 static uint8_t* volatile g_peel_tail = nullptr;
 static int g_peel_dll[8], g_npeel_dll = 0;
 typedef void* (__cdecl* opu_op_fn)(uint8_t* scr, void* pc);
-static opu_op_fn g_op116 = nullptr;
+static opu_op_fn g_op116 = nullptr;                  // the game's op 0x116 (we sit in its slot of the op table)
 static volatile LONG g_peel_invs = 0;
 
 static int magic_number(const char* name) {      // "magic_0937.dll" -> 937
@@ -628,6 +674,7 @@ static void peel_on_unload(uint8_t* base) {
     }
 }
 
+// True while a dressphere change is running (the phase ends by itself after its time limit).
 static bool peel_hold() {
     if (!g_opt_peel) return false;
     LONG ph = g_peel_phase;
@@ -638,6 +685,7 @@ static bool peel_hold() {
     return false;
 }
 
+// 60 Hz limbs right now: not switched off by F6/F7 and no dressphere change running.
 static bool limbs_live() { return smooth_live(3) && !peel_hold(); }
 
 static void install_peel() {
@@ -676,7 +724,9 @@ static void install_peel() {
              entry ? rt_to_gva(entry) : 0, g_op116 ? "stub" : "untouched");
 }
 
-// X2-SMOOTH-003-PEEL-DRAW
+// PEEL-SKEL / PEEL-DRAW during a change. Logic frame: remember which actors the game flagged for a step. Render-only
+// frame: flag the same actors again (no step, so the pose stays at tick k) and, with PEEL-SKEL, rebuild their
+// skeletons as the walk would.
 static uint16_t g_step_id[MAX_ACTORS];                 // id of actors with FLAG_STEP_MOTION at the last logic Ch_NoSkelPass, 0 = none
 static volatile LONG g_peel_draw_n = 0;
 static void peel_draw(bool logic) {
@@ -710,7 +760,8 @@ static void peel_draw(bool logic) {
     if (g_opt_peel_skel && bones != 0) safe_dispatch(cursor, span);
 }
 
-// Sg_MainLoop stub (E8 0x60586C -> Ch_NoSkelPass 0x6E1610, cdecl(void)).
+// Replaces the main loop's call of Ch_NoSkelPass (CALL at gva 0x60586C -> 0x6E1610), which runs every frame after the
+// actor update and before drawing: the place where the render-only walk runs.
 static void __cdecl hook_noskel_pass() {
     if ((g_opt_peel_draw || g_opt_peel_skel) && row_SMOOTH003.on && !g_disabled && (g_inv_kind == INV_LOGIC || g_inv_kind == INV_RENDER_ONLY)) {
         static bool was = false;
@@ -730,21 +781,26 @@ static void __cdecl hook_noskel_pass() {
     g_noskel_pass();
 }
 
-// ---------------------------------------------------------------- CLOTHHOLD modes 2/3/4 (worker threads)
+// --- CLOTHHOLD: hair and cloth (runs on the worker threads) --------------------------------------------------------
+// Modes are described at g_opt_cloth. For modes 3 and 4 we keep, per cloth mesh, the vertex positions of the last two
+// cloth job results (a "snap"), and redeform the mesh from a blend of them.
 static const uint32_t OFF_MESH_ENTRIES = 0x1C8, OFF_CLOTH_MODEL = 0x1CC, OFF_RESET_COUNT = 0x824, MESH_ENTRY_SIZE = 0x38;
-static void (__cdecl* g_cloth_deform)(uint8_t*) = nullptr;
-static volatile int32_t* g_cloth_deform_gate = nullptr;
+static void (__cdecl* g_cloth_deform)(uint8_t*) = nullptr;   // the game's Ch_ClothDeform(actor)
+static volatile int32_t* g_cloth_deform_gate = nullptr;      // the game deforms only while this is 0
 static int g_opt_cloth_extrap_pct = 50;                    // X2-SMOOTH-003-CLOTHEXTRAP-PCT (mode 3)
 static volatile LONG g_logic_tick = 1;               // logic invocations (game thread writes, jobs read)
 static volatile LONG g_extrap_n = 0, g_extrap_miss = 0;
 
+// One cloth mesh: its vertex array in the game (vtex, n vertices of 4 floats), and our copies of the latest (cur, from
+// logic tick ncur) and previous (prev, tick nprev; 0 = none) job results.
 struct ClothSnap { float* vtex; uint8_t* actor; uint32_t n; LONG ncur, nprev; float* cur; float* prev; };
 enum { MAX_CLOTH_SNAPS = 128 };
 static ClothSnap g_cloth_snaps[MAX_CLOTH_SNAPS];
 static SRWLOCK g_cloth_snaps_lock = SRWLOCK_INIT;
 
-// Jobs run on several worker threads at once: a new entry is stamped with the current step; only empty slots or
-// entries unused for 4+ logic steps are taken (FFX: heap corruption when a fresh entry was evicted mid-copy).
+// Finds (or, with create, makes) the snap of a mesh. Jobs run on several worker threads at once, hence the lock. A new
+// snap only takes a free entry or one unused for 4+ logic ticks (in FFX, reusing a fresh one mid-copy corrupted the
+// heap).
 static ClothSnap* snap_get(float* vtex, uint8_t* actor, uint32_t n, bool create) {
     AcquireSRWLockExclusive(&g_cloth_snaps_lock);
     ClothSnap* s = nullptr; ClothSnap* old = nullptr;
@@ -781,6 +837,7 @@ template <class F> static void for_dyn_mesh(uint8_t* a, F fn) {
     }
 }
 
+// After a logic cloth job: the job's result becomes "cur", the old cur becomes "prev" (none after a reset/teleport).
 static void cloth_snap_after_step(uint8_t* a, bool reset) {
     for_dyn_mesh(a, [&](uint8_t*, float* vtex, uint32_t n) {
         ClothSnap* s = snap_get(vtex, a, n, true);
@@ -792,8 +849,9 @@ static void cloth_snap_after_step(uint8_t* a, bool reset) {
     });
 }
 
-// True when every dynamic mesh had fresh job results (and the previous tick's, if need_prev); then the mesh is
-// deformed from cur + k * (cur - prev) and the vertex arrays are put back.
+// Deforms the actor's cloth from cur + k * (cur - prev) (k = -0.5: half way back to prev; 0: cur; > 0: extrapolated),
+// then puts the job's real result back into the vertex arrays. Only when every mesh has a result from this logic tick
+// (and from the one before, if need_prev); returns false otherwise.
 static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
     LONG now = g_logic_tick;
     bool ok = true;
@@ -818,6 +876,9 @@ static bool cloth_extrap(uint8_t* a, float k, bool need_prev) {
 static volatile LONG g_cloth_job_calls[MAX_ACTORS];         // FREEZEDIAG: cloth job entries per slot (worker threads)
 static bool g_freezediag_running = false;
 
+// Replaces the entry of the game's cloth job Ch_ClothJob(actors, count) (worker threads). Render-only frame where every
+// actor in the batch was walked: draw the cloth from the snaps (modes 3/4) or skip it (mode 2). Logic frame: run the
+// job, record the result and, in mode 4, redeform half way back to the previous result.
 static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
     bool live = !g_disabled && row_SMOOTH003.on && limbs_live();
     if (g_freezediag_running) __try {
@@ -871,8 +932,9 @@ static void __cdecl hook_cloth_job(uint8_t** list, int* count) {
     __except (EXCEPTION_EXECUTE_HANDLER) { fault("cloth snap", GetExceptionCode()); }
 }
 
-// ---------------------------------------------------------------- per invocation
-// Game thread, between invocations: the CALL retargets and the cloth entry hook.
+// --- Patching (game thread, first pre()) --------------------------------------------------------------------------------
+// Points the four game CALLs at our hooks (without GATES only the step and the Ch_NoSkelPass call) and hooks the cloth
+// job. If one CALL patch fails, the ones done are undone and the row stays off.
 static bool apply_patches() {
     uint8_t* sites[4] = { g_callsite_step, g_callsite_noskel, g_callsite_seq, g_callsite_motev };
     void* olds[4] = { (void*)g_step_motion, (void*)g_noskel_pass, (void*)g_seq_frame, (void*)g_motion_events };
@@ -895,26 +957,24 @@ static bool apply_patches() {
     return true;
 }
 
-// X2-SMOOTH-003-FREEZEDIAG (diagnostic, default 0): U 18/10/2026 Seymour's model holds one pose for ~0.5 s at the start
-// of Tidus's Blitz Ace (clip 00:15:34, 0.4-0.9 s), then moves again. Per invocation (at post) each active parent
-// actor's bone angles, cloth vertex arrays and root are hashed; when none of them changed for FREEZE_RUN invocations,
-// this is logged once with the motion fields and this row's state for the slot, plus the last FREEZE_HISTORY invocations (kind,
-// clock, flags, walked/debt/held, which of bones/cloth/root changed, cloth job entries), and again when it moves.
-// D 18/10 first build: Seymour (id 0x113F) has a static skeleton in this battle (clock 0x100, no step bit), so what
-// moves him is cloth and root. Observe only.
+// --- FREEZEDIAG: diagnostic, off by default ---------------------------------------------------------------------------
+// Finds actors whose pose stops changing (written for a model that froze for half a second, ledger PORT-SMOOTH3.md).
+// After every invocation each active root actor's bone angles, cloth vertices and root matrix are hashed. When none of
+// them changed for FREEZE_RUN invocations, one line is logged with the actor's motion fields and this row's state,
+// plus the last FREEZE_HISTORY invocations; and again when it moves. Observe only.
 static int g_opt_freezediag = 0;
 enum { FREEZE_RUN = 12, FREEZE_HISTORY = 16 };
+// One invocation of one actor: kind (L/R/B/S), walked/owed/held, which hashes changed (bones 1, cloth 2, root 4) and
+// how many cloth jobs ran for it.
 struct FreezeHist { char kind; uint8_t walked, debt, held, chg, jobs; int32_t clock; uint32_t flags; };
 struct FreezeState { uint16_t id; uint8_t logged; uint8_t pos; uint32_t hb, hc, hr; int run; LONG jobs; FreezeHist h[FREEZE_HISTORY]; };
 static FreezeState* g_freeze_state = nullptr;              // MAX_ACTORS
 static LONG g_freeze_inv = 0;
-static const uint32_t ROOT = 0x1DC;              // root matrix (X2-SMOOTH-002, S)
-// FREEZEDIAG-ID / -ID-END (decimal actor ids): every invocation of these actors is traced while a magic DLL is loaded.
-// U 18/10: the freeze comes during Blitz Ace (magic_0749) three times; Seymour 0x113F = 4415.
+static const uint32_t ROOT = 0x1DC;              // root matrix (X2-SMOOTH-002)
+// FREEZEDIAG-ID / -ID-END (decimal actor ids): log every invocation of these actors while a spell DLL is loaded.
 static int g_trace_id = 0, g_trace_id_end = 0;
-// FREEZEDIAG-ALWAYS (default 0): trace those ids on every invocation, not only while a magic DLL is loaded (U 18/10/2026:
-// Rikku's legs jump between two consecutive frames in a cutscene). Each trace line also gives the largest bone angle
-// change since the slot's previous traced invocation (radians, wrapped) and how many channels changed by > 0.5 rad.
+// FREEZEDIAG-ALWAYS: trace them always, not only during spells. Each trace line also gives the largest bone angle
+// change since the previous traced invocation (radians) and how many rotations changed by more than 0.5 rad.
 static int g_trace_always = 0;
 static float* g_trace_prev[MAX_ACTORS];
 static volatile LONG g_magic_loaded = 0;
@@ -1013,6 +1073,9 @@ static void freeze_diag() {
     }
 }
 
+// --- Every invocation -----------------------------------------------------------------------------------------------------
+// Before: put HOLD bytes back from the last walk, then switch the half-rate motion on for this invocation if 60 Hz limbs
+// are live (logic and render-only invocations), off otherwise.
 static void pre() {
     g_inv++;
     if (!g_calls_patched) {
@@ -1034,6 +1097,7 @@ static void pre() {
     memset((void*)g_walked_now, 0, sizeof(g_walked_now));
 }
 
+// After: freeze diagnostics, and a counters line every 1800 walks (~1 minute).
 static void post() {
     if (g_freeze_state) __try { freeze_diag(); } __except (EXCEPTION_EXECUTE_HANDLER) { g_freeze_state = nullptr; log_line("X2-SMOOTH-003-FREEZEDIAG: fault - off"); }
     static LONG last = 0;
@@ -1056,7 +1120,7 @@ static void post() {
     }
 }
 
-// ---------------------------------------------------------------- install (resolve + check only)
+// --- Install: find every game address and check it; nothing is patched here --------------------------------------------
 static bool install() {
     if (!smooth_master()) { log_line("  X2-SMOOTH-003: master X2-SMOOTH=0 - off"); return false; }
     // Ch_UpdateAllActors: sets the motion-step flag (bit 24), PUSH full; PUSH EDI (actor); CALL Ch_StepMotion (+0x18)
