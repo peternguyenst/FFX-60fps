@@ -56,9 +56,9 @@ __declspec(naked) static void sg_mainloop_wrapper() {
 }
 
 // Every patch_u32 write is journaled (address, old and new value) so a dev hot reload can undo it.
-struct Patch { uint8_t* at; uint32_t orig, now; };
-static Patch g_patch[512];
-static int   g_npatch = 0;
+struct JournaledPatch { uint8_t* at; uint32_t orig, now; };
+static JournaledPatch g_patches[512];
+static int   g_patch_count = 0;
 
 static bool write_u32(uint8_t* at, uint32_t v) {
     DWORD old;
@@ -75,7 +75,7 @@ bool patch_u32(void* at_, uint32_t v) {
     uint32_t orig = 0;
     if (!safe_read_u32(at, &orig)) return false;
     if (!write_u32(at, v)) return false;
-    if (g_npatch < (int)(sizeof(g_patch) / sizeof(g_patch[0]))) g_patch[g_npatch++] = { at, orig, v };
+    if (g_patch_count < (int)(sizeof(g_patches) / sizeof(g_patches[0]))) g_patches[g_patch_count++] = { at, orig, v };
     return true;
 }
 
@@ -83,16 +83,16 @@ bool patch_u32(void* at_, uint32_t v) {
 // reused, or patched again by someone else) is left alone.
 void patch_revert_all() {
     int done = 0, skipped = 0;
-    for (int i = g_npatch - 1; i >= 0; i--) {
+    for (int i = g_patch_count - 1; i >= 0; i--) {
         uint32_t cur = 0;
-        if (!safe_read_u32(g_patch[i].at, &cur) || cur != g_patch[i].now || !write_u32(g_patch[i].at, g_patch[i].orig)) {
+        if (!safe_read_u32(g_patches[i].at, &cur) || cur != g_patches[i].now || !write_u32(g_patches[i].at, g_patches[i].orig)) {
             skipped++;
             continue;
         }
         done++;
     }
     log_line("patches: %d reverted, %d skipped", done, skipped);
-    g_npatch = 0;
+    g_patch_count = 0;
 }
 
 bool hooks_install_mainloop() {
@@ -153,15 +153,15 @@ void hook_disable_all() {
     log_line("hooks: all entry hooks disabled (%s)", MH_StatusToString(s));
 }
 
-static set_divider_t g_divider_tramp = nullptr;
+static set_divider_t g_set_divider_orig = nullptr;
 
-static void __cdecl h_set_divider(uint32_t req) {
+static void __cdecl hook_set_divider(uint32_t req) {
     bool swallow = false;
     if (!g_disabled) {
         __try { swallow = pacing_divider_request(req); }
         __except (EXCEPTION_EXECUTE_HANDLER) { swallow = false; on_fault("divider hook", GetExceptionCode()); }
     }
-    if (!swallow) g_divider_tramp(req);
+    if (!swallow) g_set_divider_orig(req);
 }
 
 void hooks_install_divider_on_game_thread() {
@@ -173,11 +173,11 @@ void hooks_install_divider_on_game_thread() {
         return;
     }
     void* entry = (void*)g_set_divider;
-    if (!hook_entry("divider", entry, (void*)&h_set_divider, (void**)&g_divider_tramp)) {
+    if (!hook_entry("divider", entry, (void*)&hook_set_divider, (void**)&g_set_divider_orig)) {
         log_line("hook divider: NOT installed, pacing stays stock");
         return;
     }
-    g_set_divider = g_divider_tramp;             // our own calls bypass the hook
+    g_set_divider = g_set_divider_orig;             // our own calls bypass the hook
     g_divider_hooked = true;
     log_line("hook divider: ON - SKS_SetFrameDivider gva=0x%08X hooked, divider now %u", rt_to_gva(entry), *g_divider);
 }

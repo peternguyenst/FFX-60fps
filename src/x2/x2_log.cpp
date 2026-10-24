@@ -7,9 +7,9 @@
 
 namespace x2 {
 
-static HANDLE           g_log = INVALID_HANDLE_VALUE;
-static CRITICAL_SECTION g_cs;
-static bool             g_cs_ready = false;
+static HANDLE           g_log_file = INVALID_HANDLE_VALUE;
+static CRITICAL_SECTION g_log_lock;
+static bool             g_log_lock_ready = false;
 
 void game_dir(wchar_t* out, size_t cap) {
     out[0] = 0;
@@ -36,12 +36,12 @@ bool hot_copy() {
 static void open_append(const wchar_t* dir) {
     wchar_t path[MAX_PATH];
     _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%sfps60x2.log", dir);
-    g_log = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (g_log != INVALID_HANDLE_VALUE) SetFilePointer(g_log, 0, nullptr, FILE_END);
+    g_log_file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (g_log_file != INVALID_HANDLE_VALUE) SetFilePointer(g_log_file, 0, nullptr, FILE_END);
 }
 
 void log_open() {
-    if (!g_cs_ready) { InitializeCriticalSection(&g_cs); g_cs_ready = true; }
+    if (!g_log_lock_ready) { InitializeCriticalSection(&g_log_lock); g_log_lock_ready = true; }
     wchar_t dir[MAX_PATH], from[MAX_PATH], to[MAX_PATH];
     game_dir(dir, MAX_PATH);
     if (!dir[0]) return;
@@ -53,11 +53,11 @@ void log_open() {
         MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING);
     }
     _snwprintf_s(from, MAX_PATH, _TRUNCATE, L"%sfps60x2.log", dir);
-    g_log = CreateFileW(from, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    g_log_file = CreateFileW(from, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
 void log_line(const char* fmt, ...) {
-    if (g_log == INVALID_HANDLE_VALUE || !g_cs_ready) return;
+    if (g_log_file == INVALID_HANDLE_VALUE || !g_log_lock_ready) return;
     char buf[1024];
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -71,28 +71,28 @@ void log_line(const char* fmt, ...) {
     n = (m < 0) ? (int)strlen(buf) : n + m;
     buf[n++] = '\r';
     buf[n++] = '\n';
-    EnterCriticalSection(&g_cs);
+    EnterCriticalSection(&g_log_lock);
     DWORD w;
-    if (g_log != INVALID_HANDLE_VALUE) WriteFile(g_log, buf, (DWORD)n, &w, nullptr);
-    LeaveCriticalSection(&g_cs);
+    if (g_log_file != INVALID_HANDLE_VALUE) WriteFile(g_log_file, buf, (DWORD)n, &w, nullptr);
+    LeaveCriticalSection(&g_log_lock);
 }
 
 void log_close() {
-    if (!g_cs_ready) return;
-    EnterCriticalSection(&g_cs);
-    if (g_log != INVALID_HANDLE_VALUE) { CloseHandle(g_log); g_log = INVALID_HANDLE_VALUE; }
-    LeaveCriticalSection(&g_cs);
+    if (!g_log_lock_ready) return;
+    EnterCriticalSection(&g_log_lock);
+    if (g_log_file != INVALID_HANDLE_VALUE) { CloseHandle(g_log_file); g_log_file = INVALID_HANDLE_VALUE; }
+    LeaveCriticalSection(&g_log_lock);
 }
 
 // Dev hot reload: a failed load gives the log back to the passive copy.
 void log_reopen() {
-    if (!g_cs_ready || g_log != INVALID_HANDLE_VALUE) return;
+    if (!g_log_lock_ready || g_log_file != INVALID_HANDLE_VALUE) return;
     wchar_t dir[MAX_PATH];
     game_dir(dir, MAX_PATH);
     if (!dir[0]) return;
-    EnterCriticalSection(&g_cs);
+    EnterCriticalSection(&g_log_lock);
     open_append(dir);
-    LeaveCriticalSection(&g_cs);
+    LeaveCriticalSection(&g_log_lock);
 }
 
 } // namespace x2

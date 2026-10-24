@@ -20,17 +20,17 @@
 #ifdef FPS60_DEV
 namespace x2 {
 
-static bool g_prev = false;
-static int  g_key = -1;
+static bool g_key_was_down = false;
+static int  g_reload_key = -1;
 
 static bool key_edge() {
-    bool first = g_key < 0;
-    if (first) g_key = config_row("X2-DEV-RELOAD-KEY", VK_NUMPAD9);
-    if (g_key <= 0) return false;
-    bool down = (GetAsyncKeyState(g_key) & 0x8000) != 0;
-    if (first) g_prev = down;                    // a key still held from the reload that loaded this copy is no press
-    bool edge = down && !g_prev;
-    g_prev = down;
+    bool first = g_reload_key < 0;
+    if (first) g_reload_key = config_row("X2-DEV-RELOAD-KEY", VK_NUMPAD9);
+    if (g_reload_key <= 0) return false;
+    bool down = (GetAsyncKeyState(g_reload_key) & 0x8000) != 0;
+    if (first) g_key_was_down = down;                    // a key still held from the reload that loaded this copy is no press
+    bool edge = down && !g_key_was_down;
+    g_key_was_down = down;
     if (!edge) return false;
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;

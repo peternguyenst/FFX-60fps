@@ -12,44 +12,44 @@ namespace x2 {
 
 extern Row** x2_row_list();
 
-static int  g_on = -1;                           // -1 = not read yet
-static LARGE_INTEGER g_f, g_win, g_t0;
+static int  g_opt_perf = -1;                           // -1 = not read yet
+static LARGE_INTEGER g_qpc_freq, g_window_start, g_inv_start;
 static double g_inv_sum = 0, g_inv_max = 0, g_rows_sum = 0, g_walk_sum = 0;
 static LONG   g_inv_n = 0, g_walk_n = 0;
-enum { MAXR = 128 };
-static double g_row_ms[MAXR];
+enum { MAX_ROWS = 128 };
+static double g_row_ms[MAX_ROWS];
 
-static inline double ms(LONGLONG d) { return (double)d * 1000.0 / (double)g_f.QuadPart; }
+static inline double qpc_ms(LONGLONG d) { return (double)d * 1000.0 / (double)g_qpc_freq.QuadPart; }
 
 bool perf_on() {
-    if (g_on < 0) {
-        g_on = config_row("X2-DIAG-PERF", 0) ? 1 : 0;
-        QueryPerformanceFrequency(&g_f);
-        QueryPerformanceCounter(&g_win);
-        if (g_on) log_line("X2-DIAG-PERF: on (10 s summaries of invocation time, row time, SMOOTH-003 walk)");
+    if (g_opt_perf < 0) {
+        g_opt_perf = config_row("X2-DIAG-PERF", 0) ? 1 : 0;
+        QueryPerformanceFrequency(&g_qpc_freq);
+        QueryPerformanceCounter(&g_window_start);
+        if (g_opt_perf) log_line("X2-DIAG-PERF: on (10 s summaries of invocation time, row time, SMOOTH-003 walk)");
     }
-    return g_on != 0;
+    return g_opt_perf != 0;
 }
 
 LONGLONG perf_now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
-void perf_row(int idx, LONGLONG dt) { if (idx >= 0 && idx < MAXR) { double m = ms(dt); g_row_ms[idx] += m; g_rows_sum += m; } }
-void perf_walk(LONGLONG dt) { g_walk_sum += ms(dt); g_walk_n++; }
-void perf_inv_begin() { QueryPerformanceCounter(&g_t0); }
+void perf_row(int idx, LONGLONG dt) { if (idx >= 0 && idx < MAX_ROWS) { double m = qpc_ms(dt); g_row_ms[idx] += m; g_rows_sum += m; } }
+void perf_walk(LONGLONG dt) { g_walk_sum += qpc_ms(dt); g_walk_n++; }
+void perf_inv_begin() { QueryPerformanceCounter(&g_inv_start); }
 
 void perf_inv_end() {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    double d = ms(t.QuadPart - g_t0.QuadPart);
+    double d = qpc_ms(t.QuadPart - g_inv_start.QuadPart);
     g_inv_sum += d;
     if (d > g_inv_max) g_inv_max = d;
     g_inv_n++;
-    double s = (double)(t.QuadPart - g_win.QuadPart) / (double)g_f.QuadPart;
+    double s = (double)(t.QuadPart - g_window_start.QuadPart) / (double)g_qpc_freq.QuadPart;
     if (s < 10.0 || g_inv_n == 0) return;
     Row** rows = x2_row_list();
     int top[6]; double topv[6];
     for (int k = 0; k < 6; k++) { top[k] = -1; topv[k] = 0; }
-    for (int r = 0; r < MAXR && rows[r]; r++) {
+    for (int r = 0; r < MAX_ROWS && rows[r]; r++) {
         double v = g_row_ms[r];
         for (int k = 0; k < 6; k++) {
             if (v <= topv[k]) continue;
@@ -66,7 +66,7 @@ void perf_inv_end() {
              "(%ld walks) | top rows ms/inv:%s",
              g_inv_n / s, g_inv_sum / g_inv_n, g_inv_max, g_rows_sum / g_inv_n, g_walk_n ? g_walk_sum / g_walk_n : 0.0, g_walk_n,
              n ? line : " -");
-    g_win = t;
+    g_window_start = t;
     g_inv_sum = g_inv_max = g_rows_sum = g_walk_sum = 0;
     g_inv_n = g_walk_n = 0;
     memset(g_row_ms, 0, sizeof(g_row_ms));
