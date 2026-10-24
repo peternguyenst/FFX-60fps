@@ -23,37 +23,52 @@ static free_t   g_free_tramp = nullptr;
 static bool     g_patched = false;
 static volatile LONG g_guarded = 0;
 
-enum { SITES = 8 };
-struct Site { void* ra; uint32_t n[4]; };
+enum { SITES = 32 };
+struct Site { void* ra; void* up; uint32_t n[4]; };   // up: the caller of the pool's caller (the code creating it)
 static Site     g_asite[SITES], g_fsite[SITES];
 static uint32_t g_fail[4];
 static long     g_net = 0, g_net_max = 0;        // live blocks since install (allocs - frees)
 
-static void count(Site* t, void* ra, int k) {
+static void count(Site* t, void* ra, void* up, int k) {
     for (int i = 0; i < SITES; i++) {
-        if (t[i].ra == ra) { t[i].n[k]++; return; }
-        if (!t[i].ra) { t[i].ra = ra; t[i].n[k]++; return; }
+        if (t[i].ra == ra && t[i].up == up) { t[i].n[k]++; return; }
+        if (!t[i].ra) { t[i].ra = ra; t[i].up = up; t[i].n[k]++; return; }
     }
+}
+
+// The pool's callers (FUN_00716a30, FUN_00716770, FUN_00716a90, ...) keep an EBP frame: at the pool entry EBP is
+// theirs, so [EBP+4] is the code that asked them. Captured by the naked entries below.
+static uint8_t* g_alloc_ebp = nullptr;
+static uint8_t* g_free_ebp = nullptr;
+static void* up_of(uint8_t* ebp) {
+    uint32_t v = 0;
+    return ebp && safe_read_u32(ebp + 4, &v) ? (void*)(uintptr_t)v : nullptr;
 }
 
 // cdecl(pool, size) -> block or 0, plain RET (0x72C459 / 0x72C46E).
 static void* __cdecl h_alloc(void* pool, int size) {
     void* p = g_alloc_tramp(pool, size);
     int k = pacing_kind() & 3;
-    count(g_asite, _ReturnAddress(), k);
+    void* up = up_of(g_alloc_ebp);
+    count(g_asite, _ReturnAddress(), up, k);
     if (p) { if (++g_net > g_net_max) g_net_max = g_net; }
     else if (g_fail[k]++ == 0)
-        log_line("FX-012: PPP pool allocation failed (size %d, caller gva=0x%08X, inv kind %d, %ld blocks live)", size,
-                 rt_to_gva_exe(_ReturnAddress()), k, g_net);
+        log_line("FX-012: PPP pool allocation failed (size %d, caller gva=0x%08X <- 0x%08X, inv kind %d, %ld blocks live)",
+                 size, rt_to_gva_exe(_ReturnAddress()), rt_to_gva_exe(up), k, g_net);
     return p;
 }
 
 // cdecl(pool, block), plain RET (0x72C556).
 static void __cdecl h_free(void* pool, void* p) {
-    count(g_fsite, _ReturnAddress(), pacing_kind() & 3);
+    count(g_fsite, _ReturnAddress(), up_of(g_free_ebp), pacing_kind() & 3);
     g_net--;
     g_free_tramp(pool, p);
 }
+
+__declspec(naked) static void h_alloc_entry() { __asm { mov g_alloc_ebp, ebp
+                                                         jmp h_alloc } }
+__declspec(naked) static void h_free_entry() { __asm { mov g_free_ebp, ebp
+                                                        jmp h_free } }
 
 bool fx012_failed(void* prog) {
     uint32_t mark = 0;
@@ -80,18 +95,19 @@ static bool install() {
 static void pre() {
     if (g_patched) return;
     g_patched = true;
-    if (!hook_entry("FX-012 alloc", g_alloc_fn, (void*)&h_alloc, (void**)&g_alloc_tramp) ||
-        !hook_entry("FX-012 free", g_free_fn, (void*)&h_free, (void**)&g_free_tramp))
+    if (!hook_entry("FX-012 alloc", g_alloc_fn, (void*)&h_alloc_entry, (void**)&g_alloc_tramp) ||
+        !hook_entry("FX-012 free", g_free_fn, (void*)&h_free_entry, (void**)&g_free_tramp))
         log_line("FX-012: pool hooks failed - counts off (the guard still works)");
 }
 
 static void line(const char* what, Site* t) {
-    char b[600];
+    char b[1600];
     int m = 0;
     for (int i = 0; i < SITES && t[i].ra; i++) {
         uint32_t* n = t[i].n;
         if (!(n[0] | n[1] | n[2] | n[3])) continue;
-        m += _snprintf_s(b + m, sizeof(b) - m, _TRUNCATE, " 0x%06X:%u/%u/%u/%u", rt_to_gva_exe(t[i].ra), n[0], n[1], n[2], n[3]);
+        m += _snprintf_s(b + m, sizeof(b) - m, _TRUNCATE, " 0x%06X<-0x%06X:%u/%u/%u/%u", rt_to_gva_exe(t[i].ra),
+                         rt_to_gva_exe(t[i].up), n[0], n[1], n[2], n[3]);
         memset(n, 0, sizeof(t[i].n));
     }
     if (m) log_line("FX-012: %s per caller (logic/render-only/backlog/stock):%s", what, b);
