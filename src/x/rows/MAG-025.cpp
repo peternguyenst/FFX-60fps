@@ -351,7 +351,7 @@ static bool install() {
     g_hold_pos = config_row("MAG-025-POS", 1) ? 1 : 0;
     g_opdiag = config_row("MAG-025-OPDIAG", 0);
     char deny[256];
-    config_str("rows", "MAG-025-DENY", deny, sizeof(deny), "1F,7F");   // loop counter, battle signal
+    config_str("rows", "MAG-025-DENY", deny, sizeof(deny), "1F,7F,32,5D,8F");   // loop counter, battle signal, unit spawns, afterimage append
     char line[256]; int k = 0; line[0] = 0;
     for (char* t = deny; *t;) {
         char* e = nullptr;
