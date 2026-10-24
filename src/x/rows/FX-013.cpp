@@ -147,6 +147,12 @@ static void pre() {
         log_line("FX-013: pool setup hook failed - particle pool left at stock");
         g_ppp_buf = nullptr;
     }
+    // Started (or hot-reloaded) inside a scene: the main pool is already set up and has no second pool; give it one
+    // now (an empty second pool holds no blocks, so this is safe mid-scene).
+    if (g_ppp_buf && g_main[1] != 0 && g_main[5] == 0 && (uintptr_t)g_ppp_buf > (uintptr_t)g_main[2]) {
+        g_pinit_tramp(g_main + 4, g_ppp_buf, g_ppp_size);
+        log_line("FX-013: particle second pool set up for the main pool now (scene already running)");
+    }
 }
 
 Row row_FX013 = {
