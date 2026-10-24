@@ -9,6 +9,7 @@
 #include "../fps60.h"
 #include <intrin.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef void*(__cdecl* alloc_t)(int count);
 
@@ -21,9 +22,18 @@ static bool      g_patched = false;
 static __declspec(align(16)) uint8_t g_scratch[0x1000];   // packet is 0x214; margin for other callers
 static volatile LONG g_dropped = 0, g_dropped_inv = 0;
 static int       g_peak[4];                       // per InvKind, packets in one invocation
+// Packets per call site in the current invocation, and in each kind's peak invocation (the 9 callers, W2A-001).
+enum { SITES = 16 };
+static void*     g_site[SITES];
+static int       g_cur[SITES], g_peak_by[4][SITES];
 
 // cdecl int(int count), plain RET (0x72873F / 0x728748): the detour keeps the convention.
 static void* __cdecl h_alloc(int count) {
+    void* ra = _ReturnAddress();
+    for (int i = 0; i < SITES; i++) {
+        if (g_site[i] == ra) { g_cur[i]++; break; }
+        if (!g_site[i]) { g_site[i] = ra; g_cur[i]++; break; }
+    }
     void* p = g_tramp(count);
     if (p || g_disabled || !row_FX011.on) return p;
     if (InterlockedIncrement(&g_dropped) == 1) {
@@ -62,7 +72,11 @@ static void post() {
     int used = 0;
     for (int i = 0; i < POOLS; i++) used += g_counts[i];
     int k = pacing_kind();
-    if (k >= 0 && k < 4 && used > g_peak[k]) g_peak[k] = used;
+    if (k >= 0 && k < 4 && used > g_peak[k]) {
+        g_peak[k] = used;
+        memcpy(g_peak_by[k], g_cur, sizeof(g_cur));
+    }
+    memset(g_cur, 0, sizeof(g_cur));
     LONG d = InterlockedExchange(&g_dropped_inv, 0);
     static uint32_t tick = 0;
     static LONG dropped_window = 0;
@@ -71,7 +85,18 @@ static void post() {
     if (g_peak[0] || g_peak[1] || g_peak[2] || g_peak[3] || dropped_window)
         log_line("FX-011: peak draw packets per invocation (of %d): logic %d, render-only %d, backlog %d, stock %d; dropped %ld",
                  POOLS * POOL_PACKETS, g_peak[0], g_peak[1], g_peak[2], g_peak[3], dropped_window);
+    static const char* kind_name[4] = { "logic", "render-only", "backlog", "stock" };
+    for (int k2 = 0; k2 < 4; k2++) {
+        if (g_peak[k2] < 600) continue;                  // the breakdown only for heavy invocations
+        char line[512];
+        int n = 0;
+        for (int i = 0; i < SITES && g_site[i]; i++)
+            if (g_peak_by[k2][i])
+                n += _snprintf_s(line + n, sizeof(line) - n, _TRUNCATE, " 0x%06X:%d", rt_to_gva_exe(g_site[i]), g_peak_by[k2][i]);
+        log_line("FX-011:   %s peak by caller (return gva:packets):%s", kind_name[k2], line);
+    }
     for (int i = 0; i < 4; i++) g_peak[i] = 0;
+    memset(g_peak_by, 0, sizeof(g_peak_by));
     dropped_window = 0;
 }
 
