@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-BLINK (diagnostic, default 1 while the mod is in progress): finds blinking magic effects without a user
-// report per spell (user 22/10/2026: "I cannot test every spell and tell you one by one"). A blink = something drawn on
-// logic frames but not on render-only frames, so render-only frames issue fewer GPU draw calls. The row counts
-// ID3D11DeviceContext draw calls (DrawIndexed / Draw / DrawIndexedInstanced / DrawInstanced, vtable slots 12 / 13 /
-// 20 / 21 of the immediate context, found through a throwaway device like X2-DIAG-PRESENT) per invocation window
-// (rows pre() to the next pre()), labels each window by the invocation kind, and for every loaded magic DLL compares
-// each render-only window with the logic window right before it. At the DLL's unload it logs one line:
+// X2-DIAG-BLINK (diagnostic, on while the mod is in development): finds blinking spells by counting draw calls, so no
+// one has to test and report every spell.
+//
+// A blink is something drawn on logic frames but not on render-only ones, so render-only frames make fewer GPU draw
+// calls. The row counts the D3D11 draw calls of every invocation and, for each loaded spell DLL, compares each
+// render-only invocation with the logic invocations before and after it. At the DLL's unload it logs one line:
 //   X2-DIAG-BLINK: magic_NNNN.dll: logic avg A, render-only avg B, below both neighbours S%, above both L% [BLINK SUSPECT]
 //     | by size 2-3/4-7/8-15/16-31/32+ draws: below a/b/c/d/e, above a/b/c/d/e
-// where "below both" = a render-only window with at least X2-DIAG-BLINK-MIN (default 2) fewer draws than the logic
-// windows before and after it; suspect when S - L >= 25 points over 20+ pairs. The size histogram is there because the
-// no-magic baseline is itself 29-33% below / 0% above (D 23/10/2026 01:49-01:55), so only the deficit size can tell a
-// missing effect (tens of draws, H) from that small one-sided noise. Every 10 s with no magic DLL loaded the same numbers are logged as a baseline. Observe only.
+// "Below both" = at least X2-DIAG-BLINK-MIN (2) fewer draws than both neighbours; suspect when S - L >= 25 points over
+// 20+ frames. Even with no spell loaded about a third of frames come out "below both" by chance (logged every 10 s as a
+// baseline), so the size histogram matters: a missing effect is many draws, noise is a few. X2-MAG-035 uses the same
+// per-frame verdicts (mag035_pair). Observe only.
 #include "../x2.h"
 #include <d3d11.h>
 #include <string.h>

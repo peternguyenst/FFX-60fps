@@ -1,30 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-CRASH (diagnostic, default 1 since 22/10/2026: the mod is in progress, user): U 18/10/2026: the game closed itself while a commsphere recording was viewed
-// (log ends 0.0 s after magic_0760.dll loaded; no mod fault line, no Windows crash record or dump). Logs:
-// - every first-chance fault of the kinds below (vectored handler, first in the chain): code, faulting module + offset
-//   (FFX-2.exe also as Ghidra VA), the accessed address, registers, and up to 12 stack words that point into code
-//   modules (return-address candidates). Faults inside the mod's own __try blocks are logged too (they are handled
-//   afterwards). Capped at 40 lines.
-// - ExitProcess / TerminateProcess(own process): the exit code and the caller chain, so a silent exit through the
-//   game's own error path shows who asked for it.
-// - every 60 s (checked after each invocation): private bytes, working set, free address space (total, largest block) and the
-//   handle count. U 22/10/2026 (friend): crashes after ~30 min battles / back-to-back cups, log ends with no fault
-//   line; this shows whether anything grows toward exhaustion before such a crash.
-// - X2-DIAG-CRASH-DUMP (default 1 since 24/10/2026: the mod is in dev, user): on a fatal crash, the loaded modules
-//   (base, size) and a minidump fps60x2_crash_<date>-<time>.dmp next to FFX-2.exe (newest 5 kept). The game's own
-//   filter (FUN_00ab6200, set in FUN_00abe730: S) writes CoreDump.dmp only while DAT_00db25b8 is set, without heap or
-//   globals (type 0x1824), and every crash (FFX's too, same folder) overwrites it. The mod's filter stays on top
-//   (SetUnhandledExceptionFilter hooked, the game's filter kept and called after the dump). 1 = thread stacks,
-//   referenced heap, .data/.bss of every module (FFX-2.exe .data is 17 MB), handles, memory map; 2 = full memory
-//   (hundreds of MB); 0 = off. Heap corruption (0xC0000374) skips the filters, so the vectored handler writes it.
-//   The dump is written by a helper thread (the faulting thread may be out of stack).
-// - X2-DIAG-CRASH-SPELL (default 1, 24/10/2026, user: "i want to be able to know what spell cause crash"): every effect
-//   start logs its magic DLL and the battle command's name, and the FATAL report (and the dump's comment stream) lists
-//   the last ones. S: the only call of the effect start FUN_00616ba0(.., entry, action, kind) is 0x631FAA (cdecl, 5
-//   args, plain RET 0x616C97); command id = word [action+0xA4] (MOVZX 0x616BE8); FUN_00625130(id, &name) returns the
-//   command record and its name text (the start calls it at 0x616C47 with null; kind 0xF has no command); the entry's
-//   overlay table [entry+0x18] lies in the magic DLL. The call is retargeted, the start runs unchanged.
-// Observe only: the handler always returns EXCEPTION_CONTINUE_SEARCH and the exit hooks call the originals.
+// X2-DIAG-CRASH (diagnostic, on while the mod is in development): explains crashes and silent exits.
+//
+// It logs:
+//   - every first-chance fault of the serious kinds: code, module + offset (FFX-2.exe also as Ghidra address), the
+//     accessed address, registers and the stack words that look like return addresses (at most 40 lines)
+//   - ExitProcess / TerminateProcess of the game itself, with the exit code and who called it (a silent exit through
+//     the game's own error path)
+//   - every 60 s: memory use, free address space and handle count (does anything grow toward a crash?)
+// X2-DIAG-CRASH-DUMP (1): on a fatal crash, the loaded modules and a minidump fps60x2_crash_<date>-<time>.dmp next to
+//   FFX-2.exe (newest 5 kept). The game's own CoreDump.dmp is thin and overwritten by every crash. 1 = stacks,
+//   referenced heap, every module's data; 2 = full memory (hundreds of MB); 0 = off. Our crash filter stays on top
+//   (the game's filter is kept and called after the dump); heap corruption skips the filters, so the fault handler
+//   writes that dump. A helper thread writes it (the crashed thread may be out of stack). Read one with
+//   tools/crash_report.py (ffx2-fps60 repo).
+// X2-DIAG-CRASH-SPELL (1): every effect start logs its spell DLL and the battle command's name, and the crash report
+//   (and the dump) list the last ones. The game's single call of the effect start (gva 0x631FAA) is retargeted; the
+//   start itself runs unchanged.
+// Observe only: the fault handler always lets the fault go on, and the exit hooks call the originals.
+// Evidence: re/ledger/DIAG-CRASH.md.
 #include "../x2.h"
 #include <stdio.h>
 #include <psapi.h>                 // K32* (kernel32, PSAPI_VERSION 2)

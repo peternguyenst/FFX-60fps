@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-FTBLINK (diagnostic, default 0, observe only): tests H1 of re/ledger/FT-BLINK.md for the Full Throttle blink
-// (magic_0681 sword / fire drawn on logic invocations only). Chr actors reach the HD model list (hdframe+0xE9CC count,
-// list +0xE9D4) only through Ch_DrawMain loop 3 (FUN_00449f20 at 0x6DCD98), which runs once per tick; the list is cleared
-// in FUN_00464e80 (0x46500D, every invocation) when the state block [0xDCED88] has [0] != 1 or byte +0x338 / +0x33C set.
-// While a listed magic DLL is loaded (X2-DIAG-FTBLINK-DLL, default "681 80": Full Throttle and a plain attack for
-// comparison) every invocation logs, at its end: kind, the list count, state [0], +0x338, +0x33C and the BG / light colours
-// (max 1200 lines per load).
-// H1 holds if, for 0681 only, the state clears the list each invocation and RENDER counts drop below LOGIC counts.
-// X2-DIAG-FTBLINK-ALT=1 (dressphere outer-model blink, re/ledger/XFADE-BLINK.md; U 18/10: two consecutive frames draw the
-// new outfit faint, then opaque): per invocation snapshot every actor record (table 0x01CC9604, stride 0x910, up to 48)
-// and 0x400 bytes of the first 4 HD model-list objects (hdframe+0xE9D4 dword handles); per dword count A/B/A/B
-// alternation (value == value two invocations back, != the previous one). Every 120 invocations of a watched DLL, log
-// the dwords that alternated on >= 80% of them, with the last LOGIC and RENDER values (hex and float).
-// Also (U 18/10: the sword close-up frames alternate near-black / lit; tint, fade, MAG-025 ruled out) the HD state:
-// hdframe [0xDCDA04] 0xFC40 bytes, PostProcessManager [0xDD10F4] 0x12400 bytes and the MotionBlur object [0xDDC74C]
-// 0x100 bytes (pointers from X2-DIAG-FLASH, which must be on).
-// Ultima (magic_0106, U 23/10/2026: background grey / black on consecutive frames): hdframe now reaches the colour at
-// +0xFC24..+0xFC2C (FUN_00453be0, set through service +0x554 by EgoBgVal), and the light globals 0x1725080..0x1725520
-// (flags 0x172508C, colour 0x1725390, RGBA 0x1725500; FUN_007bb1e0 / 007bb410 / 007baf80) are snapshotted as "light".
+// X2-DIAG-FTBLINK (diagnostic, off, observe only): per-invocation logs for chasing one spell's blink.
+//
+// While a listed spell DLL is loaded (X2-DIAG-FTBLINK-DLL, default "681 80": Full Throttle and a plain attack to
+// compare), every invocation logs at its end: its kind, the HD model list count and the HD state flags that decide
+// whether the list is cleared, plus background / light colours (at most 1200 lines per load). Written for Full
+// Throttle's blinking swords (re/ledger/FT-BLINK.md).
+// X2-DIAG-FTBLINK-ALT=1: every invocation snapshots every actor record (up to 48), the first 4 HD model-list objects,
+// the HD frame, the post-process manager, the motion-blur object and the light globals, and every 120 invocations
+// logs the values that alternate A / B / A / B on >= 80% of them (with their last logic and render-only values). The
+// HD pointers come from X2-DIAG-FLASH, which must be on. History: re/ledger/XFADE-BLINK.md, ULTIMA-0106.md.
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>

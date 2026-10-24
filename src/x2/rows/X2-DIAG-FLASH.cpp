@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-FLASH (diagnostic, default 0): the full-screen light flash of magic DLLs (U 17/10/2026: Full Throttle,
-// screenshots show a white wash on some frames and none on others; friend: Seymour's Requiem, Tonberry overlay flicker).
-// Two HD paths reach the screen (outer repo re/ledger/LENS-GLOW.md §5, S):
-//  - tint: service +0xE08 FUN_00b71c80 -> unlock FUN_00455a80, FUN_004548e0(r,g,b,a) writes ctx+0x12384..+0x12390 when
-//    ctx+0x123A8 (lock) == 0, lock FUN_00452f80. ctx = [0xDD10F4] (FUN_004a8040). The HD frame (0x47B880) calls
-//    FUN_004aec60, which zeroes the tint alpha +0x12390 when unlocked and armed (+0x123B0, set by Sg_ScreenFadeUpdate).
-//  - bloom: service +0xE0C FUN_00b71aa0 -> FUN_006d3760 (fade slot 1, type 1) -> FUN_004546a0(1) (obj+0x58 enable,
-//    +0x59 just-on) and FUN_00454710(level) (obj+0x5C). obj = [0xDDC74C] (FUN_004f7980).
-// Observe only. Per invocation (max 1500 lines, only while a value is non-zero): tint sets and the last alpha, bloom
-// enables and the last argument, and the state FUN_004aec60 sees at the HD frame (before its reset). With X2-DIAG-FTBLINK
-// on, only while one of its X2-DIAG-FTBLINK-DLL magic DLLs is loaded.
+// X2-DIAG-FLASH (diagnostic, off, observe only): logs the two ways a spell can light up the whole screen.
+//
+//   tint   service +0xE08: sets the HD post-process tint colour (r, g, b, alpha); the HD frame clears the alpha again
+//          after each frame
+//   bloom  service +0xE0C: a fade slot that switches the bloom on and sets its level
+// Per invocation, while a value is non-zero (at most 1500 lines): the tint sets and last alpha, the bloom switches and
+// level, and what the HD frame sees before its reset. With X2-DIAG-FTBLINK on, only while one of its X2-DIAG-FTBLINK-DLL
+// spell DLLs is loaded. X2-DIAG-FTBLINK's ALT mode reads its HD pointers from this row. Evidence: re/ledger/LENS-GLOW.md §5.
 #include "../x2.h"
 #include <intrin.h>
 

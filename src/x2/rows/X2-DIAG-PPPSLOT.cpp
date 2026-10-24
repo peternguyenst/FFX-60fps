@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-PPPSLOT (diagnostic, default 0; CRASH-0946, user 24/10/2026 "fix the cause"): balance of a magic DLL's
-// per-unit particle programs. A walker-template DLL hands the exe per-unit callbacks in its overlay table (S, magic_0946
-// table 0x10004028): +0x44 start (attach op 0x6BA160 -> CALL 0x6BA283; 0946 FUN_10001330 takes a slot of its 64-entry
-// table), +0x48 step (CALL 0x6BB0B0; 0946 FUN_10001480 frees the slot when Ppp_ProgramStep reports done, returns
-// non-zero), +0x54 end (op FUN_006ba5a0, CALL 0x6BA5B5; 0946 FUN_10001620 frees it). With X2-MAG-035's late pass 0946
-// filled all 64 slots and crashed (CRASH-0946.md). This row hooks those three callbacks of the DLL named in
-// X2-DIAG-PPPSLOT-DLL (default 946) and logs every 0.25 s: calls per invocation kind (logic / render-only) and walk
-// (X2-MAG-025: pass, held mode), step "done" returns, and the units holding a program (started, not yet done/ended).
-// Observe only: every hook calls the original and returns its value.
+// X2-DIAG-PPPSLOT (diagnostic, off, observe only): counts one spell DLL's particle-program slots (written for the
+// magic_0946 crash, which filled all 64).
+//
+// A template spell DLL gives the game three callbacks per effect unit: start (takes a slot of its particle table),
+// step (frees it when the program is done) and end (frees it). The row hooks those three for the DLL in
+// X2-DIAG-PPPSLOT-DLL (946) and logs every 0.25 s: calls per invocation kind, per X2-MAG-025 walk (pass and held
+// mode), "done" returns, and how many units hold a program. Every hook calls the original. Evidence: re/ledger/CRASH-0946.md.
 #include "../x2.h"
 #include <stdio.h>
 #include <stdlib.h>

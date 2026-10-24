@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-CAPTURE (diagnostic, default 0, observe only; user 23/10/2026: "collect every info we might need in one go",
-// Ultima is cast on demand with X2-DEV-EFFTEST-ONLY). While an X2-DIAG-FTBLINK-DLL magic DLL is loaded (first load of
-// the run only), for up to X2-DIAG-CAPTURE-FRAMES presents (default 900):
-//   <game>\fps60x2-capture-draws.csv: one "F" line per present (frame, invocation kind, frame counter) and one "D" line
-//     per D3D11 draw (X2-DIAG-BLINK's draw hooks): call type and arguments, topology, VS / PS / blend / depth state /
-//     render target / PS texture 0 identities, blend factor, and for VS / PS constant buffers 0-1 the hash and first
-//     8 floats of their last upload (Map / Unmap or UpdateSubresource, hooked here).
-//   <game>\fps60x2-capture-frames.bin: the back buffer of every present at 1/4 size, 24-bit RGB, each frame a 16-byte
-//     header (frame, kind, width, height) and rows top-down.
-//   "S" lines at the end of each frame: per HD submit function and caller (return address as Ghidra VA), how many
-//     calls and how many found the render-skip flag 0xDF6438 set: sprite submits FUN_00808940 / FUN_008099d0, VFX
-//     instance submit 0x456A00 / create 0x7FDDE0 (all cdecl, plain RET; sigs tools/sigs_x2_capture.txt, 1 hit each).
-//     D3D draws are issued later by the HD renderer, so only these show which game code queued the extra sprites
-//     of a logic frame (capture 03:52: ~19 more sprite quads per logic frame during the sphere). Each count is also
-//     keyed by the particle program being stepped (X2-MAG-006's current step: program, class 1 DLL / 2 EXE / 3 field;
-//     0 = none), so a program drawing fewer particles on render-only frames is named (capture 03:57: DrawShape
-//     FUN_0082bce0 ~7 fewer per render-only frame, KeShpTail2 sprites ~12 fewer).
-//   "B" lines: each blend state's render-target-0 description, once. F lines end with the frame's feedback reads
-//     (draws sampling a texture last written in an earlier frame) and how many X2-DIAG-CAPTURE-FBSKIP skipped.
-// Comparing a logic frame with the render-only frame after it, draw by draw, shows which draw differs (outer repo
-// re/ledger/ULTIMA-0106.md: frame dump 03:40, the sphere's white wash is stronger on logic frames). Every draw and
-// upload is read back on the CPU: the game runs slowly while capturing. 8-bit RGBA / BGRA back buffers only.
+// X2-DIAG-CAPTURE (diagnostic, off, observe only): records everything about one spell's frames in one go.
+//
+// While an X2-DIAG-FTBLINK-DLL spell DLL is loaded (its first load only), for up to X2-DIAG-CAPTURE-FRAMES presents
+// (900), it writes:
+//   <game>\fps60x2-capture-draws.csv  one "F" line per present (frame, invocation kind, frame counter) and one "D" line
+//     per D3D11 draw: call and arguments, topology, shaders, blend / depth state, render target, texture 0, blend
+//     factor, and the first values of the vertex and pixel constant buffers 0-1
+//   "S" lines per frame: how often each HD submit function (sprites, VFX instances) was called and by whom, and by
+//     which particle program; "B" lines: each blend state, once
+//   <game>\fps60x2-capture-frames.bin  every frame's picture at 1/4 size (24-bit RGB, 16-byte header per frame)
+// Comparing a logic frame with the render-only frame after it, draw by draw, shows which draw differs. Everything is
+// read back on the CPU, so the game runs slowly while capturing. 8-bit RGBA / BGRA back buffers only.
+// Signatures tools/sigs_x2_capture.txt. History: re/ledger/ULTIMA-0106.md.
 #include "../x2.h"
 #include <d3d11.h>
 #include <dxgi.h>

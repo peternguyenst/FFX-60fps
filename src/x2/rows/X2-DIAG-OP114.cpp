@@ -1,29 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-OP114 (diagnostic, default 0, observe only): the dressphere-change outfit peel (magic_0906 for Warrior) is
-// drawn by the OPU DLL-table op 0x114 (FUN_00875d00, cdecl(scr, pc), plain RET; DLL op table = magic service +0xC24,
-// entry +0x50). Its outer model blinks at 60 fps only (U 18/10/2026, re/ledger/XFADE-BLINK.md). This row points the
-// table entry at a stub that logs, for the first X2-DIAG-OP114-N calls (default 1200): invocation kind, scr, pc, script
-// word, the slot scr[0xD8 + unit[0x1E]] (int), the world matrix translation scr+0x80 (param_1[0x20], built by
-// FUN_006a4df0), unit+0x30..0x3C, the part-block flags scr+0x100 after the call and the returned PC.
-// Run 2 (D 17:37 showed identical inputs on LOGIC and RENDER calls): the op draws each part through an HD VFX
-// instance keyed (part*2 + texture mode, 0x389) (FUN_00875fc0: Hd_VfxLookup 0x4563D0, vertex memory from the
-// multi-buffered pool DAT_00dd0204 by FUN_00451350 into geometry slot (pool index + 2) * 0x1C, submit FUN_00456c80,
-// gated by g_dwSkipFlag0 0xDF6438). Also logged: pool index and write offset before/after, the skip flags, and per
-// key 0..3 the instance, its vertex-slot pointer for the current pool index and vertex count.
-// Run 3 (D 17:50: pool index 1 on LOGIC, 0 on RENDER, fresh vertices for both instances on every call, skip flags 0):
-// A/B drop test, X2-DIAG-OP114-DROP (ini, default 0; Numpad 8 cycles, logged): 1 = skip both calls on RENDER
-// invocations, 2 = skip the 1st call of each invocation (instance k0, "FrameBuffer" texture), 3 = skip the 2nd call
-// (k1, dds texture), 4 = skip both always. A skipped call returns pc + 0x10 as the op does (word >> 12 == 1 only).
-// Run 4 (U 18/10: the body blink is made in magic_0937, stock bisect): op 0x10F (FUN_0085a090, entry +0x3C) is hooked
-// too. Its modes 0xC000-0xE000 set the actor model's DressUpFast shader parameters "dressUpType" (0/1/2),
-// "dressUpCenter" (type 0: sweep = top - t * height, t = [0x18E4D4C] += 1/17 per call; type 1: bottom - 0.1 * height
-// once flag [0xD6F7A0] == 1), "dressUpUpper", "zoomAftMat". Logged per call (X2-DIAG-OP114-N10F, default 1500): kind,
-// pc, word, t, centre, flag after the call.
-// Also per invocation (pre, while the list is non-empty, same budget): Sg_MainLoop 0x60559D releases the effect on the
-// actors listed at 0x1E1CC00 (FUN_004515d0(model, 0)) when op 0x10F's FUN_00859e00 has not set [0x18E4D50] since the
-// last check; logged: kind, [0x18E4D50], list[0..3].
-// And FUN_00859e00 (cdecl(actor, type, bounds*, a, b, c), plain RET 0x85A085; sets the DressUpMelt shader params) is
-// entry-hooked: kind, actor, type, a, b, c, bounds +4 / +0x14 per call (same budget).
+// X2-DIAG-OP114 (diagnostic, off, observe only except DROP): logs the dressphere-change outfit "peel" draw.
+//
+// The peel is drawn by the effect-script op 0x114 (FUN_00875d00, in the DLL op table at magic service +0xC24). The row
+// points that table entry at a logging hook; for the first X2-DIAG-OP114-N calls (1200) it logs the invocation kind,
+// the script position and word, the matrix and unit fields the op reads, the flags after the call, the returned PC,
+// and the HD VFX instances and vertex-pool slots the op draws through (and the skip flags).
+// X2-DIAG-OP114-DROP (ini, 0; Numpad 8 cycles it): an A/B test that skips calls: 1 both on render-only invocations,
+// 2 the first call of each invocation, 3 the second, 4 both always.
+// Also hooked and logged: op 0x10F (the DressUpFast shader parameters, X2-DIAG-OP114-N10F calls), the main loop's
+// release of that effect, and FUN_00859e00 (the DressUpMelt shader parameters).
+// History: re/ledger/XFADE-BLINK.md.
 #include "../x2.h"
 #include <stdio.h>
 

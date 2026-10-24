@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// X2-DIAG-AUTOBLINK (diagnostic, default 1 while the mod is in progress; user 23/10/2026: "auto blinking detect").
-// X2-DIAG-BLINK counts draw calls; Ultima (magic_0106, fixed by X2-HD-001) blinked with the same draws on logic and
-// render-only frames, only the image alternated (outer repo re/ledger/ULTIMA-0106.md). This row watches the image:
-// every present, the back buffer is copied into a mip-mapped texture, GenerateMips shrinks it, and the mip level of at
-// most 16 x 9 texels (10 x 5 at 1280 x 720) is copied to a staging ring and read 2 presents later without waiting
-// (no stall; a frame still in flight is skipped). Per frame: mean luma of each grid cell and of the whole frame.
-// Blink test (a blink is a zigzag, 30 fps animation shown at 60 fps is a staircase): for frame n with neighbours n-1,
-// n+1 on alternating invocation kinds (logic / render-only; catch-up, turbo and stock stretches are skipped), a =
-// v[n] - v[n-1], b = v[n+1] - v[n]; if a and b have opposite signs, e = +-min(|a|, |b|) (peak +, valley -), else 0.
-// e is signed by kind (logic +, render-only -) and averaged over 60 judged frames: a blink keeps one sign (one kind
-// brighter every time), motion and fades average out (staircase: one step is ~0, so e = 0).
-// Verdict per window: whole frame |mean| >= X2-DIAG-AUTOBLINK-WHOLE (default 15 = 1.5 luma) or any cell >=
-// X2-DIAG-AUTOBLINK-CELL (default 40 = 4.0), with >= 60% of the judged frames on that sign: "[BLINK]" log line with
-// the loaded magic DLLs, the cell, the size and which kind is brighter (rate-limited, summary per DLL at unload).
-// X2-DIAG-AUTOBLINK-DUMP=1: on the first [BLINK] of a load, 4 consecutive frames at mip level 2 are saved as BMP
-// (<game>\fps60x2-blink-<time>-<n>.bmp). Ultima before the fix: whole-frame gap 4-15, i.e. 40-150 here.
+// X2-DIAG-AUTOBLINK (diagnostic, on while the mod is in development): finds blinking effects by watching the image.
+//
+// X2-DIAG-BLINK counts draw calls, which misses blinks that draw the same things on both kinds of frame (Ultima's
+// glow). This row watches the picture: every present, the back buffer is shrunk on the GPU to a grid of at most 16 x 9
+// cells and read back two presents later (no stall). For each frame it takes the mean brightness of each cell and of
+// the whole frame.
+// The test: a blink is a zigzag (up, down, up ...) in step with logic / render-only frames, with one kind brighter every
+// time; motion and fades are not (a 30 fps animation shown at 60 fps is a staircase). For frame n it measures how much
+// n sticks out from both neighbours, signs it by the frame's kind, and averages that over 60 frames.
+// Verdict per 60-frame window: the whole frame's average >= X2-DIAG-AUTOBLINK-WHOLE (15 = 1.5 brightness levels) or
+// any cell's >= X2-DIAG-AUTOBLINK-CELL (40), with >= 60% of the frames agreeing: a "[BLINK]" log line with the loaded
+// spell DLLs, the cell and which kind is brighter; a summary per DLL at unload.
+// X2-DIAG-AUTOBLINK-DUMP=1: the first blink of a load also saves 4 frames as BMP (<game>\fps60x2-blink-*.bmp).
+// History: re/ledger/ULTIMA-0106.md.
 #include "../x2.h"
 #include <d3d11.h>
 #include <dxgi.h>
