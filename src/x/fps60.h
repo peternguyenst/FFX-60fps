@@ -170,6 +170,7 @@ extern Row row_MAG027;                           // rows/MAG-027.cpp (event time
 extern Row row_MAG028;                           // rows/MAG-028.cpp (particle pause flag back to the game's value)
 extern Row row_MAG029;                           // rows/MAG-029.cpp (effect-unit particle programs paused on render-only)
 extern Row row_MAG030;                           // rows/MAG-030.cpp (OPP effect units restored after render-only draws)
+extern Row row_MAG031;                           // rows/MAG-031.cpp (Obliteration draw counter held on render-only invocations)
 extern Row row_FX013;                            // rows/FX-013.cpp (bigger draw packet and particle pools)
 extern Row row_FX014;                            // rows/FX-014.cpp (effect time counter rolled back on render-only invocations)
 int  draw_packet_cap();                          // FX-013: draw packets per pool now (0x156 stock)
