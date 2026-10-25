@@ -1477,6 +1477,13 @@ static uint8_t  g_dc_damped[DC_ACTORS][DC_BONES];
 static float*   g_dc_pos = nullptr;                        // [3 frames][DC_ACTORS][DC_BONES][3], relative to bone 0
 static uint16_t g_dc_wcount[DC_ACTORS][DC_BONES][2];       // world odd frames this window: [render-only, logic]
 static volatile LONG g_dc_odd[4] = {}, g_dc_faults = 0;
+// Root check: where bone 0 is drawn in the world (the whole body). Odd when the middle frame is more than
+// DC_ROOT_MIN_ODD units and more than DC_ROOT_MIN_SHARE of the two frames' distance away from half way between them:
+// a body that zigzags while it moves (the bone checks above are relative to bone 0 and cannot see it).
+static const float DC_ROOT_MIN_ODD = 0.15f, DC_ROOT_MIN_SHARE = 0.25f;
+static float    g_dc_root[3][DC_ACTORS][3];
+static uint16_t g_dc_rcount[DC_ACTORS][2];                 // root odd frames this window: [render-only, logic]
+static int      g_dc_root_lines = 0;
 
 // --- MESHCHECK: which cloth meshes flicker as drawn (diagnostic, part of DRAWCHECK) -------------------------------------
 // Ch_ClothDeform builds each HD mesh vertex buffer from the cloth vertices (each vertex a blend of three, optionally
@@ -1692,6 +1699,7 @@ static bool drawcheck_copy(int i, const uint8_t* a, float* out, float* pos) {
         const float* r = (const float*)(bones + BONE_WORLD_T);
         for (int c = 0; c < 3; c++) pos[b * 3 + c] = w[c] - r[c];
     }
+    memcpy(g_dc_root[g_dc_head][i], bones + BONE_WORLD_T, 12);
     return true;
 }
 
@@ -1703,11 +1711,31 @@ static void drawcheck_compare(int i, const uint8_t* a, int f0, int m, int t) {
     uint16_t id = g_dc_id[m][i];
     if (g_dc_count_id[i] != id) {
         memset(g_dc_count[i], 0, sizeof(g_dc_count[i])); memset(g_dc_wcount[i], 0, sizeof(g_dc_wcount[i]));
+        g_dc_rcount[i][0] = g_dc_rcount[i][1] = 0;
         g_dc_count_id[i] = id;
     }
     int nb = bone_count(a);
     if (nb > DC_BONES) nb = DC_BONES;
     bool ro = g_dc_kind[m] == INV_RENDER_ONLY;
+    {
+        const float* r0 = g_dc_root[f0][i]; const float* r1 = g_dc_root[m][i]; const float* r2 = g_dc_root[t][i];
+        float e = 0, span = 0;
+        for (int c = 0; c < 3; c++) {
+            float mid = 0.5f * (r0[c] + r2[c]);
+            e += (r1[c] - mid) * (r1[c] - mid); span += (r2[c] - r0[c]) * (r2[c] - r0[c]);
+        }
+        e = sqrtf(e); span = sqrtf(span);
+        if (e > DC_ROOT_MIN_ODD && e > DC_ROOT_MIN_SHARE * span) {
+            if (g_dc_rcount[i][ro ? 0 : 1] < 0xFFFF) g_dc_rcount[i][ro ? 0 : 1]++;
+            if (g_dc_root_lines < DC_DETAIL_LINES) {
+                g_dc_root_lines++;
+                log_line("X2-SMOOTH-003-DRAWCHECK: %s frame, slot=%d id=0x%04X parent=%08X root drawn %.2f off half way "
+                         "(frames %.2f apart): before (%.2f %.2f %.2f) this (%.2f %.2f %.2f) after (%.2f %.2f %.2f) clock %d",
+                         ro ? "render-only" : "logic", i, id, *(const uint32_t*)(a + OFF_PARENT), e, span,
+                         r0[0], r0[1], r0[2], r1[0], r1[1], r1[2], r2[0], r2[1], r2[2], *(const int32_t*)(a + OFF_MOTION_CLOCK));
+            }
+        }
+    }
     const float* P0 = g_dc_pos + ((size_t)f0 * DC_ACTORS + i) * DC_BONES * 3;
     const float* P1 = g_dc_pos + ((size_t)m * DC_ACTORS + i) * DC_BONES * 3;
     const float* P2 = g_dc_pos + ((size_t)t * DC_ACTORS + i) * DC_BONES * 3;
@@ -1774,7 +1802,20 @@ static void dc_report_counts(const char* what, uint16_t (*count)[DC_BONES][2]) {
 static void drawcheck_report() {
     dc_report_counts("angles", g_dc_count);
     dc_report_counts("world", g_dc_wcount);
+    {
+        char buf[1024] = ""; int len = 0, shown = 0, ro_all = 0, logic_all = 0;
+        for (int i = 0; i < DC_ACTORS; i++) {
+            ro_all += g_dc_rcount[i][0]; logic_all += g_dc_rcount[i][1];
+            if (!(g_dc_rcount[i][0] + g_dc_rcount[i][1]) || shown >= 16) continue;
+            int w = _snprintf_s(buf + len, sizeof(buf) - len, _TRUNCATE, "%sslot %d 0x%04X %d/%d", shown ? ", " : "", i,
+                                g_dc_count_id[i], g_dc_rcount[i][0], g_dc_rcount[i][1]);
+            if (w > 0) { len += w; shown++; }
+        }
+        log_line("X2-SMOOTH-003-DRAWCHECK: last %d drawn frames, roots (whole body): odd frames render-only %d, logic %d; "
+                 "per actor (render-only/logic): %s", g_dc_window, ro_all, logic_all, shown ? buf : "none");
+    }
     meshcheck_report();
+    memset(g_dc_rcount, 0, sizeof(g_dc_rcount)); g_dc_root_lines = 0;
     memset(g_dc_count, 0, sizeof(g_dc_count));
     memset(g_dc_wcount, 0, sizeof(g_dc_wcount));
     g_dc_window = 0; g_dc_window_lines = 0;
