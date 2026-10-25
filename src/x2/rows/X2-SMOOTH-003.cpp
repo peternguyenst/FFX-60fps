@@ -313,11 +313,37 @@ static float half_way_angle(float a, float b) {
     return a + 0.5f * d;
 }
 
+// Diagnostic: a damped bone moved more than DAMP_BIG_MOVE radians from its angle at tick k on a render-only frame is
+// logged with everything the half-way rule used (first DAMP_BIG_MOVE_LINES), so a blinking damped bone shows why.
+static const float DAMP_BIG_MOVE = 0.3f;
+static const LONG  DAMP_BIG_MOVE_LINES = 12;
+static volatile LONG g_damp_big_moves = 0;
+static void damp_log_big_move(int i, const uint8_t* a, const DampSave& k, const float* step_angle,
+                              const float* half_target, const float* drawn) {
+    float worst = 0;
+    for (int c = 0; c < 3; c++) {
+        float d = fabsf(half_way_angle(0, drawn[c] - k.angle[c]) * 2.0f);   // shortest-way change, radians
+        if (d > worst) worst = d;
+    }
+    if (worst <= DAMP_BIG_MOVE) return;
+    LONG c = InterlockedIncrement(&g_damp_big_moves);
+    if (c > DAMP_BIG_MOVE_LINES) return;
+    log_line("X2-SMOOTH-003-DAMPHOLD: slot=%d id=0x%04X parent=%08X bone %d moved %.2f rad on a render-only frame: "
+             "angle k (%.3f %.3f %.3f) target k (%.3f %.3f %.3f) step angle (%.3f %.3f %.3f) step target (%.3f %.3f %.3f) "
+             "drawn (%.3f %.3f %.3f) clock %d",
+             i, *(const uint16_t*)a, *(const uint32_t*)(a + OFF_PARENT), k.bone, worst,
+             k.angle[0], k.angle[1], k.angle[2], k.target[0], k.target[1], k.target[2],
+             step_angle[0], step_angle[1], step_angle[2], half_target[0], half_target[1], half_target[2],
+             drawn[0], drawn[1], drawn[2], *(const int32_t*)(a + OFF_MOTION_CLOCK));
+}
+
 // After the render-only step: a damped bone is drawn half way between its angle at tick k and the angle the next
 // logic step would give it (the game's filter on the target carried on from k through the half-step target). Running
 // the filter on the half-step target instead put render-only frames about a third of a tick's movement ahead of half
 // way while a bone moved steadily: a vibration (U 24/10/2026, Rikku's cloth as she moves her hand). Bones the step
-// did not damp (angle == target) keep the step's value.
+// did not damp keep the step's value: those already at their target (angle == target), and those whose angle the
+// step left untouched although the target differs - flagged damped, but the game sets their angle some other way
+// (Paine's sword, an attached actor: drawn 45 degrees off on every render-only frame, U 25/10/2026).
 static void damp_half_way(int i, uint8_t* a) {
     int k = g_damp_n[i];
     uint8_t* bones = *(uint8_t**)(a + OFF_BONES);
@@ -328,11 +354,15 @@ static void damp_half_way(int i, uint8_t* a) {
         float* angle = (float*)(hb + BONE_ANGLE[0]);
         const float* half_target = (const float*)(hb + BONE_TARGET);
         if (memcmp(angle, half_target, 12) == 0) continue;
+        if (memcmp(angle, in[j].angle, 12) == 0) continue;     // the game did not damp it this step either
+        float step_angle[3];
+        memcpy(step_angle, angle, 12);
         for (int c = 0; c < 3; c++) {
             float next_target = in[j].target[c] + 2.0f * (half_target[c] - in[j].target[c]);   // carried on one tick
             float next = damp_filter(next_target, in[j].angle[c]);
             angle[c] = half_way_angle(in[j].angle[c], next);
         }
+        damp_log_big_move(i, a, in[j], step_angle, half_target, angle);
     }
 }
 

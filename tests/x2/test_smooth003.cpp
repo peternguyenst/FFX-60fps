@@ -344,3 +344,26 @@ TEST(smooth003_damphold_draws_damped_bone_half_way) {
     g_damp_n[slot] = 0;
     g_damp_save = old;
 }
+
+// A bone flagged damped whose angle the game sets some other way (Paine's sword: angle k (-1.571 1.591 1.571),
+// target 0, the step leaves both as they were) keeps its angle instead of being drawn half way to the target.
+TEST(smooth003_damphold_keeps_bone_the_step_did_not_move) {
+    const int nb = 1, slot = 3;
+    std::vector<uint8_t> actor(ACTOR_SIZE, 0), header(0x40, 0), bones(nb * BONE_SIZE, 0);
+    *(uint16_t*)&actor[0] = 0x4079;
+    *(uint8_t**)&actor[OFF_MODEL_HEADER] = header.data();
+    *(uint16_t*)&header[MODEL_HEADER_BONE_COUNT] = nb;
+    *(uint8_t**)&actor[OFF_BONES] = bones.data();
+    bones[BONE_DAMPED] = 1;
+    float* angle = (float*)&bones[BONE_ANGLE[0]];
+    float* target = (float*)&bones[BONE_TARGET];
+    const float held[3] = { -1.571f, 1.591f, 1.571f };
+    for (int c = 0; c < 3; c++) { angle[c] = held[c]; target[c] = 0; }
+    std::vector<DampSave> save((size_t)MAX_ACTORS * DAMP_MAX_BONES);
+    DampSave* old = g_damp_save; g_damp_save = save.data();
+    damp_save(slot, actor.data());
+    damp_half_way(slot, actor.data());      // the render-only step changed nothing
+    for (int c = 0; c < 3; c++) CHECK(angle[c] == held[c]);
+    g_damp_n[slot] = 0;
+    g_damp_save = old;
+}
