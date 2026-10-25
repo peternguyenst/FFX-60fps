@@ -367,3 +367,29 @@ TEST(smooth003_damphold_keeps_bone_the_step_did_not_move) {
     g_damp_n[slot] = 0;
     g_damp_save = old;
 }
+
+// MIDCHECK-HOLD off (default): a bone marked bad keeps the render-only step's angle (a held bone moved at 30 fps among
+// bones at 60: a walking monster's legs shook); with the hold on it is put back to its tick-k angle.
+TEST(smooth003_midcheck_hold_only_when_switched_on) {
+    const int slot = 2, nb = 1;
+    std::vector<uint8_t> bones(nb * BONE_SIZE, 0);
+    TestActor a;
+    a.at<uint16_t>(0) = 0x0033;
+    a.at<uint8_t*>(OFF_BONES) = bones.data();
+    std::vector<float> sampled((size_t)MAX_ACTORS * MAX_BONES * 3);
+    std::vector<uint16_t> hold((size_t)MAX_ACTORS * MAX_BONES);
+    float* old_sampled = g_sampled_ang; uint16_t* old_hold = g_mid_hold; int old_opt = g_opt_midcheck, old_hold_opt = g_opt_midcheck_hold;
+    g_sampled_ang = sampled.data(); g_mid_hold = hold.data(); g_opt_midcheck = 1;
+    hold[(size_t)slot * MAX_BONES] = MIDCHECK_HOLD_TICKS;
+    float* angle = (float*)&bones[BONE_ANGLE[0]];
+    *(float*)&g_sanity_bone_save[BONE_ANGLE[0]] = 0.1f;          // tick k
+    angle[0] = 0.3f;                                             // the render-only step's value
+    g_opt_midcheck_hold = 0;
+    midcheck_after_step(slot, a.p(), nb);
+    CHECK(close_to(angle[0], 0.3f));
+    g_opt_midcheck_hold = 1;
+    midcheck_after_step(slot, a.p(), nb);
+    CHECK(close_to(angle[0], 0.1f));
+    g_sampled_ang = old_sampled; g_mid_hold = old_hold; g_opt_midcheck = old_opt; g_opt_midcheck_hold = old_hold_opt;
+    memset(g_sanity_bone_save, 0, BONE_SIZE);
+}

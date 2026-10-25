@@ -27,7 +27,8 @@
 //   DRAWCHECK   diagnostic (on while in progress): after every invocation the drawn bone angles are kept for 3 frames;
 //               a bone that is the odd one out against the frames on both sides is logged with the frame kind
 //   MIDCHECK    every render-only pose is checked one tick later against the true half-way point between the two
-//               logic ticks around it; a bone drawn far from it is logged and drawn at its tick pose for a while
+//               logic ticks around it; a bone drawn far from it is logged (and, with MIDCHECK-HOLD=1, drawn at its
+//               tick pose for a while)
 //   KEYHOLD     a bone whose two animation keys are far apart (cutscene data can store one rotation two ways) keeps
 //               its pose: the half-way blend between them is a wrong pose
 //   CLOTHHOLD   hair and cloth (mode 4: drawn half a tick behind from the last two results; 2: 30 Hz; 3: extrapolated)
@@ -710,9 +711,12 @@ static int32_t guard_clock(const uint8_t* a, int32_t c, int* kind) {
 // at its tick-k pose on render-only frames for MIDCHECK_HOLD_TICKS logic ticks (renewed while its samples stay bad;
 // they are still taken and checked while it is held). Catches what KEYHOLD and SANITY miss, e.g. a bone whose two
 // keys agree but whose half sample is a quarter turn off (seen on Rikku's braids, map 0xB5).
+// The hold is off by default (X2-SMOOTH-003-MIDCHECK-HOLD=0): a held bone moves at 30 fps while the bones around it move
+// at 60, so a walking monster's held legs shook (U 25/10/2026); the braid cases it was built for are covered by SANITY
+// (whole bone put back) and PHASE. With the hold off, bad samples are still judged and logged.
 static const float MIDCHECK_MIN_ERR = 0.04f;               // turns (about 14 degrees)
 static const uint16_t MIDCHECK_HOLD_TICKS = 90;            // 3 s at 30 ticks/s
-static int       g_opt_midcheck = 1;
+static int       g_opt_midcheck = 1, g_opt_midcheck_hold = 0;
 static float*    g_sampled_ang = nullptr;                  // MAX_ACTORS * MAX_BONES * 3: last render-only sample, turns
 static uint16_t* g_mid_hold = nullptr;                     // MAX_ACTORS * MAX_BONES: logic ticks the bone stays held
 static uint16_t  g_sampled_id[MAX_ACTORS];                 // actor id of the sample (0xFFFF = none waiting)
@@ -741,7 +745,7 @@ static void midcheck_after_step(int i, uint8_t* a, int nb) {
     for (int b = 0; b < nb; b++) {
         uint8_t* hb = bones + b * BONE_SIZE;
         for (int c = 0; c < 3; c++) sampled[b * 3 + c] = *(const float*)(hb + BONE_ANGLE[c]) * TURNS_PER_RADIAN;
-        if (!hold[b]) continue;
+        if (!hold[b] || !g_opt_midcheck_hold) continue;
         const uint8_t* kb = g_sanity_bone_save + b * BONE_SIZE;
         for (int c = 0; c < 3; c++) {
             *(float*)(hb + BONE_ANGLE[c]) = *(const float*)(kb + BONE_ANGLE[c]);
@@ -777,9 +781,10 @@ static void midcheck_judge(int i, const uint8_t* a) {
             if (!was_held && g_mid_lines < 60) {
                 InterlockedIncrement(&g_mid_lines);
                 log_line("X2-SMOOTH-003-MIDCHECK: slot=%d id=0x%04X bone %d ch %d: k %.4f sampled %.4f k+1 %.4f (off %.4f turn) "
-                         "res 0x%X clock %d - bone held on render-only frames",
+                         "res 0x%X clock %d - %s",
                          i, id, b, c, cur[b * 3 + c], sampled[b * 3 + c], k1, err, *(const int32_t*)(a + OFF_KEY_RES),
-                         *(const int32_t*)(a + OFF_MOTION_CLOCK));
+                         *(const int32_t*)(a + OFF_MOTION_CLOCK),
+                         g_opt_midcheck_hold ? "bone held on render-only frames" : "logged only (MIDCHECK-HOLD off)");
             }
             break;
         }
@@ -2069,6 +2074,7 @@ static bool install() {
     g_opt_endextrap_once = config_row("X2-SMOOTH-003-ENDEXTRAP-ONCE", 1);
     g_opt_sanity = config_row("X2-SMOOTH-003-SANITY", 1);
     g_opt_midcheck = config_row("X2-SMOOTH-003-MIDCHECK", 1);
+    g_opt_midcheck_hold = config_row("X2-SMOOTH-003-MIDCHECK-HOLD", 0);
     g_opt_drawcheck = config_row("X2-SMOOTH-003-DRAWCHECK", 1);
     if (g_opt_drawcheck) {
         g_dc_ang = (float*)calloc((size_t)3 * DC_ACTORS * DC_BONES * 3, sizeof(float));
