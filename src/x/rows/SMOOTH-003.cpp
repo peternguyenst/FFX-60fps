@@ -40,6 +40,7 @@ static uint8_t* volatile* g_table = nullptr;    // pointer to the actor array
 static volatile int32_t*  g_count = nullptr;    // actor count
 
 static int  g_gates = 1, g_hold = 1, g_blend = 0, g_cloth = 0, g_diag = 0, g_loopguard = 1, g_shortloop = 1, g_loopend = 1, g_sanity = 1, g_keyhold = 1, g_endextrap = 1;
+static int  g_formmatch = 1;                     // SMOOTH-003-FORMMATCH
 static int  g_diag_id = 0;                       // SMOOTH-003-DIAG-ID: log every walk of this actor id (decimal)
 static int  g_diag_id_end = 0;                   // SMOOTH-003-DIAG-ID-END: with DIAG-ID, an inclusive id range
 static LONG g_kd_lines = 0;
@@ -241,7 +242,7 @@ static void record_angles(int i, const uint8_t* a) {
 
 // Before the render-only step: save pose + bones. Returns the bone count (0 = cannot check).
 static int sanity_save(int i, const uint8_t* a) {
-    if (i < 0 || i >= MAXA || (!g_sanity && !g_keyhold)) return 0;
+    if (i < 0 || i >= MAXA || (!g_sanity && !g_keyhold && !g_formmatch)) return 0;
     int nb = bone_count(a);
     const uint8_t* pose = *(uint8_t* const*)(a + POSE);
     const uint8_t* bones = *(uint8_t* const*)(a + BONES);
@@ -384,6 +385,50 @@ static void out_diag(int i, uint8_t* a, int nb) {
                  *(const int16_t*)(n0 + 0x18), *(const int16_t*)(n0 + 0x16),
                  *(const int16_t*)(n0 + NODE_SIZE + 0x18), *(const int16_t*)(n0 + NODE_SIZE + 0x16),
                  *(const int16_t*)(n0 + 2 * NODE_SIZE + 0x18), *(const int16_t*)(n0 + 2 * NODE_SIZE + 0x16));
+    }
+}
+
+// ---------------------------------------------------------------- Euler form match (SMOOTH-003-FORMMATCH)
+// Motion data may store one rotation in the two Euler forms (x, y, z) and (x+1/2, 1/2-y, z+1/2) turn in neighbouring
+// keys (KD-008). At 120+ fps a render-only sample can land on a whole odd key that stock never shows (stock steps two
+// keys per tick), and SLERP/KEYHOLD only judge fractional samples, so the bone took the other form there; the per-channel
+// ease of +0xE4 toward +0x114 between the two forms sweeps the bone through wrong poses (U 25/10/2026, 120 fps: Tidus's
+// victory pose, sword pointing down for a frame; D ring 15:49:40.596: bone 49 keys x 2047->0 y 2043->8 z 994->-1052,
+// sample f5+00, 0.5 turn off tick k). A bone more than a quarter turn from tick k on some channel is rewritten in the
+// other form when that one is closer to tick k: the same rotation, continuous angles.
+static LONG g_formmatches = 0;
+
+static void form_match(int i, uint8_t* a, int nb) {
+    uint8_t* bones = *(uint8_t**)(a + BONES);
+    if (!bones) return;
+    const float PI = 3.14159265f, TWO_PI = 6.2831853f;
+    for (int b = 0; b < nb; b++) {
+        uint8_t* bo = bones + (size_t)b * BONE_STRIDE;
+        const uint8_t* ko = g_bone_save + (size_t)b * BONE_STRIDE;
+        float L[3], K[3], worst = 0;
+        for (int c = 0; c < 3; c++) {
+            L[c] = *(const float*)(bo + BANG[c]);
+            K[c] = *(const float*)(ko + BANG[c]);
+            float d = turn_diff(L[c] * INV_2PI, K[c] * INV_2PI);
+            if (d > worst) worst = d;
+        }
+        if (worst <= 0.25f) continue;
+        float f[3] = { L[0] + PI, PI - L[1], L[2] + PI };
+        float e[3] = { L[0], L[1], L[2] };
+        float de = 0, df = 0;
+        for (int c = 0; c < 3; c++) {
+            e[c] += TWO_PI * floorf((K[c] - e[c]) / TWO_PI + 0.5f);
+            f[c] += TWO_PI * floorf((K[c] - f[c]) / TWO_PI + 0.5f);
+            de += fabsf(e[c] - K[c]); df += fabsf(f[c] - K[c]);
+        }
+        if (df >= de) continue;
+        for (int c = 0; c < 3; c++) {
+            *(float*)(bo + BANG[c]) = f[c];
+            *(float*)(bo + BANG[c] + 0x30) = f[c];
+        }
+        if (InterlockedIncrement(&g_formmatches) == 1)
+            log_line("SMOOTH-003-FORMMATCH: first bone rewritten in the Euler form of tick k (slot %d id 0x%04X bone %d, clock 0x%X)",
+                     i, *(const uint16_t*)a, b, *(const uint32_t*)(a + SAMPLE_CLOCK));
     }
 }
 
@@ -806,8 +851,9 @@ static bool walk_step(int i, uint8_t* a, uint32_t fl) {
         __try { end_extrapolate(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) {}
     bool slerped = false;
     if (ok && g_slerp && g_slerp_ok) { __try { slerped = slerp_pose(i, a); } __except (EXCEPTION_EXECUTE_HANDLER) { slerped = false; } }
+    if (ok && nb && !slerped && g_keyhold) { __try { keyhold(i, a, nb); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+    if (ok && nb && g_formmatch) { __try { form_match(i, a, nb); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
     if (ok && nb && !slerped) {
-        if (g_keyhold) { __try { keyhold(i, a, nb); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
         if (diag_id_match(*(const uint16_t*)a)) { __try { out_diag(i, a, nb); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
         else if (g_sanity) { __try { sanity_check(i, a, nb, c0); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
     }
@@ -1416,6 +1462,7 @@ static bool install() {
     g_hold_id = config_row("SMOOTH-003-HOLD-ID", 0);
     g_endextrap = config_row("SMOOTH-003-ENDEXTRAP", 1);
     g_endextrap_once = config_row("SMOOTH-003-ENDEXTRAP-ONCE", 0);
+    g_formmatch = config_row("SMOOTH-003-FORMMATCH", 1);
     KEYHOLD_D = config_row("SMOOTH-003-KEYHOLD-D", 0x300);
     if (KEYHOLD_D < 0x80 || KEYHOLD_D > 0x800) KEYHOLD_D = 0x300;
     g_spike = config_row("SMOOTH-003-SPIKE", 0);
