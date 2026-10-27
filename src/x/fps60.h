@@ -171,6 +171,7 @@ extern Row row_MAG028;                           // rows/MAG-028.cpp (particle p
 extern Row row_MAG029;                           // rows/MAG-029.cpp (effect-unit particle programs paused on render-only)
 extern Row row_MAG030;                           // rows/MAG-030.cpp (OPP effect units restored after render-only draws)
 extern Row row_MAG031;                           // rows/MAG-031.cpp (Obliteration draw counter held on render-only invocations)
+extern Row row_MAG032;                           // rows/MAG-032.cpp (family-B update walk replayed held on render-only)
 extern Row row_FX013;                            // rows/FX-013.cpp (bigger draw packet and particle pools)
 extern Row row_FX014;                            // rows/FX-014.cpp (effect time counter rolled back on render-only invocations)
 int  draw_packet_cap();                          // FX-013: draw packets per pool now (0x156 stock)
@@ -219,8 +220,10 @@ extern Row row_SMOOTH001;                        // rows/SMOOTH-001.cpp (60 Hz c
 extern Row row_SMOOTH002;                        // rows/SMOOTH-002.cpp (60 Hz actor roots; master [rows] SMOOTH=0)
 extern Row row_SMOOTH003;                        // rows/SMOOTH-003.cpp (60 Hz limbs; master [rows] SMOOTH=1, row default 1)
 // Shared between rows
-extern void (*g_mag008_build_hook)();            // MAG-008: called where the exec==0 dispatch is skipped
+void  mag008_add_build_hook(void (*fn)());       // MAG-008: called where the exec==0 dispatch is skipped (MAG-021, MAG-032)
 void* mag008_dispatch();                         // MAG-008: MsBattleScene_DrawDispatch (null if not installed)
+bool  mag025_dll_hold_ready();                   // MAG-025: DLL-called walks are held on render-only invocations
+void  mag025_hold_pass0(bool on);                // MAG-025: also hold DLL pass-0 walks (MAG-032 replay window)
 const char* mag021_state();                     // MAG-021: window state, for the crash line
 bool  mag021_in_window(const void* base);        // MAG-021: module replayed in the current window
 int   famE_find_setter(uint8_t* mod, uint32_t size, uint8_t** hit); // MAG-018: family-E exec-pause setter count

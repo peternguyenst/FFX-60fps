@@ -12,7 +12,9 @@ static uint8_t*   g_site = nullptr;      // the E8 at 0x8210AC
 static dispatch_t g_dispatch = nullptr;  // MsBattleScene_DrawDispatch, 0x787E00
 static volatile LONG g_skipped = 0;
 static volatile LONG g_passed = 0;
-void (*g_mag008_build_hook)() = nullptr;  // MAG-021: runs in place of the skipped dispatch
+static void (*g_build_hooks[4])();        // MAG-021, MAG-032: run in place of the skipped dispatch
+static int g_build_hook_n = 0;
+void mag008_add_build_hook(void (*fn)()) { if (g_build_hook_n < 4) g_build_hooks[g_build_hook_n++] = fn; }
 void* mag008_dispatch() { return (void*)g_dispatch; }
 
 // MAG-008-PASS (default "0670"): magic DLL numbers whose drawing happens inside this dispatch only. While one is
@@ -57,7 +59,7 @@ static void __cdecl h_fallback_dispatch(int pass) {
     } else if (row_MAG008.on && !g_disabled && pacing_kind() == INV_BUILD) {
         InterlockedIncrement(&g_skipped);
         where_sub(0x21);                                 // DIAG-HANGDUMP: MAG-021 replay (0x22 = after)
-        if (g_mag008_build_hook) g_mag008_build_hook();
+        for (int i = 0; i < g_build_hook_n; i++) g_build_hooks[i]();
         where_sub(0x22);
         return;
     }

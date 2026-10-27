@@ -133,6 +133,7 @@
     <ClCompile Include="src\x\rows\MAG-029.cpp" />
     <ClCompile Include="src\x\rows\MAG-030.cpp" />
     <ClCompile Include="src\x\rows\MAG-031.cpp" />
+    <ClCompile Include="src\x\rows\MAG-032.cpp" />
     <ClCompile Include="src\x\rows\FX-011.cpp" />
     <ClCompile Include="src\x\rows\FX-012.cpp" />
     <ClCompile Include="src\x\rows\FX-013.cpp" />

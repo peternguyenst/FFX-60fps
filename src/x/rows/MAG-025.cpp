@@ -57,6 +57,7 @@ static volatile LONG g_fskipped = 0;
 static int g_mode_exe = 3;                       // MAG-025-MODE: EXE pass-1 walk (0 = untouched)
 static int g_mode_dll = 3;                       // MAG-025-DLLMODE: DLL-called walks (0 = untouched)
 static int g_pass0 = 0;                          // MAG-025-PASS0: hold DLL pass-0 walks too (MAG-021 replays)
+static bool g_pass0_now = false;                 // MAG-032: hold DLL pass-0 walks inside its replay only
 static uint8_t g_hold_pos = 1;                   // MAG-025-POS
 static bool g_deny[512];                         // MAG-025-DENY=hex,hex (opcode word & 0x1FF; bit 8 = DLL table)
 static int  g_opdiag = 0;                        // MAG-025-OPDIAG: held-walk handler counts every 30 invocations
@@ -265,7 +266,7 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
         uint8_t* base = exe_base();
         uint8_t p = (uint8_t)pass;
         if (ret < base || ret >= base + exe_size()) {
-            if (g_mode_dll && (p == 1 || (p == 0 && g_pass0))) { held_walk(g_mode_dll, 1, unit_ctx, pass); return; }
+            if (g_mode_dll && (p == 1 || (p == 0 && (g_pass0 || g_pass0_now)))) { held_walk(g_mode_dll, 1, unit_ctx, pass); return; }
         } else if (g_mode_exe && ret == g_exe_ret) {
             held_walk(g_mode_exe, 0, unit_ctx, pass);
             return;
@@ -413,6 +414,9 @@ static void pre() {
     if (g_followguard && hook_entry("MAG-025-FOLLOWGUARD", g_fcall, (void*)&h_fcall, &g_fcall_tramp))
         log_line("MAG-025-FOLLOWGUARD: follow call hooked");
 }
+
+bool mag025_dll_hold_ready() { return row_MAG025.on && g_patched && g_mode_dll != 0 && !g_disabled; }
+void mag025_hold_pass0(bool on) { g_pass0_now = on; }
 
 static void log_ops(int src) {
     char line[1024]; int k = 0; line[0] = 0;

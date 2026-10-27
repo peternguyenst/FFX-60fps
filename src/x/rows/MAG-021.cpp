@@ -388,7 +388,7 @@ static bool install() {
     log_line("  MAG-021: not replayed (MAG-021-SKIP): %s", g_skip[0] ? g_skip : "none");
     QueryPerformanceFrequency(&g_qpf);
     if (!magic_mods_subscribe("MAG-021", on_load, on_unload)) return false;
-    g_mag008_build_hook = build_hook;
+    mag008_add_build_hook(build_hook);
     log_line("  MAG-021: service table gva=0x%08X; %u stubbed slots; watching family-E loads",
              rt_to_gva_exe(g_table), (unsigned)(sizeof(STUBS) / sizeof(STUBS[0])));
     return true;
