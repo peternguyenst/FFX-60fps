@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Shared loader: ships as dbghelp.dll in the FFX / FFX-2 game folder (both exes import only MiniDumpWriteDump from
 // dbghelp). It forwards dbghelp to System32 (forwards.cpp) and loads the game's own mod DLL from the game folder:
-//   FFX.exe   -> fps60_ffx.dll
+//   FFX.exe   -> fps60_ffx.dll, jobs_ffx.dll (each one only if present)
 //   FFX-2.exe -> fps60_ffx2.dll
 // Any other host, or no mod DLL for this game, or a load failure: pure forwarder, the game runs stock.
 // A mod DLL may export `void __cdecl mod_minidump_pre(void* exception_param, int* dump_type)`: called (SEH-guarded)
@@ -69,19 +69,23 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
     wchar_t* name = exe;
     for (wchar_t* p = exe; *p; p++) if (*p == L'\\' || *p == L'/') name = p + 1;
 
-    const wchar_t* dll = nullptr;
-    if (lstrcmpiW(name, L"FFX.exe") == 0) dll = L"fps60_ffx.dll";
-    else if (lstrcmpiW(name, L"FFX-2.exe") == 0) dll = L"fps60_ffx2.dll";
-    if (!dll) return TRUE;
+    static const wchar_t* const FFX_DLLS[] = { L"fps60_ffx.dll", L"jobs_ffx.dll", nullptr };
+    static const wchar_t* const FFX2_DLLS[] = { L"fps60_ffx2.dll", nullptr };
+    const wchar_t* const* dlls = nullptr;
+    if (lstrcmpiW(name, L"FFX.exe") == 0) dlls = FFX_DLLS;
+    else if (lstrcmpiW(name, L"FFX-2.exe") == 0) dlls = FFX2_DLLS;
+    if (!dlls) return TRUE;
 
     *name = 0;                                   // exe now holds the game folder, with trailing '\'
-    wchar_t path[MAX_PATH];
-    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s%s", exe, dll);
-    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return TRUE;   // no mod for this game: stock
+    for (; *dlls; dlls++) {
+        wchar_t path[MAX_PATH];
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s%s", exe, *dlls);
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) continue;   // this mod not installed
 
-    // The mod DLL's own DllMain only starts its init thread, so loading it here (under the loader lock) is safe.
-    HMODULE m = LoadLibraryW(path);
-    if (!m) { loader_note(exe, dll, GetLastError()); return TRUE; }
-    g_minidump_pre = (minidump_pre_t)GetProcAddress(m, "mod_minidump_pre");
+        // A mod DLL's own DllMain only starts its init thread, so loading it here (under the loader lock) is safe.
+        HMODULE m = LoadLibraryW(path);
+        if (!m) { loader_note(exe, *dlls, GetLastError()); continue; }
+        if (!g_minidump_pre) g_minidump_pre = (minidump_pre_t)GetProcAddress(m, "mod_minidump_pre");
+    }
     return TRUE;
 }

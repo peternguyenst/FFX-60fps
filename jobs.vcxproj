@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{CE9C4D6D-ACE6-471B-B69C-859253609889}</ProjectGuid>
+    <RootNamespace>jobs</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>jobs</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <!-- Jobs mod DLL (FFX): the shared loader loads it when the host is FFX.exe, next to fps60_ffx.dll. Links nothing from the fps60 mod. -->
+    <TargetName>jobs_ffx</TargetName>
+    <OutDir>$(MSBuildThisFileDirectory)artifacts\jobs\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)artifacts\obj\jobs\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\jobs\jobs_main.cpp" />
+    <ClCompile Include="src\jobs\jobs_log.cpp" />
+    <ClCompile Include="src\jobs\jobs_config.cpp" />
+    <ClCompile Include="src\jobs\jobs_sigs.cpp" />
+    <ClCompile Include="src\jobs\jobs_lua.cpp" />
+    <ClCompile Include="third_party\lua\src\lapi.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lauxlib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lbaselib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lcode.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lcorolib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lctype.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ldblib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ldebug.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ldo.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ldump.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lfunc.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lgc.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\linit.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\liolib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\llex.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lmathlib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lmem.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\loadlib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lobject.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lopcodes.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\loslib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lparser.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lstate.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lstring.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lstrlib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ltable.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ltablib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\ltm.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lundump.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lutf8lib.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lvm.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+    <ClCompile Include="third_party\lua\src\lzio.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>Level3</WarningLevel><SDLCheck>false</SDLCheck></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\jobs\jobs.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>
