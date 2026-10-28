@@ -172,6 +172,7 @@ extern Row row_MAG029;                           // rows/MAG-029.cpp (effect-uni
 extern Row row_MAG030;                           // rows/MAG-030.cpp (OPP effect units restored after render-only draws)
 extern Row row_MAG031;                           // rows/MAG-031.cpp (Obliteration draw counter held on render-only invocations)
 extern Row row_MAG032;                           // rows/MAG-032.cpp (family-B update walk replayed held on render-only)
+extern Row row_W2S001;                          // rows/W2S-001.cpp (2D HUD animation tracks step on logic ticks only)
 extern Row row_FX013;                            // rows/FX-013.cpp (bigger draw packet and particle pools)
 extern Row row_FX014;                            // rows/FX-014.cpp (effect time counter rolled back on render-only invocations)
 int  draw_packet_cap();                          // FX-013: draw packets per pool now (0x156 stock)
